@@ -34,3 +34,7 @@ The repository-owned [DICOM canonicalization module](docs/dicom-canonicalization
 defines the accepted pixel formats, resource limits, preprocessing order,
 sanitized metadata, typed failures, and reversible original-to-canonical
 geometry used by downstream detector adapters.
+
+The [FocalNet-DINO detector adapter](docs/detector-adapter.md) defines the
+verified strict-load boundary, official input transform, deterministic
+top-300/NMS/top-eight proposal contract, and explicit L4 validation boundary.
