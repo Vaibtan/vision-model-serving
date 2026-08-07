@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path
 
 from _common import (
@@ -28,6 +29,8 @@ def main() -> None:
     )
     args = parser.parse_args()
 
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
     import torch
     import transformers
 

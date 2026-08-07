@@ -19,3 +19,13 @@ $env:PYTHONPATH = "src"
 python -m vision_model_serving.artifacts config/model-artifacts.json
 python -m unittest discover -s tests -v
 ```
+
+The [pinned L4 FP32 lane](config/l4-fp32-environment.json) and its
+[reproduction runbook](docs/validation/lightning-l4-fp32-reproduction.md)
+cover exact dependencies, source commits, patch checks, native-operator build
+and import validation, offline strict loads, and CPU-only skip semantics:
+
+```bash
+python scripts/l4_validation/00_probe_environment.py
+python scripts/l4_validation/prepare_focalnet.py --help
+```

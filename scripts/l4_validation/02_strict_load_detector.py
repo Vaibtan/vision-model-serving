@@ -8,8 +8,6 @@ import gc
 import runpy
 import sys
 from pathlib import Path
-import torch
-from models.dino import build_dino
 from _common import (
     FOCALNET_COMMIT,
     FOCALNET_TRAINING_SHA256,
@@ -24,9 +22,17 @@ def main() -> None:
     defaults = default_paths()
     parser = argparse.ArgumentParser()
     parser.add_argument("--repo", type=Path, default=defaults["focalnet_repo"])
-    parser.add_argument("--config", type=Path, default=defaults["artifact_dir"] / "config_cfg.py")
-    parser.add_argument("--checkpoint", type = Path, default = defaults["artifact_dir"] / "focalnet-dino-finetuned.pth")
-    parser.add_argument("--device", choices = ("cpu", "cuda"), default = "cuda")
+    parser.add_argument(
+        "--config",
+        type=Path,
+        default=defaults["project_repo"] / "config_cfg.py",
+    )
+    parser.add_argument(
+        "--checkpoint",
+        type=Path,
+        default=defaults["artifact_dir"] / "focalnet-dino-finetuned.pth",
+    )
+    parser.add_argument("--device", choices=("cpu", "cuda"), default="cuda")
     args = parser.parse_args()
     repo = args.repo.resolve()
     config_path = require_file(args.config)
@@ -41,6 +47,9 @@ def main() -> None:
             "focalnet-serving-no-backbone-preload.patch"
         )
     sys.path[:0] = [str(repo), str(repo / "models" / "dino" / "ops")]
+    import torch
+    from models.dino import build_dino
+
     raw_config = runpy.run_path(str(config_path))
     config = {key: value for key, value in raw_config.items() if not key.startswith("__")}
     config["device"] = "cpu"
@@ -50,9 +59,13 @@ def main() -> None:
     unsafe_globals = torch.serialization.get_unsafe_globals_in_checkpoint(checkpoint_path)
     print("Checkpoint unsafe globals:", unsafe_globals)
     with torch.serialization.safe_globals([argparse.Namespace]):
-        checkpoint = torch.load(checkpoint_path, map_location = "cpu", weights_only = True)
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location="cpu",
+            weights_only=True,
+        )
     state_dict = checkpoint["model"]
-    load_result = model.load_state_dict(state_dict, strict = True)
+    load_result = model.load_state_dict(state_dict, strict=True)
     print("Strict load:", load_result)
     print("Checkpoint tensors:", len(state_dict))
     print("Model parameters:", f"{sum(p.numel() for p in model.parameters()):,}")
@@ -64,7 +77,8 @@ def main() -> None:
     model.eval()
 
     if args.device == "cuda":
-        if not torch.cuda.is_available(): raise RuntimeError("CUDA is unavailable")
+        if not torch.cuda.is_available():
+            raise RuntimeError("CUDA is unavailable")
         torch.cuda.empty_cache()
         torch.cuda.reset_peak_memory_stats()
         model.to("cuda")
