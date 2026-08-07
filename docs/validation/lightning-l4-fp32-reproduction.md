@@ -114,6 +114,19 @@ LIGHTNING L4 EVIDENCE ARCHIVE PASSED
 The archive and sidecar are intentionally ignored by Git. Track the small
 reference JSON, scripts, patches, and documentation instead.
 
+The verifier never extracts archive members. It rejects traversal paths,
+backslashes, links, special files, duplicates, excessive members and oversized
+members; checks all 23 required evidence files; validates source commits,
+artifact/native-operator/patch hashes and package inventories; cross-checks
+stored bundle and visual hashes against their manifests; and verifies the raw
+detector shapes/counts and MMBCD logits/probabilities. These are explicit typed
+failures, not Python `assert` statements that disappear under `python -O`.
+Pass `--json` for a machine-readable summary.
+
+This command proves only the downloaded CPU-verifiable evidence. It does not
+emit any environment, strict-load, native-operator or live-inference success
+marker, and therefore cannot be mistaken for a new GPU rerun.
+
 ## 2. Activate Lightning's existing environment
 
 Lightning permits one default Conda environment per Studio. Do not run
@@ -547,6 +560,14 @@ That is a lower bound, not API latency: it excludes DICOM decode/preprocessing,
 host/device transfers, model loading and unloading, switching, postprocessing,
 queueing, and serialization. The separately measured peak-memory values are not
 a measurement of simultaneous residency and must not be added as if they were.
+
+Later repository-owned adapters compare their numeric records through
+`vision_model_serving.validation.compare_box_records`. The interface performs
+deterministic permutation-aware matching with an explicit absolute tolerance,
+reports unmatched records and maximum absolute difference, and rejects
+non-finite values. Use it only where output order is semantically irrelevant;
+the detector-to-MMBCD top-300, strict NMS and top-eight ordering contract remains
+an exact ordered assertion.
 
 ## 14. Collect a new evidence archive
 
