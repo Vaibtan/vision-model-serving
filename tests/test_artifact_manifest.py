@@ -32,6 +32,7 @@ COMMIT_D = "4" * 40
 
 def _artifact(artifact_id: str, role: str, sha256: str) -> dict[str, object]:
     detector = role == "detector"
+    repository_revision = COMMIT_A if detector else COMMIT_B
     checkpoint: dict[str, object] = {
         "container": "wrapped_state_dict" if detector else "raw_state_dict",
         "state_dict_key": "model" if detector else None,
@@ -54,6 +55,17 @@ def _artifact(artifact_id: str, role: str, sha256: str) -> dict[str, object]:
                     "input_proj": 1,
                     "class_embed": 1,
                     "label_enc": 1,
+                },
+                "required_key_prefixes": {
+                    "backbone": "backbone.",
+                    "transformer": "transformer.",
+                    "bbox_embed": "bbox_embed.",
+                    "input_proj": "input_proj.",
+                    "class_embed": "class_embed.",
+                    "label_enc": "label_enc.",
+                },
+                "required_tensor_shapes": {
+                    "class_embed.0.weight": [1, 256],
                 },
                 "output_contract": {
                     "pred_logits_shape": [1, 900, 1],
@@ -84,6 +96,17 @@ def _artifact(artifact_id: str, role: str, sha256: str) -> dict[str, object]:
                     "cross_attention": 1,
                     "classifier": 1,
                 },
+                "required_key_prefixes": {
+                    "image_encoder": "image_encoder.",
+                    "image_projection": "img_fc_layer.",
+                    "text_encoder": "text_encoder.",
+                    "text_projection": "txt_fc_layer.",
+                    "cross_attention": "attention.",
+                    "classifier": "model_fc2.",
+                },
+                "required_tensor_shapes": {
+                    "model_fc2.weight": [2, 768],
+                },
                 "output_contract": {
                     "logits_shape": [1, 2],
                     "fused_embeddings_shape": [1, 768],
@@ -101,6 +124,8 @@ def _artifact(artifact_id: str, role: str, sha256: str) -> dict[str, object]:
         "provenance": {
             "source": "evaluator_supplied",
             "custody": "external_read_only_mount",
+            "repository": "https://example.invalid/model-source",
+            "repository_revision": repository_revision,
         },
         "trust": {
             "checksum_pinned": True,
@@ -155,6 +180,9 @@ def _valid_manifest() -> dict[str, object]:
             "device": "NVIDIA L4",
             "python": "3.12.11",
             "torch": "2.8.0+cu128",
+            "torchvision": "0.23.0+cu128",
+            "transformers": "5.14.1",
+            "numpy": "1.26.4",
             "cuda_runtime": "12.8",
         },
         "artifacts": [
@@ -351,6 +379,26 @@ class ArtifactManifestTests(unittest.TestCase):
             "checkpoint.required_key_groups",
             str(raised.exception),
         )
+
+    def test_rejects_artifact_revision_that_differs_from_pinned_source(self) -> None:
+        payload = _valid_manifest()
+        provenance = payload["artifacts"][0]["provenance"]  # type: ignore[index]
+        provenance["repository_revision"] = "a" * 40  # type: ignore[index]
+
+        with self.assertRaises(ManifestValidationError) as raised:
+            self._load_fixture(payload)
+
+        self.assertIn("must match revisions.focalnet_dino", str(raised.exception))
+
+    def test_rejects_patch_revision_that_differs_from_pinned_source(self) -> None:
+        payload = _valid_manifest()
+        patch = payload["repository_assets"][1]  # type: ignore[index]
+        patch["applies_to_revision"] = "a" * 40  # type: ignore[index]
+
+        with self.assertRaises(ManifestValidationError) as raised:
+            self._load_fixture(payload)
+
+        self.assertIn("must match revisions.focalnet_dino", str(raised.exception))
 
     def test_cli_emits_a_machine_readable_inventory(self) -> None:
         environment = copy.copy(os.environ)

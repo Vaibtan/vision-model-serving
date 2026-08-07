@@ -114,10 +114,50 @@ For both models, the manifest therefore requires `semantics.status` to remain
 validation to remain `false`. The validator rejects silent promotion of any of
 those fields.
 
+## Runtime registry
+
+`ArtifactRegistry` is the fail-closed runtime boundary for these records. It
+accepts only the two manifest-owned model IDs, hashes and inspects checkpoints
+from read-only CPU streams, verifies tokenizer and repository assets, checks the
+exact runtime lane and native CUDA operator, and aggregates those checks into
+startup readiness. Public reports contain stable error codes but no local paths
+or full hashes.
+
+```python
+from vision_model_serving.artifacts import ArtifactRegistry
+
+registry = ArtifactRegistry(
+    "config/model-artifacts.json",
+    artifact_root="/models",
+    tokenizer_root="/tokenizer/roberta-base",
+    repository_root=".",
+)
+report = registry.verify_all()
+if not report.ready:
+    raise RuntimeError(report.as_public_dict())
+
+detector = registry.resolve("focalnet-dino-detector")
+with detector.open_checkpoint() as stream:
+    # The T08 adapter must deserialize from this stream and call
+    # module.load_state_dict(..., strict=True) before retaining the model.
+    pass
+```
+
+`open_checkpoint()` reopens the verified artifact without revealing its path,
+rehashes it before yielding the stream, and rejects identity changes before or
+during model loading. Runtime adapters remain responsible for constructing the
+pinned architecture and performing the final strict state-dict load. The
+registry verifies the exact archived strict-load evidence and live checkpoint
+structure; it does not substitute a shape audit for adapter-level strict load.
+
+The implementation performs no network access. Tokenizers must be opened with
+`local_files_only=True` by the consuming adapter, and model/tokenizer roots can
+be mounted read-only.
+
 ## Storage boundary
 
 Weights and the L4 evidence archive stay outside Git and outside public image
 layers. Their identities are represented by filenames, sizes, hashes, and the
-checked-in reference record. Runtime file discovery, live checksum verification,
-and checkpoint deserialization belong to the future `ArtifactRegistry` work in
-T07, not to this metadata module.
+checked-in reference record. Runtime discovery, live checksums, restricted
+checkpoint inspection, and readiness are implemented by `ArtifactRegistry`.
+Model construction and GPU lifecycle remain outside this metadata module.

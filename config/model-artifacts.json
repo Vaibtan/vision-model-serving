@@ -103,6 +103,23 @@
           "class_embed": 12,
           "label_enc": 1
         },
+        "required_key_prefixes": {
+          "backbone": "backbone.",
+          "transformer": "transformer.",
+          "bbox_embed": "bbox_embed.",
+          "input_proj": "input_proj.",
+          "class_embed": "class_embed.",
+          "label_enc": "label_enc."
+        },
+        "required_tensor_shapes": {
+          "class_embed.0.weight": [
+            1,
+            256
+          ],
+          "class_embed.0.bias": [
+            1
+          ]
+        },
         "output_contract": {
           "pred_logits_shape": [
             1,
@@ -185,6 +202,31 @@
           "text_projection": 7,
           "cross_attention": 4,
           "classifier": 2
+        },
+        "required_key_prefixes": {
+          "image_encoder": "image_encoder.",
+          "image_projection": "img_fc_layer.",
+          "text_encoder": "text_encoder.",
+          "text_projection": "txt_fc_layer.",
+          "cross_attention": "attention.",
+          "classifier": "model_fc2."
+        },
+        "required_tensor_shapes": {
+          "model_fc2.weight": [
+            2,
+            768
+          ],
+          "model_fc2.bias": [
+            2
+          ],
+          "img_fc_layer.1.weight": [
+            256,
+            384
+          ],
+          "txt_fc_layer.1.weight": [
+            256,
+            768
+          ]
         },
         "output_contract": {
           "logits_shape": [

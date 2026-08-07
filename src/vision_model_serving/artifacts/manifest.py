@@ -161,7 +161,15 @@ def _validate_root(root: Mapping[str, Any], issues: list[str]) -> None:
         _git_commit(revisions.get(name), f"revisions.{name}", issues)
 
     runtime = _child_mapping(root, "runtime_lane", "runtime_lane", issues)
-    for name in ("device", "python", "torch", "cuda_runtime"):
+    for name in (
+        "device",
+        "python",
+        "torch",
+        "torchvision",
+        "transformers",
+        "numpy",
+        "cuda_runtime",
+    ):
         _required_string(runtime, name, f"runtime_lane.{name}", issues)
 
     artifacts_value = root.get("artifacts")
@@ -173,7 +181,7 @@ def _validate_root(root: Mapping[str, Any], issues: list[str]) -> None:
     for index, value in enumerate(artifacts):
         artifact = _mapping(value, f"artifacts[{index}]", issues)
         artifact_maps.append(artifact)
-        _validate_artifact(artifact, index, issues)
+        _validate_artifact(artifact, index, revisions, issues)
 
     ids = [artifact.get("id") for artifact in artifact_maps]
     if len(ids) != len(set(_hashable(value) for value in ids)):
@@ -204,11 +212,14 @@ def _validate_root(root: Mapping[str, Any], issues: list[str]) -> None:
     _validate_proposal_contract(pipeline, issues)
 
     _validate_tokenizer(root, revisions, issues)
-    _validate_repository_assets(root, issues)
+    _validate_repository_assets(root, revisions, issues)
 
 
 def _validate_artifact(
-    artifact: Mapping[str, Any], index: int, issues: list[str]
+    artifact: Mapping[str, Any],
+    index: int,
+    revisions: Mapping[str, Any],
+    issues: list[str],
 ) -> None:
     base = f"artifacts[{index}]"
     _required_string(artifact, "id", f"{base}.id", issues)
@@ -224,6 +235,27 @@ def _validate_artifact(
     )
     _required_string(provenance, "source", f"{base}.provenance.source", issues)
     _required_string(provenance, "custody", f"{base}.provenance.custody", issues)
+    _required_string(
+        provenance,
+        "repository",
+        f"{base}.provenance.repository",
+        issues,
+    )
+    repository_revision = provenance.get("repository_revision")
+    _git_commit(
+        repository_revision,
+        f"{base}.provenance.repository_revision",
+        issues,
+    )
+    revision_name = {
+        "detector": "focalnet_dino",
+        "classifier": "mmbcd",
+    }.get(role)
+    if revision_name is not None and repository_revision != revisions.get(revision_name):
+        issues.append(
+            f"{base}.provenance.repository_revision: must match "
+            f"revisions.{revision_name}"
+        )
 
     trust = _child_mapping(artifact, "trust", f"{base}.trust", issues)
     if trust.get("checksum_pinned") is not True:
@@ -311,6 +343,19 @@ def _validate_detector_checkpoint(
         issues.append(f"{checkpoint_path}.dtypes: detector must be float32")
 
     group_counts = _required_groups(
+        checkpoint,
+        checkpoint_path,
+        {
+            "backbone",
+            "transformer",
+            "bbox_embed",
+            "input_proj",
+            "class_embed",
+            "label_enc",
+        },
+        issues,
+    )
+    _required_key_metadata(
         checkpoint,
         checkpoint_path,
         {
@@ -430,6 +475,19 @@ def _validate_classifier_checkpoint(
         },
         issues,
     )
+    _required_key_metadata(
+        checkpoint,
+        checkpoint_path,
+        {
+            "image_encoder",
+            "image_projection",
+            "text_encoder",
+            "text_projection",
+            "cross_attention",
+            "classifier",
+        },
+        issues,
+    )
 
     output = _child_mapping(
         checkpoint,
@@ -472,6 +530,66 @@ def _required_groups(
         if isinstance(value, int) and not isinstance(value, bool) and value > 0:
             valid_counts[name] = value
     return valid_counts
+
+
+def _required_key_metadata(
+    checkpoint: Mapping[str, Any],
+    checkpoint_path: str,
+    expected_group_names: set[str],
+    issues: list[str],
+) -> None:
+    prefixes = _child_mapping(
+        checkpoint,
+        "required_key_prefixes",
+        f"{checkpoint_path}.required_key_prefixes",
+        issues,
+    )
+    if set(prefixes) != expected_group_names:
+        issues.append(
+            f"{checkpoint_path}.required_key_prefixes: expected exactly "
+            + ", ".join(sorted(expected_group_names))
+        )
+    valid_prefixes: list[str] = []
+    for name in expected_group_names:
+        value = prefixes.get(name)
+        if not isinstance(value, str) or not value or value.strip() != value:
+            issues.append(
+                f"{checkpoint_path}.required_key_prefixes.{name}: "
+                "expected a non-empty prefix"
+            )
+        else:
+            valid_prefixes.append(value)
+
+    shapes = _child_mapping(
+        checkpoint,
+        "required_tensor_shapes",
+        f"{checkpoint_path}.required_tensor_shapes",
+        issues,
+    )
+    if not shapes:
+        issues.append(f"{checkpoint_path}.required_tensor_shapes: must not be empty")
+    for tensor_name, dimensions in shapes.items():
+        tensor_path = f"{checkpoint_path}.required_tensor_shapes.{tensor_name}"
+        if not isinstance(tensor_name, str) or not tensor_name:
+            issues.append(
+                f"{checkpoint_path}.required_tensor_shapes: tensor names must be strings"
+            )
+            continue
+        if valid_prefixes and not any(
+            tensor_name.startswith(prefix) for prefix in valid_prefixes
+        ):
+            issues.append(f"{tensor_path}: tensor does not match a required key prefix")
+        if (
+            not isinstance(dimensions, list)
+            or not dimensions
+            or any(
+                isinstance(dimension, bool)
+                or not isinstance(dimension, int)
+                or dimension <= 0
+                for dimension in dimensions
+            )
+        ):
+            issues.append(f"{tensor_path}: expected positive integer dimensions")
 
 
 def _exact_values(
@@ -538,7 +656,11 @@ def _validate_tokenizer(
         )
 
 
-def _validate_repository_assets(root: Mapping[str, Any], issues: list[str]) -> None:
+def _validate_repository_assets(
+    root: Mapping[str, Any],
+    revisions: Mapping[str, Any],
+    issues: list[str],
+) -> None:
     assets = _list(root.get("repository_assets"), "repository_assets", issues)
     kinds: set[object] = set()
     ids: set[object] = set()
@@ -556,11 +678,17 @@ def _validate_repository_assets(root: Mapping[str, Any], issues: list[str]) -> N
         _positive_int(asset.get("size_bytes"), f"{base}.size_bytes", issues)
         _sha256(asset.get("sha256"), f"{base}.sha256", issues)
         if kind == "patch":
+            applies_to_revision = asset.get("applies_to_revision")
             _git_commit(
-                asset.get("applies_to_revision"),
+                applies_to_revision,
                 f"{base}.applies_to_revision",
                 issues,
             )
+            if applies_to_revision != revisions.get("focalnet_dino"):
+                issues.append(
+                    f"{base}.applies_to_revision: must match "
+                    "revisions.focalnet_dino"
+                )
         if "l4_validated_sha256" in asset:
             _sha256(
                 asset.get("l4_validated_sha256"),
