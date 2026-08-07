@@ -1,0 +1,50 @@
+{
+  "archive": {
+    "file": "vision-model-serving-l4-fp32-20260807.tar.gz",
+    "sha256": "5a1311b121edd6c03feb279e5aa7170be5a545d859a1e1fc2f70fc32252f097f"
+  },
+  "artifacts": {
+    "focalnet_dino_finetuned_sha256": "67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4",
+    "focalnet_dino_inference_sha256": "a7fed981c7309d12c19532624e148b45087462c56568797cb62b60055bb62f04",
+    "mmbcd_sha256": "2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4"
+  },
+  "commits": {
+    "dino": "7c446df5b9f45747937fb0d72314eb9f7b66930a",
+    "focalnet_dino": "23901e021dc6ec8f66bad47983f45a25574452cc",
+    "mmbcd": "14ac5e099c79253b01e0885d2ebefa6f86cfd8f0",
+    "roberta_tokenizer": "e2da8e2f811d1448a5b465c236feacd80ffbac7b"
+  },
+  "dicom": {
+    "series_uid": "1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547",
+    "sha256": "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c",
+    "preprocessed_array_sha256": "97fa0f80a696ce7f822c1681a8c3f7c072da9262b2bd91239c9f1637eaf68552"
+  },
+  "detector": {
+    "prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+    "median_forward_ms": 234.62860107421875,
+    "peak_allocated_mib": 1242.1689453125,
+    "top_score": 0.0064186654053628445,
+    "pre_nms_count": 300,
+    "post_nms_count": 8
+  },
+  "mmbcd": {
+    "input_tensor_sha256": "89cda9694e3696f63eb70706a6ae4cc2dd16e9be214f27ba6f106479eac90155",
+    "prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+    "logits": [3.582984209060669, -4.886208534240723],
+    "probabilities": [0.9997902512550354, 0.0002097902470268309],
+    "median_forward_ms": 91.25580596923828,
+    "peak_allocated_mib": 870.5048828125,
+    "peak_reserved_mib": 948.0
+  },
+  "runtime": {
+    "gpu": "NVIDIA L4",
+    "compute_capability": "8.9",
+    "driver": "580.173.02",
+    "python": "3.12.11",
+    "torch": "2.8.0+cu128",
+    "torchvision": "0.23.0+cu128",
+    "transformers": "5.14.1",
+    "cuda_runtime": "12.8",
+    "cuda_toolkit": "12.8.0"
+  }
+}

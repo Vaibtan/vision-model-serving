@@ -1,0 +1,15 @@
+.agents/
+
+__pycache__/
+*.py[cod]
+
+# Model and validation artifacts stay outside Git. Their hashes and manifests
+# are tracked under docs/validation instead.
+*.pt
+*.pth
+*.so
+vision-model-serving-l4-fp32-*.tar.gz
+vision-model-serving-l4-fp32-*.tar.gz.sha256
+artifacts/
+fixtures/
+validation-evidence/
