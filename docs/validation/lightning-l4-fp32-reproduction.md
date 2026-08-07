@@ -51,6 +51,11 @@ values as calibrated confidence.
 | timm | 1.0.28 |
 | Transformers | 5.14.1 |
 
+The machine-readable lane is
+[`config/l4-fp32-environment.json`](../../config/l4-fp32-environment.json). It
+pins every Python distribution, source revision, patch hash, CUDA/device fact,
+native-operator reference, and success marker used below.
+
 MMBCD's released environment used PyTorch 2.1.2 and Transformers 4.37.0. The
 run below establishes serving compatibility with the newer stack through exact
 state-dict loading, pinned token IDs, and deterministic golden outputs. It is
@@ -108,6 +113,19 @@ LIGHTNING L4 EVIDENCE ARCHIVE PASSED
 
 The archive and sidecar are intentionally ignored by Git. Track the small
 reference JSON, scripts, patches, and documentation instead.
+
+The verifier never extracts archive members. It rejects traversal paths,
+backslashes, links, special files, duplicates, excessive members and oversized
+members; checks all 23 required evidence files; validates source commits,
+artifact/native-operator/patch hashes and package inventories; cross-checks
+stored bundle and visual hashes against their manifests; and verifies the raw
+detector shapes/counts and MMBCD logits/probabilities. These are explicit typed
+failures, not Python `assert` statements that disappear under `python -O`.
+Pass `--json` for a machine-readable summary.
+
+This command proves only the downloaded CPU-verifiable evidence. It does not
+emit any environment, strict-load, native-operator or live-inference success
+marker, and therefore cannot be mistaken for a new GPU rerun.
 
 ## 2. Activate Lightning's existing environment
 
@@ -230,19 +248,22 @@ git -C "${DINO_REPO}" checkout --detach \
   7c446df5b9f45747937fb0d72314eb9f7b66930a
 ```
 
-Install the exact non-PyTorch packages from one pinned file. This avoids the
-failure encountered when unpinned `opencv-python` installed NumPy 2.5.1 and
-broke SciPy, pandas, matplotlib, and scikit-learn compatibility.
+Install the exact Python packages from one pinned file. The file includes the
+PyTorch CUDA 12.8 wheel index and exact PyTorch and torchvision builds. This
+avoids the failure encountered when unpinned `opencv-python` installed NumPy
+2.5.1 and broke SciPy, pandas, matplotlib, and scikit-learn compatibility.
 
 ```bash
 python -m pip install -r "${VMS_REPO}/requirements/l4-validation.txt"
 python -m pip check
 ```
 
-Verify the complete runtime:
+Verify the complete runtime and write a non-sensitive, deterministic report:
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/00_probe_environment.py"
+mkdir -p "${STUDIO_ROOT}/environment-snapshots"
+python "${VMS_REPO}/scripts/l4_validation/00_probe_environment.py" \
+  --output "${STUDIO_ROOT}/environment-snapshots/l4-fp32-report.json"
 ```
 
 Expected marker:
@@ -250,6 +271,11 @@ Expected marker:
 ```text
 LIGHTNING L4 ENVIRONMENT PASSED
 ```
+
+On a CPU-only host, `--allow-cpu` skips only CUDA, native-operator, and device
+gates. It emits `L4 GPU GATES SKIPPED`, never the L4 success marker. Python or
+dependency mismatches still fail, so the option cannot turn an incompatible
+host into a false pass.
 
 Save the post-install environment:
 
@@ -298,46 +324,35 @@ backbone, as proven by the strict-load gate below.
 
 ## 6. Patch and build MultiScaleDeformableAttention
 
-Apply the two reviewed serving-compatibility patches. The first replaces the
-deprecated dispatch argument used by the PyTorch 2.8 extension build. The
-second removes the training-only FocalNet backbone preload; the complete task
-checkpoint is strict-loaded afterward.
+Check both reviewed patches against the pinned upstream commit before changing
+the checkout. The first replaces the deprecated dispatch argument used by the
+PyTorch 2.8 extension build. The second removes the training-only FocalNet
+backbone preload; the complete task checkpoint is strict-loaded afterward.
 
 ```bash
-cd "${FOCAL_REPO}"
-
-for patch in \
-  "${VMS_REPO}/patches/focalnet-pytorch-2.8-compat.patch" \
-  "${VMS_REPO}/patches/focalnet-serving-no-backbone-preload.patch"
-do
-  if git apply --check "${patch}"; then
-    git apply "${patch}"
-  elif git apply --reverse --check "${patch}"; then
-    echo "Already applied: ${patch}"
-  else
-    echo "Patch does not apply cleanly: ${patch}"
-    exit 1
-  fi
-done
-
-git diff --check
-git diff -- \
-  models/dino/backbone.py \
-  models/dino/ops/src/cuda/ms_deform_attn_cuda.cu
+python "${VMS_REPO}/scripts/l4_validation/prepare_focalnet.py" check \
+  --repo "${FOCAL_REPO}" \
+  --project-root "${VMS_REPO}" \
+  --spec "${VMS_REPO}/config/l4-fp32-environment.json"
 ```
 
-Build only for the L4's compute capability:
+Expected marker:
+
+```text
+FOCALNET PATCH CHECK PASSED
+```
+
+The build action applies any missing patch idempotently, rejects ambiguous
+source drift, runs `git diff --check`, and builds only for the L4's compute
+capability:
 
 ```bash
-cd "${FOCAL_REPO}/models/dino/ops"
-
 export CUDA_HOME="${CONDA_PREFIX}"
-export CUDACXX="${CUDA_HOME}/bin/nvcc"
-export PATH="${CUDA_HOME}/bin:${PATH}"
-export TORCH_CUDA_ARCH_LIST="8.9"
-export MAX_JOBS=4
-
-python setup.py build_ext --inplace
+python "${VMS_REPO}/scripts/l4_validation/prepare_focalnet.py" build \
+  --repo "${FOCAL_REPO}" \
+  --project-root "${VMS_REPO}" \
+  --spec "${VMS_REPO}/config/l4-fp32-environment.json" \
+  --max-jobs 4
 ```
 
 Import `torch` before the extension so `libc10.so` and the other PyTorch native
@@ -545,6 +560,14 @@ That is a lower bound, not API latency: it excludes DICOM decode/preprocessing,
 host/device transfers, model loading and unloading, switching, postprocessing,
 queueing, and serialization. The separately measured peak-memory values are not
 a measurement of simultaneous residency and must not be added as if they were.
+
+Later repository-owned adapters compare their numeric records through
+`vision_model_serving.validation.compare_box_records`. The interface performs
+deterministic permutation-aware matching with an explicit absolute tolerance,
+reports unmatched records and maximum absolute difference, and rejects
+non-finite values. Use it only where output order is semantically irrelevant;
+the detector-to-MMBCD top-300, strict NMS and top-eight ordering contract remains
+an exact ordered assertion.
 
 ## 14. Collect a new evidence archive
 

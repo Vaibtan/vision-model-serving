@@ -1,0 +1,313 @@
+{
+  "schema_version": 1,
+  "manifest_id": "vision-model-serving-l4-fp32-20260807",
+  "evidence": {
+    "archive": {
+      "filename": "vision-model-serving-l4-fp32-20260807.tar.gz",
+      "sha256": "5a1311b121edd6c03feb279e5aa7170be5a545d859a1e1fc2f70fc32252f097f"
+    },
+    "reference_result": {
+      "path": "docs/validation/reference-l4-fp32-20260807.json",
+      "sha256": "341703e7a924e665d2e561ba356b65f0b536538fc76b260e158bec0624594b55"
+    },
+    "validation_boundary": "One public CBIS-DDSM fixture proves deterministic FP32 pipeline execution, not medical accuracy, calibration, or clinical fitness."
+  },
+  "pipeline": {
+    "kind": "detector_then_classifier",
+    "stages": [
+      "focalnet-dino-detector",
+      "mmbcd-classifier"
+    ],
+    "proposal_contract": {
+      "format": "normalized_cxcywh_confidence",
+      "detector_output_count": 300,
+      "nms_iou_threshold": 0.1,
+      "nms_comparison": "strictly_greater",
+      "classifier_roi_count": 8,
+      "insufficient_proposal_policy": "duplicate_existing",
+      "empty_proposal_policy": "fail_closed"
+    }
+  },
+  "revisions": {
+    "focalnet_dino": "23901e021dc6ec8f66bad47983f45a25574452cc",
+    "mmbcd": "14ac5e099c79253b01e0885d2ebefa6f86cfd8f0",
+    "dino": "7c446df5b9f45747937fb0d72314eb9f7b66930a",
+    "roberta_tokenizer": "e2da8e2f811d1448a5b465c236feacd80ffbac7b"
+  },
+  "runtime_lane": {
+    "device": "NVIDIA L4",
+    "compute_capability": "8.9",
+    "driver": "580.173.02",
+    "python": "3.12.11",
+    "torch": "2.8.0+cu128",
+    "torchvision": "0.23.0+cu128",
+    "transformers": "5.14.1",
+    "numpy": "1.26.4",
+    "cuda_runtime": "12.8",
+    "cuda_toolkit": "12.8.0",
+    "precision": "float32",
+    "tf32": false
+  },
+  "artifacts": [
+    {
+      "id": "focalnet-dino-detector",
+      "role": "detector",
+      "filename": "focalnet-dino-finetuned.pth",
+      "size_bytes": 2731092364,
+      "sha256": "67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4",
+      "provenance": {
+        "source": "evaluator_supplied",
+        "custody": "external_read_only_mount",
+        "repository": "https://github.com/FocalNet/FocalNet-DINO",
+        "repository_revision": "23901e021dc6ec8f66bad47983f45a25574452cc"
+      },
+      "trust": {
+        "checksum_pinned": true,
+        "load_authorized": true,
+        "user_upload_allowed": false,
+        "deserialization": "cpu_map_location_weights_only_with_explicit_safe_globals"
+      },
+      "license": {
+        "source_code_status": "verified",
+        "source_code_spdx": "Apache-2.0",
+        "weights_status": "unknown",
+        "weights_spdx": null,
+        "redistribution_status": "not_authorized",
+        "note": "Evaluator custody permits local validation; redistribution rights for the supplied fine-tuned weights were not provided."
+      },
+      "checkpoint": {
+        "container": "wrapped_state_dict",
+        "top_level_keys": [
+          "model",
+          "optimizer",
+          "lr_scheduler",
+          "epoch",
+          "args"
+        ],
+        "state_dict_key": "model",
+        "key_normalization": "none",
+        "state_tensor_count": 839,
+        "tensor_element_count": 228987809,
+        "tensor_bytes": 915951236,
+        "dtypes": [
+          "float32"
+        ],
+        "strict_load_verified": true,
+        "strict_load_evidence": "archive detector inference manifest and strict-load transcript",
+        "serving_backbone_embedded": true,
+        "required_key_groups": {
+          "backbone": 478,
+          "transformer": 296,
+          "bbox_embed": 36,
+          "input_proj": 16,
+          "class_embed": 12,
+          "label_enc": 1
+        },
+        "required_key_prefixes": {
+          "backbone": "backbone.",
+          "transformer": "transformer.",
+          "bbox_embed": "bbox_embed.",
+          "input_proj": "input_proj.",
+          "class_embed": "class_embed.",
+          "label_enc": "label_enc."
+        },
+        "required_tensor_shapes": {
+          "class_embed.0.weight": [
+            1,
+            256
+          ],
+          "class_embed.0.bias": [
+            1
+          ]
+        },
+        "output_contract": {
+          "pred_logits_shape": [
+            1,
+            900,
+            1
+          ],
+          "pred_boxes_shape": [
+            1,
+            900,
+            4
+          ],
+          "box_format": "normalized_cxcywh",
+          "num_select": 300,
+          "internal_nms_iou_threshold": -1
+        },
+        "derived_inference_checkpoint": {
+          "filename": "focalnet-dino-inference.pth",
+          "sha256": "a7fed981c7309d12c19532624e148b45087462c56568797cb62b60055bb62f04",
+          "state_tensor_count": 839,
+          "retention": "not_retained_in_repository"
+        }
+      },
+      "semantics": {
+        "status": "unverified",
+        "class_names": null,
+        "decision_threshold": null,
+        "medical_validation": false,
+        "note": "The single detector logit is an ROI proposal score. It is not a benign or malignant label and has no validated display threshold."
+      }
+    },
+    {
+      "id": "mmbcd-classifier",
+      "role": "classifier",
+      "filename": "mmbcd_best.pt",
+      "size_bytes": 587689457,
+      "sha256": "2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4",
+      "provenance": {
+        "source": "evaluator_supplied",
+        "custody": "external_read_only_mount",
+        "repository": "https://github.com/adsbansal/MMBCD",
+        "repository_revision": "14ac5e099c79253b01e0885d2ebefa6f86cfd8f0"
+      },
+      "trust": {
+        "checksum_pinned": true,
+        "load_authorized": true,
+        "user_upload_allowed": false,
+        "deserialization": "cpu_map_location_weights_only"
+      },
+      "license": {
+        "source_code_status": "unknown",
+        "source_code_spdx": null,
+        "weights_status": "unknown",
+        "weights_spdx": null,
+        "redistribution_status": "not_authorized",
+        "note": "No license file or weight redistribution grant was verified for the pinned MMBCD source and supplied checkpoint."
+      },
+      "checkpoint": {
+        "container": "raw_state_dict",
+        "state_dict_key": null,
+        "key_normalization": "strip_module_prefix",
+        "module_prefixed_key_count": 375,
+        "state_tensor_count": 375,
+        "tensor_element_count": 147177606,
+        "tensor_bytes": 588710432,
+        "dtypes": [
+          "float32",
+          "int64"
+        ],
+        "dtype_counts": {
+          "float32": 373,
+          "int64": 2
+        },
+        "strict_load_verified": true,
+        "strict_load_evidence": "archive MMBCD inference manifest and checkpoint audit",
+        "checkpoint_aliases_equal": true,
+        "required_key_groups": {
+          "image_encoder": 150,
+          "image_projection": 7,
+          "text_encoder": 201,
+          "text_projection": 7,
+          "cross_attention": 4,
+          "classifier": 2
+        },
+        "required_key_prefixes": {
+          "image_encoder": "image_encoder.",
+          "image_projection": "img_fc_layer.",
+          "text_encoder": "text_encoder.",
+          "text_projection": "txt_fc_layer.",
+          "cross_attention": "attention.",
+          "classifier": "model_fc2."
+        },
+        "required_tensor_shapes": {
+          "model_fc2.weight": [
+            2,
+            768
+          ],
+          "model_fc2.bias": [
+            2
+          ],
+          "img_fc_layer.1.weight": [
+            256,
+            384
+          ],
+          "txt_fc_layer.1.weight": [
+            256,
+            768
+          ]
+        },
+        "output_contract": {
+          "logits_shape": [
+            1,
+            2
+          ],
+          "fused_embeddings_shape": [
+            1,
+            768
+          ],
+          "roi_count": 8,
+          "text_max_length": 90
+        }
+      },
+      "semantics": {
+        "status": "unverified",
+        "class_names": null,
+        "decision_threshold": null,
+        "medical_validation": false,
+        "note": "Pinned upstream evaluation code treats class index 1 as cancer, but checkpoint metadata does not independently verify that mapping and no calibrated decision threshold was supplied."
+      }
+    }
+  ],
+  "tokenizer": {
+    "id": "roberta-base",
+    "repository": "FacebookAI/roberta-base",
+    "revision": "e2da8e2f811d1448a5b465c236feacd80ffbac7b",
+    "local_files_only": true,
+    "files": [
+      {
+        "filename": "config.json",
+        "size_bytes": 481,
+        "sha256": "ef0185e2aae6e06c5f105a285006952c340e20c7dbf43c86ec82601b13fc45e9"
+      },
+      {
+        "filename": "merges.txt",
+        "size_bytes": 456318,
+        "sha256": "1ce1664773c50f3e0cc8842619a93edc4624525b728b188a9e0be33b7726adc5"
+      },
+      {
+        "filename": "tokenizer.json",
+        "size_bytes": 1355863,
+        "sha256": "847bbeab6174d66a88898f729d52fa8d355fafe1bea101cf960dd404581df70e"
+      },
+      {
+        "filename": "tokenizer_config.json",
+        "size_bytes": 25,
+        "sha256": "994f46754c5bf4014f1aa92d34b1374319c3a6b3f702105cd5b742beaecd18ce"
+      },
+      {
+        "filename": "vocab.json",
+        "size_bytes": 898823,
+        "sha256": "9e7f63c2d15d666b52e21d250d2e513b87c9b713cfa6987a82ed89e5e6e50655"
+      }
+    ]
+  },
+  "repository_assets": [
+    {
+      "id": "focalnet-dino-config",
+      "kind": "config",
+      "path": "config_cfg.py",
+      "size_bytes": 2583,
+      "sha256": "6bf3f0bee489209195879b71fbcff6d5f0368a8488e8cf533366e325fbc403db",
+      "l4_validated_sha256": "e40f26be40a5aaccb149ee09534ac61975c76df150bb93ef475c0a6b29af1f24",
+      "equivalence": "The repository copy adds one trailing LF; all configuration bytes before that LF match the L4-validated copy."
+    },
+    {
+      "id": "focalnet-pytorch-2.8-compat",
+      "kind": "patch",
+      "path": "patches/focalnet-pytorch-2.8-compat.patch",
+      "size_bytes": 1406,
+      "sha256": "10718bf12f2ac98c15014f14a6578ccb97f604a3f46a6db8724f4c9aa34f319c",
+      "applies_to_revision": "23901e021dc6ec8f66bad47983f45a25574452cc"
+    },
+    {
+      "id": "focalnet-serving-no-backbone-preload",
+      "kind": "patch",
+      "path": "patches/focalnet-serving-no-backbone-preload.patch",
+      "size_bytes": 510,
+      "sha256": "553c4b282201499e68558c6867275a6e429e72cec1ebdb482887a5a850955ad5",
+      "applies_to_revision": "23901e021dc6ec8f66bad47983f45a25574452cc"
+    }
+  ]
+}

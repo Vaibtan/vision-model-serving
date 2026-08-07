@@ -10,6 +10,6 @@ __pycache__/
 *.so
 vision-model-serving-l4-fp32-*.tar.gz
 vision-model-serving-l4-fp32-*.tar.gz.sha256
-artifacts/
+/artifacts/
 fixtures/
 validation-evidence/
