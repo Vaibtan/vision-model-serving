@@ -29,3 +29,8 @@ and import validation, offline strict loads, and CPU-only skip semantics:
 python scripts/l4_validation/00_probe_environment.py
 python scripts/l4_validation/prepare_focalnet.py --help
 ```
+
+The repository-owned [DICOM canonicalization module](docs/dicom-canonicalization.md)
+defines the accepted pixel formats, resource limits, preprocessing order,
+sanitized metadata, typed failures, and reversible original-to-canonical
+geometry used by downstream detector adapters.
