@@ -43,3 +43,8 @@ The [MMBCD classifier adapter](docs/classifier-adapter.md) defines the exact
 eight-crop and label-free prompt contract, checksum-pinned offline tokenizer,
 strict local-source model reconstruction, raw result semantics, and archived
 golden-hash validation boundary.
+
+The [single-residency accelerator runtime](docs/single-residency-runtime.md)
+serializes model lifecycle and inference, proves old residents are unreachable
+before switches succeed, records allocated/reserved/peak CUDA memory, and
+provides the repeated real-model NVIDIA L4 acceptance command.

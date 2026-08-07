@@ -114,11 +114,13 @@ output bundle and reproduce prediction SHA-256
 `43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b`
 from its logits and fused embedding.
 
-This checkout still cannot perform a fresh classifier forward pass because it
-does not contain:
+The checkpoint is intentionally outside this checkout. The sibling read-only
+artifact directory contains `mmbcd_best.pt` at exactly 587,689,457 bytes, and
+its SHA-256 was rechecked as
+`2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4`.
+This workstation still cannot perform a fresh classifier forward pass because
+it does not contain:
 
-- `mmbcd_best.pt`, exactly 587,689,457 bytes, SHA-256
-  `2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4`;
 - a DINO checkout at
   `7c446df5b9f45747937fb0d72314eb9f7b66930a`;
 - an MMBCD checkout at
@@ -127,9 +129,9 @@ does not contain:
 
 The evidence archive intentionally contains result bundles rather than the
 unlicensed checkpoint or source trees. Unit tests and archived-byte hash
-reproduction are not a fresh model run. Once the missing inputs are mounted,
-the success gate remains `REAL DICOM MMBCD INFERENCE PASSED` with an exact
-prediction-hash match.
+reproduction are not a fresh model run. Once the external checkpoint, pinned
+sources, and L4 environment are mounted together, the success gate remains
+`REAL DICOM MMBCD INFERENCE PASSED` with an exact prediction-hash match.
 
 Run locally available coverage with:
 
