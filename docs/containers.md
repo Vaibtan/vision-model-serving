@@ -135,3 +135,7 @@ docker history --no-trunc vision-model-serving-executor:local
 Image history and files must contain neither checkpoint filename, public input
 hash, clinical text, evidence-archive name, nor a mounted host path. Native
 `.so` files are expected; model `.pt` and `.pth` files are not.
+
+The clean-build, profile-isolation, golden-smoke, benchmark, image-inspection,
+and cleanup results are captured in the
+[bounded L4 validation record](validation/container-l4-20260809.json).
