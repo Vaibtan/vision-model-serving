@@ -1,7 +1,7 @@
 # Vision Model Serving
 
-This repository defines and validates the inference pipeline that will underpin
-the planned Django service and containerized deployment.
+This repository defines and validates the inference pipeline and its CPU-only
+Django interface. Containerized deployment remains a separate delivery step.
 
 For detailed task requirements and resource links, see [ASSIGNMENT.md](ASSIGNMENT.md).
 
@@ -69,4 +69,32 @@ without importing CUDA into web or RQ worker processes:
 
 ```powershell
 uv run --extra gateway python -m unittest tests.test_rq_execution_gateway -v
+```
+
+The Django/DRF adapter exposes multipart prediction submission, polling,
+result retrieval, model inventory, liveness, fail-closed readiness, OpenAPI,
+and stable sanitized errors without importing CUDA into the web process:
+
+```powershell
+uv sync --extra gateway --extra web
+$env:PYTHONPATH = "src"
+$env:VMS_REDIS_URL = "redis://127.0.0.1:6379/0"
+$env:VMS_JOB_ROOT = ".jobs"
+uv run --extra gateway --extra web python manage.py check
+uv run --extra gateway --extra web python manage.py runserver 127.0.0.1:8000
+```
+
+`/readyz` intentionally remains unavailable until Redis, an RQ worker, and the
+GPU executor's artifact/device/operator report are all available. `/metrics`
+is a reserved integration point and returns a stable unavailable response
+until the observability implementation lands.
+
+The Django acceptance program requires a real Redis server and the
+checksum-pinned public DICOM; it does not substitute fakeredis or a synthetic
+image:
+
+```powershell
+$env:VMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
+$env:VMS_TEST_DICOM_PATH = "C:\fixtures\cbis-ddsm-1-1.dcm"
+uv run --extra gateway --extra web python tests/real_infra/test_django_api.py
 ```

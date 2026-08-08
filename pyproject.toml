@@ -16,6 +16,11 @@ gateway = [
     "redis==5.2.1",
     "rq==2.10.0",
 ]
+web = [
+    "django==5.2.6",
+    "djangorestframework==3.16.1",
+    "drf-spectacular==0.28.0",
+]
 
 [dependency-groups]
 dev = [
