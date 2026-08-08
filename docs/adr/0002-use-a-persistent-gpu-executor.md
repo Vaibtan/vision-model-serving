@@ -20,6 +20,23 @@ approximately 15 seconds were instead spent reconstructing and re-verifying
 the pipeline in the per-job work-horse, while the pipeline lifecycle took
 24.896 seconds. RQ's fork was not the material latency source.
 
+## Why pair RQ with a separate executor
+
+Model residency is deliberately owned by the GPU executor rather than by the
+queue worker. Once CUDA and both models live behind that process boundary,
+neither RQ nor Celery determines warm inference latency; the queue worker only
+delivers a job and waits for the executor. Keeping RQ therefore preserves its
+smaller job-lifecycle surface and per-job work-horse isolation without paying
+per-job model construction.
+
+A concurrency-one Celery worker with resident models would also be technically
+possible, but it would couple CUDA lifetime to Celery's pool lifecycle and
+reintroduce orchestration features this single-queue service does not use. An
+RQ `SimpleWorker` was also rejected because same-process execution gives up the
+standard worker's work-horse isolation and changes heartbeat and hard-failure
+behavior. The selected split keeps queue lifecycle and GPU lifecycle explicit
+and independently restartable.
+
 ## Consequences
 
 - RQ remains the only durable job-lifecycle authority; the Unix socket is a
