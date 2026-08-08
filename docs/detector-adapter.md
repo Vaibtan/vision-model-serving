@@ -124,6 +124,6 @@ Run the locally available coverage with:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m unittest tests.test_detector_adapter -v
-python -m unittest discover -s tests -v
+uv run python -m unittest tests.test_detector_adapter -v
+uv run python -m unittest discover -s tests -v
 ```

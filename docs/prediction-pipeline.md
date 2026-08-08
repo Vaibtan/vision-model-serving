@@ -8,9 +8,11 @@ result = pipeline.infer(case, mode)
 ```
 
 The module decodes the caller-owned stream, executes the detector through the
-single-residency runtime, and optionally switches to MMBCD. HTTP workers, the
-reference CLI, and tests consume the same interface; none reimplement model
-ordering, ROI selection, or result shaping.
+accelerator lifecycle runtime, and optionally executes MMBCD. That runtime can
+strictly switch residents; the deployed executor enables its accepted
+two-resident retention policy. HTTP workers, the reference CLI, and tests
+consume the same interface; none reimplement model ordering, ROI selection, or
+result shaping.
 
 ## Input and mode contract
 
@@ -67,7 +69,7 @@ export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-python -m vision_model_serving.pipeline /path/to/case.dcm \
+uv run python -m vision_model_serving.pipeline /path/to/case.dcm \
   --mode full \
   --clinical-history-file /path/to/history.txt \
   --artifact-root /models \
@@ -84,14 +86,14 @@ temporary request file is created by this command.
 
 ## Validation
 
-The CPU suite exercises both modes through decoder/runtime fakes, JSON
-serialization, typed failures, success/failure cleanup, and the actual
-single-residency state machine:
+The CPU suite exercises both modes through decoder/runtime contract adapters,
+JSON serialization, typed failures, success/failure cleanup, and the actual
+accelerator lifecycle state machine:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m unittest tests.test_prediction_pipeline -v
-python -m unittest discover -s tests -v
+uv run python -m unittest tests.test_prediction_pipeline -v
+uv run python -m unittest discover -s tests -v
 ```
 
 The NVIDIA L4 gate uses the real public DICOM, external weights, pinned source
@@ -102,7 +104,7 @@ export PYTHONPATH="$PWD/src"
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-python scripts/l4_validation/17_validate_prediction_pipeline.py --cycles 2
+uv run python scripts/l4_validation/17_validate_prediction_pipeline.py --cycles 2
 ```
 
 The required terminal marker is `PREDICTION PIPELINE L4 PASSED`. This validates

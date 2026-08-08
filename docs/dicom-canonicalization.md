@@ -124,6 +124,6 @@ Run the focused and full suites with:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m unittest tests.test_dicom_canonicalization -v
-python -m unittest discover -s tests -v
+uv run python -m unittest tests.test_dicom_canonicalization -v
+uv run python -m unittest discover -s tests -v
 ```

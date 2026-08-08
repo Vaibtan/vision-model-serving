@@ -13,10 +13,10 @@ localhost:8000 -> Gunicorn/Django -> Redis -> standard RQ worker
                                       persistent L4 executor
 ```
 
-The web and RQ services use the 145 MB CPU image. The executor uses the CUDA
-image and is the only service with an NVIDIA device, checkpoints, tokenizer,
-or model-source mounts. Redis is reachable only on the internal Compose
-network and runs with RDB and AOF persistence disabled.
+The web and RQ services share the roughly 424 MB CPU image. The executor uses
+the CUDA image and is the only service with an NVIDIA device, checkpoints,
+tokenizer, or model-source mounts. Redis is reachable only on the internal
+Compose network and runs with RDB and AOF persistence disabled.
 
 ## Build and asset boundary
 
