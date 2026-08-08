@@ -123,3 +123,12 @@ SINGLE RESIDENCY L4 PASSED
 The generated runtime manifest records each stage's load/inference/switch
 timings and allocated/reserved/peak memory. This is a serving correctness and
 lifecycle smoke test on one public fixture, not medical validation.
+
+The two-cycle gate passed on an NVIDIA L4 on 2026-08-08. The run completed four
+model loads, three switches, and three unloads with zero failures. Both detector
+cycles reproduced prediction SHA-256
+`4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5`, and
+both classifier cycles reproduced
+`43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b`.
+The exact generated record is committed at
+`docs/validation/single-residency-l4-20260808.json`.
