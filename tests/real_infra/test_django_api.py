@@ -71,6 +71,8 @@ def main() -> int:
                 raise AssertionError("readiness did not verify the real Redis server")
             if readiness_body.get("checks", {}).get("rq_worker") is not False:
                 raise AssertionError("readiness claimed an absent RQ worker")
+            if "rq_worker_unavailable" not in readiness_body.get("reasons", []):
+                raise AssertionError("readiness omitted its bounded worker reason")
 
             models = client.get("/api/v1/models")
             _assert_status(models.status_code, 200, models.content)

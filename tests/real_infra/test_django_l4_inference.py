@@ -27,6 +27,7 @@ def main() -> int:
     executor_socket = Path(_required_environment("VMS_TEST_EXECUTOR_SOCKET")).resolve()
     metrics_dir = Path(_required_environment("VMS_TEST_METRICS_DIR")).resolve()
     executor_log = Path(_required_environment("VMS_TEST_EXECUTOR_LOG")).resolve()
+    rq_worker_log = Path(_required_environment("VMS_TEST_RQ_WORKER_LOG")).resolve()
     dicom = Path(_required_environment("VMS_TEST_DICOM_PATH")).read_bytes()
     observed_hash = hashlib.sha256(dicom).hexdigest()
     if observed_hash != EXPECTED_DICOM_SHA256:
@@ -179,6 +180,13 @@ def main() -> int:
         raise AssertionError(
             "executor did not emit one structured event per prediction"
         )
+    for field in (
+        "detector_lifecycle",
+        "detector_cuda_allocated_bytes",
+        "detector_cuda_reserved_bytes",
+    ):
+        if any(field not in event for event in prediction_events):
+            raise AssertionError(f"structured prediction logs omitted {field}")
     serialized_events = json.dumps(prediction_events, sort_keys=True)
     for private_value in (
         prediction_id,
@@ -190,6 +198,22 @@ def main() -> int:
         if private_value in serialized_events:
             raise AssertionError("private request content leaked into structured logs")
 
+    queue_events = [
+        json.loads(line)
+        for line in rq_worker_log.read_text(encoding="utf-8").splitlines()
+        if line.startswith("{") and '"event":"queue_started"' in line
+    ]
+    if len(queue_events) != 2 or any(
+        "queue_wait_ms" not in event for event in queue_events
+    ):
+        raise AssertionError("RQ did not emit bounded queue-wait events")
+    serialized_queue_events = json.dumps(queue_events, sort_keys=True)
+    if (
+        prediction_id in serialized_queue_events
+        or CLINICAL_HISTORY in serialized_queue_events
+    ):
+        raise AssertionError("private identifiers leaked into queue logs")
+
     print(
         json.dumps(
             {
@@ -200,6 +224,7 @@ def main() -> int:
                 "readiness": readiness.status_code,
                 "redis": redis.info("server")["redis_version"],
                 "structured_prediction_events": len(prediction_events),
+                "structured_queue_events": len(queue_events),
                 "warm_sync_http_seconds": warm_elapsed,
             },
             indent=2,

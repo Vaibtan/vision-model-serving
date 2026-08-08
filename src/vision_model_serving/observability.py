@@ -139,6 +139,12 @@ def record_dicom(outcome: str) -> None:
 def record_queue_wait(wait_seconds: float) -> None:
     _QUEUE_WAIT.observe(max(0.0, wait_seconds))
     _CPU_RSS.labels("worker").set(_rss_bytes())
+    _event(
+        "queue_started",
+        outcome="started",
+        queue_wait_ms=round(max(0.0, wait_seconds) * 1_000.0, 3),
+        rss_bytes=_rss_bytes(),
+    )
 
 
 def record_prediction_success(result: PredictionResult) -> None:
@@ -188,6 +194,18 @@ def record_prediction_success(result: PredictionResult) -> None:
         ),
         classifier_rois=roi_count,
         roi_fallbacks=padded,
+        detector_lifecycle=_lifecycle_event(result.timings.detector.runtime),
+        classifier_lifecycle=(
+            None if classifier is None else _lifecycle_event(classifier.runtime)
+        ),
+        detector_cuda_allocated_bytes=(result.timings.detector.memory.allocated_bytes),
+        detector_cuda_reserved_bytes=(result.timings.detector.memory.reserved_bytes),
+        classifier_cuda_allocated_bytes=(
+            None if classifier is None else classifier.memory.allocated_bytes
+        ),
+        classifier_cuda_reserved_bytes=(
+            None if classifier is None else classifier.memory.reserved_bytes
+        ),
         decode_ms=round(result.timings.decode_ms, 3),
         detector_ms=round(result.timings.detector.runtime.inference_ms, 3),
         classifier_ms=(
@@ -205,7 +223,7 @@ def record_prediction_failure(
     exception_class = type(error).__name__
     _PREDICTIONS.labels(_mode(mode), "failed").inc()
     _LIFECYCLE.labels("unknown", "failure").inc()
-    if "outofmemory" in exception_class.lower():
+    if "outofmemory" in f"{exception_class}{error}".replace("_", "").lower():
         _OOM.inc()
     _CPU_RSS.labels("executor").set(_rss_bytes())
     _event(
@@ -225,6 +243,7 @@ def record_executor_cleanup(resident_models: tuple[str, ...]) -> None:
             "mmbcd-classifier": "classifier",
         }.get(model_id)
         if model is not None:
+            _LIFECYCLE.labels(model, "unload").inc()
             _LIFECYCLE.labels(model, "cleanup").inc()
             cleaned += 1
     _event("executor_cleanup", outcome="succeeded", resident_models=cleaned)
@@ -238,6 +257,14 @@ def _http_outcome(status_code: int) -> str:
     if status_code >= 500:
         return "server_error"
     return "other"
+
+
+def _lifecycle_event(runtime: object) -> str:
+    if bool(getattr(runtime, "reused", False)):
+        return "reuse"
+    if float(getattr(runtime, "switch_ms", 0.0)) > 0:
+        return "switch"
+    return "load"
 
 
 def _mode(value: PredictionMode | None) -> str:
