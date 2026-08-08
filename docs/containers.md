@@ -27,6 +27,9 @@ attention for compute capability 8.9. `FORCE_CUDA=1` only bypasses upstream's
 build-time device-presence check; the toolkit and runtime functional gates
 still fail closed. The final image receives the virtual environment,
 patched FocalNet source, and native operator, but not the compiler toolchain.
+CUDA wheel libraries already supplied by the pinned NVIDIA runtime base are
+removed before the cross-stage copy. The wheel-provided cuPTI, cuSPARSELt, and
+NCCL builds remain because the L4 runtime import/linkage probe requires them.
 
 The following inputs remain outside the build context and are mounted read-only
 at startup:

@@ -32,11 +32,18 @@ COPY patches ./patches
 COPY scripts/l4_validation/prepare_focalnet.py ./scripts/l4_validation/prepare_focalnet.py
 COPY src ./src
 ENV PYTHONPATH=/app/src
-RUN FORCE_CUDA=1 /app/.venv/bin/python scripts/l4_validation/prepare_focalnet.py build \
+RUN PATH=/app/.venv/bin:$PATH FORCE_CUDA=1 \
+    /app/.venv/bin/python scripts/l4_validation/prepare_focalnet.py build \
       --repo /opt/focalnet \
       --project-root /app \
       --spec /app/config/l4-fp32-environment.json \
       --max-jobs 4
+RUN find /app/.venv/lib/python3.12/site-packages/nvidia \
+      -mindepth 1 -maxdepth 1 -type d \
+      ! -name cuda_cupti ! -name cusparselt ! -name nccl \
+      -exec rm -rf {} + \
+    && PYTHONPATH=/opt/focalnet/models/dino/ops /app/.venv/bin/python -c \
+      "import MultiScaleDeformableAttention, torch; assert torch.version.cuda == '12.8'"
 
 FROM ${CUDA_RUNTIME_IMAGE} AS runtime
 
