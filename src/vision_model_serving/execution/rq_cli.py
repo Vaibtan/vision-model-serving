@@ -24,6 +24,9 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from redis import Redis
 
+    from vision_model_serving.observability import configure_structured_logging
+
+    configure_structured_logging(args.logging_level)
     redis_client = Redis.from_url(args.redis_url)
     redis_client.ping()
     worker = create_prediction_rq_worker(

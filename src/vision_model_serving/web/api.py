@@ -36,6 +36,7 @@ from vision_model_serving.execution import (
     ResultExpired,
     ResultNotReady,
 )
+from vision_model_serving.observability import record_dicom
 from vision_model_serving.pipeline import CaseInput, PredictionMode
 from vision_model_serving.pipeline.serialization import prediction_to_dict
 
@@ -121,7 +122,9 @@ class PredictionCollectionView(APIView):
         try:
             DicomCanonicalizer().decode(BytesIO(payload))
         except DicomCanonicalizationError as error:
+            record_dicom("rejected")
             return _dicom_error(request, error)
+        record_dicom("accepted")
         prediction_request = PredictionRequest(
             case=CaseInput(
                 BytesIO(payload),

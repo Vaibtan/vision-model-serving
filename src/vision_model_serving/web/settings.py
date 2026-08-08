@@ -89,3 +89,35 @@ VMS_EXECUTOR_SOCKET = Path(
 VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS = float(
     os.environ.get("VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS", "0.5")
 )
+VMS_METRICS_ENABLED = _environment_bool("VMS_METRICS_ENABLED")
+_metrics_dir = os.environ.get("VMS_METRICS_DIR", "").strip()
+VMS_METRICS_DIR = Path(_metrics_dir).resolve() if _metrics_dir else None
+if VMS_METRICS_DIR is not None:
+    os.environ.setdefault("PROMETHEUS_MULTIPROC_DIR", str(VMS_METRICS_DIR))
+VMS_METRICS_ALLOWED_NETWORKS = tuple(
+    item.strip()
+    for item in os.environ.get(
+        "VMS_METRICS_ALLOWED_NETWORKS",
+        "127.0.0.0/8,::1/128",
+    ).split(",")
+    if item.strip()
+)
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"message_only": {"format": "{message}", "style": "{"}},
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+            "formatter": "message_only",
+        }
+    },
+    "loggers": {
+        "vision_model_serving.telemetry": {
+            "handlers": ["console"],
+            "level": "INFO",
+            "propagate": False,
+        }
+    },
+}

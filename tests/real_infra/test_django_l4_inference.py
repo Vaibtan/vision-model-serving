@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+from io import BytesIO
 from pathlib import Path
 from time import monotonic, sleep
 
@@ -24,10 +25,26 @@ def main() -> int:
     redis_url = _required_environment("VMS_TEST_REDIS_URL")
     job_root = Path(_required_environment("VMS_TEST_JOB_ROOT")).resolve()
     executor_socket = Path(_required_environment("VMS_TEST_EXECUTOR_SOCKET")).resolve()
+    metrics_dir = Path(_required_environment("VMS_TEST_METRICS_DIR")).resolve()
+    executor_log = Path(_required_environment("VMS_TEST_EXECUTOR_LOG")).resolve()
     dicom = Path(_required_environment("VMS_TEST_DICOM_PATH")).read_bytes()
     observed_hash = hashlib.sha256(dicom).hexdigest()
     if observed_hash != EXPECTED_DICOM_SHA256:
         raise AssertionError("public DICOM fixture hash differs from the contract")
+
+    from pydicom import dcmread
+
+    dataset = dcmread(BytesIO(dicom), stop_before_pixels=True)
+    dicom_identifiers = tuple(
+        str(value)
+        for value in (
+            dataset.get("PatientID"),
+            dataset.get("PatientName"),
+            dataset.get("StudyInstanceUID"),
+            dataset.get("SOPInstanceUID"),
+        )
+        if value
+    )
 
     os.environ["DJANGO_SETTINGS_MODULE"] = "vision_model_serving.web.settings"
     os.environ["VMS_REDIS_URL"] = redis_url
@@ -35,6 +52,9 @@ def main() -> int:
     os.environ["VMS_EXECUTOR_SOCKET"] = str(executor_socket)
     os.environ["VMS_ALLOWED_HOSTS"] = "testserver,localhost"
     os.environ["VMS_SYNC_WAIT_SECONDS"] = "5"
+    os.environ["VMS_METRICS_ENABLED"] = "true"
+    os.environ["VMS_METRICS_DIR"] = str(metrics_dir)
+    os.environ["PROMETHEUS_MULTIPROC_DIR"] = str(metrics_dir)
 
     import django
 
@@ -111,6 +131,65 @@ def main() -> int:
     if dicom[128:256] in broker or CLINICAL_HISTORY.encode("utf-8") in broker:
         raise AssertionError("private request content leaked into Redis")
 
+    metrics = client.get("/metrics", REMOTE_ADDR="127.0.0.1")
+    _assert_status(metrics.status_code, 200, metrics.content)
+    metrics_text = metrics.content.decode("utf-8")
+    for sample in (
+        'vms_predictions_total{mode="full",outcome="succeeded"} 1.0',
+        'vms_predictions_total{mode="detection",outcome="succeeded"} 1.0',
+        'vms_model_lifecycle_total{event="load",model="detector"} 1.0',
+        'vms_cuda_memory_bytes{kind="allocated",model="detector"}',
+        'vms_executor_model_resident{model="focalnet-dino-detector"} 1.0',
+        "vms_queue_succeeded_total 2.0",
+    ):
+        if sample not in metrics_text:
+            raise AssertionError(f"required bounded metric is absent: {sample}")
+    forbidden = client.get("/metrics", REMOTE_ADDR="203.0.113.1")
+    _assert_status(forbidden.status_code, 403, forbidden.content)
+    request_id = forbidden.json()["error"]["request_id"]
+    metrics_after_forbidden = client.get("/metrics", REMOTE_ADDR="127.0.0.1")
+    _assert_status(
+        metrics_after_forbidden.status_code,
+        200,
+        metrics_after_forbidden.content,
+    )
+    metrics_text = metrics_after_forbidden.content.decode("utf-8")
+    for private_value in (
+        prediction_id,
+        request_id,
+        CLINICAL_HISTORY,
+        "public-mammogram.dcm",
+        str(job_root),
+        *dicom_identifiers,
+    ):
+        if private_value in metrics_text:
+            raise AssertionError("private or high-cardinality data leaked into metrics")
+
+    structured_events = [
+        json.loads(line)
+        for line in executor_log.read_text(encoding="utf-8").splitlines()
+        if line.startswith("{")
+    ]
+    prediction_events = [
+        event
+        for event in structured_events
+        if event.get("event") == "prediction_completed"
+    ]
+    if len(prediction_events) != 2:
+        raise AssertionError(
+            "executor did not emit one structured event per prediction"
+        )
+    serialized_events = json.dumps(prediction_events, sort_keys=True)
+    for private_value in (
+        prediction_id,
+        CLINICAL_HISTORY,
+        "public-mammogram.dcm",
+        str(job_root),
+        *dicom_identifiers,
+    ):
+        if private_value in serialized_events:
+            raise AssertionError("private request content leaked into structured logs")
+
     print(
         json.dumps(
             {
@@ -120,6 +199,7 @@ def main() -> int:
                 "dual_resident_models": sorted(runtime["resident_models"]),
                 "readiness": readiness.status_code,
                 "redis": redis.info("server")["redis_version"],
+                "structured_prediction_events": len(prediction_events),
                 "warm_sync_http_seconds": warm_elapsed,
             },
             indent=2,

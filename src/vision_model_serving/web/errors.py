@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import secrets
 from collections.abc import Callable
+from time import perf_counter
 
 from rest_framework import status
 from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
+
+from vision_model_serving.observability import record_http_response
 
 
 class ClinicalHistoryRequired(APIException):
@@ -29,7 +32,23 @@ class RequestIdMiddleware:
 
     def __call__(self, request: object) -> object:
         request.request_id = secrets.token_urlsafe(16)  # type: ignore[attr-defined]
-        return self._get_response(request)
+        started = perf_counter()
+        try:
+            response = self._get_response(request)
+        except Exception as error:
+            record_http_response(
+                request,
+                status_code=500,
+                duration_seconds=perf_counter() - started,
+                exception_class=type(error).__name__,
+            )
+            raise
+        record_http_response(
+            request,
+            status_code=int(getattr(response, "status_code", 500)),
+            duration_seconds=perf_counter() - started,
+        )
+        return response
 
 
 def exception_handler(error: Exception, context: dict[str, object]) -> Response:

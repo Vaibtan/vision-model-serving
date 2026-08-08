@@ -8,6 +8,11 @@ from pathlib import Path
 from time import time
 from typing import Protocol
 
+from vision_model_serving.observability import (
+    record_prediction_failure,
+    record_prediction_success,
+    record_queue_wait,
+)
 from vision_model_serving.pipeline.contracts import (
     CaseInput,
     PredictionMode,
@@ -45,6 +50,7 @@ class PredictionJobWorker:
         self._result_ttl_seconds = result_ttl_seconds
 
     def execute(self, prediction_id: PredictionId, locator: str) -> None:
+        mode: PredictionMode | None = None
         try:
             try:
                 self._store.load_result(locator)
@@ -52,6 +58,7 @@ class PredictionJobWorker:
             except JobResultNotFound:
                 pass
             request = self._store.load_request(prediction_id, locator)
+            mode = request.mode
             result = self._pipeline.infer(request.case, request.mode)
             result = _apply_detector_display_threshold(
                 result,
@@ -62,7 +69,15 @@ class PredictionJobWorker:
                 result,
                 ttl_seconds=self._result_ttl_seconds,
             )
-        except Exception:  # noqa: BLE001 - never persist private pipeline errors
+            try:
+                record_prediction_success(result)
+            except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
+                pass
+        except Exception as error:  # noqa: BLE001 - never persist private pipeline errors
+            try:
+                record_prediction_failure(mode, error)
+            except Exception:  # noqa: BLE001, S110 - preserve the prediction seam
+                pass
             raise PredictionWorkerError("prediction execution failed") from None
         finally:
             self._store.purge_request(locator)
@@ -180,6 +195,10 @@ def execute_prediction_job(prediction_id: str, locator: str) -> None:
     if job.enqueued_at is not None:
         wait_ms = max(0.0, (started_at - job.enqueued_at.timestamp()) * 1_000.0)
         redis.hincrbyfloat(metrics_key, "queue_wait_ms_total", wait_ms)
+        try:
+            record_queue_wait(wait_ms / 1_000.0)
+        except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
+            pass
     global _worker
     if _worker is None:
         _worker = _worker_factory()

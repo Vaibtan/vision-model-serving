@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import tempfile
+from io import StringIO
 from pathlib import Path
 
 EXPECTED_DICOM_SHA256 = (
@@ -37,6 +39,12 @@ def main() -> int:
         import django
 
         django.setup()
+
+        telemetry_stream = StringIO()
+        telemetry_handler = logging.StreamHandler(telemetry_stream)
+        telemetry_handler.setFormatter(logging.Formatter("%(message)s"))
+        telemetry_logger = logging.getLogger("vision_model_serving.telemetry")
+        telemetry_logger.addHandler(telemetry_handler)
 
         from django.core.files.uploadedfile import SimpleUploadedFile
         from django.test import Client
@@ -251,6 +259,30 @@ def main() -> int:
             if b"real-http-public-dicom" in broker_bytes:
                 raise AssertionError("raw idempotency key leaked into Redis")
 
+            events = [
+                json.loads(line)
+                for line in telemetry_stream.getvalue().splitlines()
+                if line.startswith("{")
+            ]
+            observed_statuses = {
+                event["status_code"]
+                for event in events
+                if event.get("event") == "http_response"
+            }
+            expected_statuses = {200, 202, 400, 413, 415, 422, 429, 503}
+            if not expected_statuses.issubset(observed_statuses):
+                raise AssertionError("structured logs omitted an HTTP outcome path")
+            serialized_events = json.dumps(events, sort_keys=True)
+            for private_value in (
+                "malformed.dcm",
+                "oversized.dcm",
+                "public-mammogram.dcm",
+                "real-http-public-dicom",
+                job_root,
+            ):
+                if private_value in serialized_events:
+                    raise AssertionError("private request data leaked into HTTP logs")
+
             print(
                 json.dumps(
                     {
@@ -263,12 +295,14 @@ def main() -> int:
                         "schema": schema.status_code,
                         "rq_arguments_are_opaque": True,
                         "private_payload_absent_from_redis": True,
+                        "structured_http_logs_are_redacted": True,
                     },
                     indent=2,
                     sort_keys=True,
                 )
             )
         finally:
+            telemetry_logger.removeHandler(telemetry_handler)
             redis.flushdb()
     return 0
 

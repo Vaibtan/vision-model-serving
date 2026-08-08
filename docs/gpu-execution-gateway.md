@@ -73,6 +73,8 @@ replaced by a new submission.
 `observations()` reports active, queued, and running counts plus admission,
 rejection, success, failure, worker-loss, and accumulated queue-wait metrics.
 It exposes no prediction identifiers or private payload data.
+Prometheus multiprocess setup, bounded labels, and the JSON event contract are
+documented in [`observability.md`](observability.md).
 
 ## Real-infrastructure validation
 

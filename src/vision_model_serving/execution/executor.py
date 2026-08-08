@@ -266,6 +266,10 @@ class GpuExecutorServer:
 
 def main(argv: Sequence[str] | None = None) -> int:
     args = _parser().parse_args(argv)
+    from vision_model_serving.observability import (
+        configure_structured_logging,
+        record_executor_cleanup,
+    )
     from vision_model_serving.pipeline import (
         LocalCudaPipelineConfig,
         build_local_cuda_pipeline,
@@ -273,6 +277,7 @@ def main(argv: Sequence[str] | None = None) -> int:
 
     from .rq_worker import PredictionJobWorker
 
+    configure_structured_logging(args.logging_level)
     pipeline = build_local_cuda_pipeline(
         LocalCudaPipelineConfig(
             project_root=args.project_root,
@@ -304,7 +309,17 @@ def main(argv: Sequence[str] | None = None) -> int:
         pass
     finally:
         server.close()
-        pipeline.close()
+        try:
+            resident_models = executor.status().resident_models
+        except Exception:  # noqa: BLE001 - cleanup must still close the pipeline
+            resident_models = ()
+        try:
+            pipeline.close()
+        finally:
+            try:
+                record_executor_cleanup(resident_models)
+            except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
+                pass
     return 0
 
 
@@ -324,6 +339,7 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--dino-root", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
     parser.add_argument("--allow-empty-history", action="store_true")
+    parser.add_argument("--logging-level", default="INFO")
     return parser
 
 
