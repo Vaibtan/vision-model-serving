@@ -15,8 +15,9 @@ EXPECTED_DETECTOR_SHA256 = (
     "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5"
 )
 EXPECTED_CLASSIFIER_SHA256 = (
-    "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b"
+    "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3"
 )
+CLINICAL_HISTORY = "real public mammogram acceptance."
 
 
 def main() -> int:
@@ -57,13 +58,12 @@ def main() -> int:
     if before.json()["runtime"]["state"] != "unloaded":
         raise AssertionError(f"executor did not start cold: {before.json()!r}")
 
-    history = "Indication: real public mammogram acceptance."
     full = client.post(
         "/api/v1/predictions",
         {
             "dicom": _upload(dicom),
             "mode": "full",
-            "clinical_history": history,
+            "clinical_history": CLINICAL_HISTORY,
             "detector_score_threshold": "1.0",
         },
         HTTP_PREFER="respond-async",
@@ -108,7 +108,7 @@ def main() -> int:
         raise AssertionError("warm HTTP detector result differs from the L4 golden")
 
     broker = b"".join(redis.dump(key) or b"" for key in redis.scan_iter("*"))
-    if dicom[128:256] in broker or history.encode("utf-8") in broker:
+    if dicom[128:256] in broker or CLINICAL_HISTORY.encode("utf-8") in broker:
         raise AssertionError("private request content leaked into Redis")
 
     print(
