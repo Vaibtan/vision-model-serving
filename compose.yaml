@@ -22,6 +22,7 @@ x-app-environment: &app-environment
   VMS_QUEUE_NAME: gpu-inference
   VMS_REDIS_URL: redis://redis:6379/0
   VMS_RESULT_TTL_SECONDS: "900"
+  VMS_STATUS_TTL_SECONDS: "1200"
 
 services:
   redis:

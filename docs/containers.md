@@ -68,7 +68,7 @@ export VMS_ARTIFACT_ROOT=/teamspace/studios/this_studio/vision-model-serving-art
 export VMS_TOKENIZER_ROOT=/teamspace/studios/this_studio/assets/roberta-base-tokenizer-e2da8e2f811d1448a5b465c236feacd80ffbac7b
 export VMS_MMBCD_ROOT=/teamspace/studios/this_studio/src/MMBCD
 export VMS_DINO_ROOT=/teamspace/studios/this_studio/src/dino
-export VMS_DICOM_PATH=/teamspace/studios/this_studio/fixtures/cbis-ddsm/Mass-Training_P_00001_LEFT_CC/07-20-2016-DDSM-NA-74994/1.000000-full-mammogram-images-24515/1-1.dcm
+export VMS_DICOM_PATH=/teamspace/studios/this_studio/fixtures/cbis-ddsm/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547/1-1.dcm
 
 docker compose --profile gpu up --build \
   --abort-on-container-exit --exit-code-from gpu-smoke
