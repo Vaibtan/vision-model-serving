@@ -57,8 +57,10 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 vms \
     && useradd --no-log-init --uid 10001 --gid 10001 --home-dir /nonexistent vms
-ENV HF_HUB_OFFLINE=1 \
+ENV CUBLAS_WORKSPACE_CONFIG=:4096:8 \
+    HF_HUB_OFFLINE=1 \
     PATH=/app/.venv/bin:$PATH \
+    PYTHONHASHSEED=0 \
     PYTHONPATH=/app/src \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
