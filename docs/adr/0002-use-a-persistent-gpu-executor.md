@@ -36,3 +36,12 @@ the pipeline in the per-job work-horse, while the pipeline lifecycle took
   run as the same operating-system identity and share the ephemeral job root.
 - Dual residency and warm latency require a real NVIDIA L4 acceptance run;
   CPU substitutes do not establish this decision's performance or memory fit.
+
+## Validation
+
+The real Redis/RQ/L4 acceptance run at commit `775c52b` reproduced both exact
+golden prediction hashes and classifier logits. The cold request completed in
+25.871 seconds; the next request completed in 1.211 seconds with zero model
+reload time. Both models occupied 2,334 MiB while resident. The complete
+bounded evidence is in
+[`persistent-rq-executor-l4-20260808.json`](../validation/persistent-rq-executor-l4-20260808.json).

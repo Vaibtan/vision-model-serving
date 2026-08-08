@@ -111,3 +111,14 @@ uv run --extra gateway python -m vision_model_serving.execution.rq_cli \
 The executor socket is the readiness signal. Start the RQ worker only after it
 exists. The executor timeout must not exceed the RQ job timeout, and the result
 TTL must match the gateway configuration.
+
+## L4 acceptance evidence
+
+A real Redis 7.4 container, standard forked RQ 2.10 worker, Unix-socket
+executor, real FP32 artifacts, and the public DICOM fixture completed two
+sequential full predictions. The first request took 25.871 seconds; the warm
+request took 1.211 seconds with both models reused and no reload. Both exact
+golden hashes and classifier logits matched, and dual residency used 2,334 MiB
+of the L4. See
+[`persistent-rq-executor-l4-20260808.json`](validation/persistent-rq-executor-l4-20260808.json)
+for the evidence and its stated boundary.
