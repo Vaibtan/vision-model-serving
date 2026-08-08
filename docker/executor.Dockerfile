@@ -8,14 +8,18 @@ FROM ${CUDA_DEVEL_IMAGE} AS build
 ARG DEBIAN_FRONTEND=noninteractive
 ARG FOCALNET_COMMIT=23901e021dc6ec8f66bad47983f45a25574452cc
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git python3 python3-dev \
+    && apt-get install --yes --no-install-recommends git \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=uv /uv /uvx /bin/
 ENV CUDA_HOME=/usr/local/cuda \
     CUDACXX=/usr/local/cuda/bin/nvcc \
     TORCH_CUDA_ARCH_LIST=8.9 \
     UV_COMPILE_BYTECODE=1 \
-    UV_LINK_MODE=copy
+    UV_LINK_MODE=copy \
+    UV_MANAGED_PYTHON=1 \
+    UV_PYTHON=3.12.11 \
+    UV_PYTHON_INSTALL_DIR=/opt/python
+RUN uv python install --no-bin 3.12.11
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --no-dev --extra gpu --no-install-project
@@ -49,7 +53,7 @@ FROM ${CUDA_RUNTIME_IMAGE} AS runtime
 
 ARG DEBIAN_FRONTEND=noninteractive
 RUN apt-get update \
-    && apt-get install --yes --no-install-recommends git libglib2.0-0t64 libgomp1 python3 \
+    && apt-get install --yes --no-install-recommends git libglib2.0-0t64 libgomp1 \
     && rm -rf /var/lib/apt/lists/* \
     && groupadd --gid 10001 vms \
     && useradd --no-log-init --uid 10001 --gid 10001 --home-dir /nonexistent vms
@@ -60,6 +64,7 @@ ENV HF_HUB_OFFLINE=1 \
     PYTHONUNBUFFERED=1 \
     TRANSFORMERS_OFFLINE=1
 WORKDIR /app
+COPY --from=build /opt/python /opt/python
 COPY --from=build --chown=10001:10001 /app/.venv /app/.venv
 COPY --from=build --chown=10001:10001 /opt/focalnet /opt/focalnet
 COPY --chown=10001:10001 config ./config

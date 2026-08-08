@@ -21,6 +21,8 @@ network and runs with RDB and AOF persistence disabled.
 ## Build and asset boundary
 
 All base images, Python packages, upstream revisions, and uv itself are pinned.
+The CUDA stages use uv's managed CPython 3.12.11 distribution rather than the
+older Python provided by Ubuntu 24.04.
 The CUDA build stage checks out the Apache-2.0 FocalNet-DINO revision, applies
 the three checksum-pinned serving/build patches, and compiles deformable
 attention for compute capability 8.9. `FORCE_CUDA=1` only bypasses upstream's
