@@ -31,6 +31,7 @@ from vision_model_serving.classifier import (  # noqa: E402
     TokenBatch,
     TokenizerVerificationError,
 )
+from vision_model_serving.classifier import runtime as classifier_runtime  # noqa: E402
 from vision_model_serving.dicom import DicomCanonicalizer  # noqa: E402
 
 
@@ -562,6 +563,24 @@ class ClassifierResultTests(unittest.TestCase):
 
 
 class ClassifierRuntimeTests(unittest.TestCase):
+    def test_pinned_dino_loader_resolves_and_restores_transitive_utils(self) -> None:
+        with TemporaryDirectory() as temporary_directory:
+            root = Path(temporary_directory)
+            (root / "utils.py").write_text(
+                "SENTINEL = 'pinned'\n",
+                encoding="utf-8",
+            )
+            (root / "vision_transformer.py").write_text(
+                "from utils import SENTINEL\n",
+                encoding="utf-8",
+            )
+            prior_utils = ModuleType("utils")
+            prior_utils.SENTINEL = "unrelated"
+            with patch.dict(sys.modules, {"utils": prior_utils}):
+                loaded = classifier_runtime._load_pinned_dino_architecture(root)
+                self.assertEqual(loaded.SENTINEL, "pinned")
+                self.assertIs(sys.modules["utils"], prior_utils)
+
     def test_strict_loads_verified_artifact_and_executes_privately(self) -> None:
         shared_weight = object()
         checkpoint = {

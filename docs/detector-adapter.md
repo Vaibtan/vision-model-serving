@@ -44,6 +44,11 @@ The runtime accepts only the manifest-owned `focalnet-dino-detector` artifact
 with strict-load evidence. `VerifiedArtifact.open_checkpoint()` rechecks the
 same file identity and SHA-256 immediately before loading. The adapter then:
 
+- establishes the validated deterministic FP32 policy before model
+  construction: seed zero, deterministic algorithms, cuDNN benchmarking off,
+  TF32 off, and highest float32 matmul precision;
+- requires `CUBLAS_WORKSPACE_CONFIG=:4096:8` to be set before CUDA is
+  initialized and rejects a conflicting or late configuration;
 - loads on CPU with `weights_only=True` and the one required safe global;
 - requires the wrapped `model` state-dict root;
 - calls `load_state_dict(..., strict=True)` and rejects any key difference;
@@ -107,6 +112,12 @@ checkpoint or source checkout. Do not treat CPU unit tests or the archived hash
 as a fresh detector run. After the external checkpoint, source checkout, and
 L4 runtime are available together, the explicit success gate remains
 `REAL DICOM DETECTOR INFERENCE PASSED` with an exact raw prediction-hash match.
+
+That gate passed on an NVIDIA L4 on 2026-08-08 as part of two complete
+detector-to-classifier residency cycles. The committed runtime evidence is
+`docs/validation/single-residency-l4-20260808.json`. This proves serving-path
+execution and exact output parity for the one checksum-pinned public fixture;
+it is not medical-performance or clinical validation.
 
 Run the locally available coverage with:
 

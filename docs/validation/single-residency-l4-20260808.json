@@ -1,0 +1,89 @@
+{
+  "cycles": [
+    {
+      "classifier_memory": {
+        "allocated_bytes": 622689280,
+        "peak_allocated_bytes": 912790528,
+        "peak_reserved_bytes": 994050048,
+        "reserved_bytes": 994050048
+      },
+      "classifier_prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+      "classifier_timings": {
+        "inference_ms": 126.90713699998923,
+        "load_ms": 6714.937828000075,
+        "switch_ms": 6887.962456999958
+      },
+      "cycle": 1,
+      "detector_memory": {
+        "allocated_bytes": 945110016,
+        "peak_allocated_bytes": 1302455296,
+        "peak_reserved_bytes": 1528823808,
+        "reserved_bytes": 1528823808
+      },
+      "detector_prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+      "detector_timings": {
+        "inference_ms": 267.9622239998025,
+        "load_ms": 14115.920469999992,
+        "switch_ms": 0.0
+      }
+    },
+    {
+      "classifier_memory": {
+        "allocated_bytes": 622689280,
+        "peak_allocated_bytes": 912790528,
+        "peak_reserved_bytes": 994050048,
+        "reserved_bytes": 994050048
+      },
+      "classifier_prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+      "classifier_timings": {
+        "inference_ms": 124.0697519999685,
+        "load_ms": 4368.672033999928,
+        "switch_ms": 4571.469967999974
+      },
+      "cycle": 2,
+      "detector_memory": {
+        "allocated_bytes": 945110016,
+        "peak_allocated_bytes": 1302455296,
+        "peak_reserved_bytes": 1528823808,
+        "reserved_bytes": 1528823808
+      },
+      "detector_prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+      "detector_timings": {
+        "inference_ms": 270.2934799999639,
+        "load_ms": 11388.494644000048,
+        "switch_ms": 11586.638766000078
+      }
+    }
+  ],
+  "final_status": {
+    "active_inferences": 0,
+    "active_model": "mmbcd-classifier",
+    "artifact": {
+      "id": "mmbcd-classifier",
+      "repository_revision": "14ac5e099c79253b01e0885d2ebefa6f86cfd8f0",
+      "sha256": "2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4"
+    },
+    "memory": {
+      "allocated_bytes": 622689280,
+      "peak_allocated_bytes": 912790528,
+      "peak_reserved_bytes": 994050048,
+      "reserved_bytes": 994050048
+    },
+    "metrics": {
+      "failure_count": 0,
+      "load_count": 4,
+      "reuse_count": 0,
+      "switch_count": 3,
+      "unload_count": 3
+    },
+    "state": "ready",
+    "timings": {
+      "last_inference_ms": 124.0697519999685,
+      "last_load_ms": 4368.672033999928,
+      "last_switch_ms": 4571.469967999974,
+      "last_unload_ms": 202.75990300001467
+    }
+  },
+  "pipeline": "single-residency-real-dicom-l4-fp32-v1",
+  "validation_boundary": "Serving lifecycle and exact-hash smoke test on one public fixture; not medical accuracy, calibration, or clinical validation."
+}

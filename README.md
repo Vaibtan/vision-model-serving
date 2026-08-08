@@ -48,3 +48,14 @@ The [single-residency accelerator runtime](docs/single-residency-runtime.md)
 serializes model lifecycle and inference, proves old residents are unreachable
 before switches succeed, records allocated/reserved/peak CUDA memory, and
 provides the repeated real-model NVIDIA L4 acceptance command.
+
+The [end-to-end prediction pipeline](docs/prediction-pipeline.md) exposes the
+single `infer(case, mode)` boundary used by the reference CLI and later Django
+worker. It returns typed detector/full results without verified class labels,
+decision thresholds, clinical prompt text, or device tensors:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m vision_model_serving.pipeline --help
+python -m unittest tests.test_prediction_pipeline -v
+```

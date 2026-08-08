@@ -61,6 +61,9 @@ environment flags are set before the import.
 
 The classifier runtime reconstructs the validated architecture from the pinned
 local DINO `vision_transformer.py` and an in-memory RoBERTa configuration. It
+temporarily binds the pinned sibling `utils.py` while executing that module,
+then restores any prior generic `utils` module binding. This prevents a
+detector or application import from changing the classifier architecture. It
 uses no pretrained-model loader. The architecture is fixed to:
 
 - DINO ViT-small, patch size 8, producing 384 image features per ROI;
@@ -132,6 +135,12 @@ unlicensed checkpoint or source trees. Unit tests and archived-byte hash
 reproduction are not a fresh model run. Once the external checkpoint, pinned
 sources, and L4 environment are mounted together, the success gate remains
 `REAL DICOM MMBCD INFERENCE PASSED` with an exact prediction-hash match.
+
+That gate passed on an NVIDIA L4 on 2026-08-08 as part of two complete
+detector-to-classifier residency cycles. The committed runtime evidence is
+`docs/validation/single-residency-l4-20260808.json`. This proves serving-path
+execution and exact output parity for the one checksum-pinned public fixture;
+it is not medical-performance or clinical validation.
 
 Run locally available coverage with:
 

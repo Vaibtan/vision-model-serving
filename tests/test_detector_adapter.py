@@ -402,6 +402,17 @@ def torch_stub(checkpoint: object) -> tuple[ModuleType, list[tuple[str, object]]
     module = ModuleType("torch")
     events: list[tuple[str, object]] = []
     module.float32 = "float32"
+    module.manual_seed = lambda seed: events.append(("manual_seed", seed))
+    module.set_float32_matmul_precision = lambda value: events.append(
+        ("matmul_precision", value)
+    )
+    module.use_deterministic_algorithms = lambda value, **kwargs: events.append(
+        ("deterministic_algorithms", (value, kwargs))
+    )
+    module.backends = SimpleNamespace(
+        cudnn=SimpleNamespace(benchmark=True, deterministic=False, allow_tf32=True),
+        cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=True)),
+    )
     module.serialization = SimpleNamespace(
         safe_globals=lambda values: nullcontext(events.append(("safe_globals", values)))
     )
@@ -423,7 +434,9 @@ def torch_stub(checkpoint: object) -> tuple[ModuleType, list[tuple[str, object]]
 
     module.inference_mode = inference_mode
     module.cuda = SimpleNamespace(
-        synchronize=lambda device: events.append(("synchronize", device))
+        synchronize=lambda device: events.append(("synchronize", device)),
+        manual_seed_all=lambda seed: events.append(("cuda_manual_seed_all", seed)),
+        is_initialized=lambda: False,
     )
     return module, events
 
@@ -479,6 +492,17 @@ class DetectorRuntimeTests(unittest.TestCase):
             2,
         )
         self.assertIn("inference_mode_enter", [name for name, _ in events])
+        self.assertIn(("manual_seed", 0), events)
+        self.assertIn(("cuda_manual_seed_all", 0), events)
+        self.assertIn(("matmul_precision", "highest"), events)
+        self.assertIn(
+            ("deterministic_algorithms", (True, {"warn_only": False})),
+            events,
+        )
+        self.assertFalse(fake_torch.backends.cudnn.benchmark)
+        self.assertTrue(fake_torch.backends.cudnn.deterministic)
+        self.assertFalse(fake_torch.backends.cuda.matmul.allow_tf32)
+        self.assertFalse(fake_torch.backends.cudnn.allow_tf32)
 
     def test_missing_or_unexpected_state_keys_fail_closed(self) -> None:
         for model in (

@@ -9,6 +9,7 @@ import os
 from pathlib import Path
 import re
 import subprocess
+import sys
 from time import perf_counter
 from typing import Any, BinaryIO, ContextManager, Protocol
 
@@ -238,23 +239,49 @@ class LocalMmbcdModelFactory:
         return model
 
 
-def _build_model(dino_root: Path) -> object:
-    module_path = dino_root.resolve() / "vision_transformer.py"
-    if not module_path.is_file() or module_path.is_symlink():
+def _load_pinned_dino_architecture(dino_root: Path) -> object:
+    root = dino_root.resolve()
+    module_path = root / "vision_transformer.py"
+    utils_path = root / "utils.py"
+    if any(
+        not path.is_file() or path.is_symlink()
+        for path in (module_path, utils_path)
+    ):
         raise ClassifierLoadError("pinned DINO architecture source is absent")
+
+    missing = object()
+    prior_utils = sys.modules.get("utils", missing)
+    try:
+        utils_spec = importlib.util.spec_from_file_location("utils", utils_path)
+        if utils_spec is None or utils_spec.loader is None:
+            raise ClassifierLoadError("pinned DINO utilities cannot be loaded")
+        utils_module = importlib.util.module_from_spec(utils_spec)
+        sys.modules["utils"] = utils_module
+        utils_spec.loader.exec_module(utils_module)
+
+        architecture_spec = importlib.util.spec_from_file_location(
+            "vision_model_serving_pinned_dino",
+            module_path,
+        )
+        if architecture_spec is None or architecture_spec.loader is None:
+            raise ClassifierLoadError("pinned DINO architecture cannot be loaded")
+        architecture = importlib.util.module_from_spec(architecture_spec)
+        architecture_spec.loader.exec_module(architecture)
+        return architecture
+    finally:
+        if prior_utils is missing:
+            sys.modules.pop("utils", None)
+        else:
+            sys.modules["utils"] = prior_utils
+
+
+def _build_model(dino_root: Path) -> object:
     try:
         import torch
         import torch.nn as nn
         from transformers import RobertaConfig, RobertaForSequenceClassification
 
-        spec = importlib.util.spec_from_file_location(
-            "vision_model_serving_pinned_dino",
-            module_path,
-        )
-        if spec is None or spec.loader is None:
-            raise ClassifierLoadError("pinned DINO architecture cannot be loaded")
-        dino_vit = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(dino_vit)
+        dino_vit = _load_pinned_dino_architecture(dino_root)
     except ClassifierLoadError:
         raise
     except Exception as error:

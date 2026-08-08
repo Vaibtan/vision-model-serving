@@ -610,8 +610,21 @@ must remain external until licensing is clarified.
 
 ## Next engineering gate
 
-These scripts are a reference harness, not the production service. The next
-phase turns the validated contracts into repository modules, adds a dedicated
-single-residency GPU runtime, and proves repeated
-`detector -> unload -> MMBCD -> unload` transitions without leaked live tensors
-before Django workers or a frontend can invoke the GPU.
+The repository modules and single-residency runtime now have their own public
+`PredictionPipeline` orchestration boundary. Validate that boundary, including
+detection-only output and two complete detector-to-MMBCD cycles, with:
+
+```bash
+export PYTHONPATH="${VMS_REPO}/src"
+export CUBLAS_WORKSPACE_CONFIG=":4096:8"
+export PYTHONHASHSEED=0
+export HF_HUB_OFFLINE=1
+export TRANSFORMERS_OFFLINE=1
+python "${VMS_REPO}/scripts/l4_validation/17_validate_prediction_pipeline.py" \
+  --cycles 2
+```
+
+Do not close the prediction-pipeline implementation gate unless the command
+ends with `PREDICTION PIPELINE L4 PASSED` and preserves the archived detector,
+MMBCD-input, and MMBCD-output hashes. Django, queueing, and frontend work remain
+outside this command.
