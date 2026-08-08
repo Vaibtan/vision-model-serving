@@ -111,21 +111,44 @@ def main() -> None:
 
     manifest = {
         "pipeline": "prediction-pipeline-real-dicom-l4-fp32-v1",
+        "validation_boundary": (
+            "Typed serving pipeline and exact-hash smoke test on one public "
+            "fixture; not medical accuracy, calibration, class semantics, or "
+            "clinical validation."
+        ),
         "mode": "full",
         "cycles": records,
         "input_sha256": detection.input.source_sha256,
-        "detector_artifact": {
-            "id": detection.provenance.detector.id,
-            "sha256": detection.provenance.detector.sha256,
-            "repository_revision": (
-                detection.provenance.detector.repository_revision
-            ),
+        "artifacts": {
+            "detector": _artifact_record(detection.provenance.detector),
+            "classifier": _artifact_record(result.provenance.classifier),
+        },
+        "tokenizer": {
+            "id": result.provenance.tokenizer.id,
+            "revision": result.provenance.tokenizer.revision,
+            "file_sha256": [
+                {"filename": filename, "sha256": sha256}
+                for filename, sha256 in result.provenance.tokenizer.file_sha256
+            ],
+        },
+        "classifier_runtime": {
+            "precision": result.provenance.precision,
+            "offline_assets_only": result.provenance.offline_assets_only,
+            "strict_checkpoint_load": result.provenance.strict_checkpoint_load,
         },
         "warnings": [warning.code for warning in result.warnings],
         "disclaimer": result.disclaimer,
     }
     write_json_atomic(args.output.expanduser().resolve(), manifest)
     print("PREDICTION PIPELINE L4 PASSED")
+
+
+def _artifact_record(artifact: object) -> dict[str, str]:
+    return {
+        "id": artifact.id,
+        "sha256": artifact.sha256,
+        "repository_revision": artifact.repository_revision,
+    }
 
 
 def _verify_detection(result: object) -> None:
