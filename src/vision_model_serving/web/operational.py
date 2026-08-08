@@ -9,11 +9,13 @@ from redis import Redis
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rq import Worker
+from rq import Queue, Worker
 
 from vision_model_serving.artifacts.manifest import load_manifest
+from vision_model_serving.execution import GpuExecutorStatus
 
 from .errors import public_error
+from .runtime import executor_client
 
 
 class LivenessView(APIView):
@@ -30,17 +32,23 @@ class ReadinessView(APIView):
         try:
             redis = Redis.from_url(settings.VMS_REDIS_URL)
             redis_ready = bool(redis.ping())
-            worker_ready = bool(Worker.all(connection=redis))
+            queue = Queue(settings.VMS_QUEUE_NAME, connection=redis)
+            worker_ready = bool(Worker.all(queue=queue))
         except Exception:  # noqa: BLE001 - readiness is a sanitized process seam
             redis_ready = False
             worker_ready = False
+        executor = _executor_status()
         checks = {
             "redis": redis_ready,
             "rq_worker": worker_ready,
-            "executor": False,
-            "verified_artifacts": False,
-            "device": False,
-            "native_operator": False,
+            "executor": executor.ready if executor is not None else False,
+            "verified_artifacts": (
+                executor.verified_artifacts if executor is not None else False
+            ),
+            "device": executor.device if executor is not None else False,
+            "native_operator": (
+                executor.native_operator if executor is not None else False
+            ),
         }
         ready = all(checks.values())
         return Response(
@@ -56,6 +64,22 @@ class ModelInventoryView(APIView):
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, _request: Request) -> Response:
         manifest = load_manifest(settings.BASE_DIR / "config" / "model-artifacts.json")
+        runtime = {
+            "state": "unavailable",
+            "active_model": None,
+            "resident_models": [],
+            "device": None,
+            "last_error": None,
+        }
+        executor = _executor_status()
+        if executor is not None:
+            runtime = {
+                "state": executor.runtime_state,
+                "active_model": executor.active_model,
+                "resident_models": list(executor.resident_models),
+                "device": executor.device_name,
+                "last_error": executor.last_error,
+            }
         return Response(
             {
                 "manifest_id": manifest.manifest_id,
@@ -75,13 +99,7 @@ class ModelInventoryView(APIView):
                     }
                     for artifact in manifest.artifacts
                 ],
-                "runtime": {
-                    "state": "not_reported",
-                    "active_model": None,
-                    "resident_models": [],
-                    "device": None,
-                    "last_error": None,
-                },
+                "runtime": runtime,
             }
         )
 
@@ -95,3 +113,10 @@ class MetricsIntegrationView(APIView):
             "Metrics instrumentation is not configured.",
             503,
         )
+
+
+def _executor_status() -> GpuExecutorStatus | None:
+    try:
+        return executor_client().status()
+    except Exception:  # noqa: BLE001 - operational diagnostics are sanitized
+        return None

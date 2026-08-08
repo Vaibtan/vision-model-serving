@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import NewType, Protocol
@@ -51,6 +52,14 @@ class PredictionFailed(PredictionGatewayError):
     code = "prediction_failed"
 
 
+class PredictionRuntimeUnavailable(PredictionFailed):
+    code = "prediction_runtime_unavailable"
+
+
+class PredictionTimedOut(PredictionFailed):
+    code = "prediction_timeout"
+
+
 @dataclass(frozen=True, slots=True)
 class PredictionFailure:
     code: str
@@ -71,6 +80,7 @@ class PredictionRequest:
     case: CaseInput = field(repr=False)
     mode: PredictionMode
     idempotency_key: str | None = field(default=None, repr=False)
+    detector_score_threshold: float | None = None
 
     def __post_init__(self) -> None:
         if not isinstance(self.case, CaseInput):
@@ -83,6 +93,19 @@ class PredictionRequest:
             or len(self.idempotency_key) > 200
         ):
             raise ValueError("idempotency key must contain 1 to 200 characters")
+        if self.detector_score_threshold is not None and (
+            isinstance(self.detector_score_threshold, bool)
+            or not isinstance(self.detector_score_threshold, (int, float))
+            or not math.isfinite(float(self.detector_score_threshold))
+            or not 0.0 <= float(self.detector_score_threshold) <= 1.0
+        ):
+            raise ValueError("detector score threshold must be between zero and one")
+        if self.detector_score_threshold is not None:
+            object.__setattr__(
+                self,
+                "detector_score_threshold",
+                float(self.detector_score_threshold),
+            )
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,6 +140,19 @@ class GatewayObservations:
     failed_total: int
     worker_lost_total: int
     queue_wait_ms_total: float
+
+
+@dataclass(frozen=True, slots=True)
+class GpuExecutorStatus:
+    ready: bool
+    verified_artifacts: bool
+    device: bool
+    native_operator: bool
+    runtime_state: str
+    active_model: str | None
+    resident_models: tuple[str, ...]
+    device_name: str
+    last_error: str | None
 
 
 class GpuExecutionGateway(Protocol):

@@ -15,6 +15,14 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from vision_model_serving.dicom import (
+    DicomCanonicalizationError,
+    DicomCanonicalizer,
+    EncodedSizeLimitError,
+    InvalidDicomError,
+    UnsupportedPhotometricInterpretationError,
+    UnsupportedTransferSyntaxError,
+)
 from vision_model_serving.execution import (
     GatewayUnavailable,
     IdempotencyConflict,
@@ -22,6 +30,8 @@ from vision_model_serving.execution import (
     PredictionHandle,
     PredictionNotFound,
     PredictionRequest,
+    PredictionRuntimeUnavailable,
+    PredictionTimedOut,
     QueueSaturated,
     ResultExpired,
     ResultNotReady,
@@ -77,11 +87,14 @@ class PredictionCollectionView(APIView):
             202: OpenApiTypes.OBJECT,
             400: OpenApiTypes.OBJECT,
             409: OpenApiTypes.OBJECT,
+            410: OpenApiTypes.OBJECT,
             413: OpenApiTypes.OBJECT,
             415: OpenApiTypes.OBJECT,
             422: OpenApiTypes.OBJECT,
             429: OpenApiTypes.OBJECT,
+            500: OpenApiTypes.OBJECT,
             503: OpenApiTypes.OBJECT,
+            504: OpenApiTypes.OBJECT,
         },
     )
     def post(self, request: Request) -> Response:
@@ -93,7 +106,7 @@ class PredictionCollectionView(APIView):
         if not isinstance(payload, bytes):
             return public_error(
                 request,
-                "invalid_dicom",
+                "dicom_invalid",
                 "The DICOM upload is unreadable.",
                 400,
             )
@@ -105,6 +118,10 @@ class PredictionCollectionView(APIView):
                 "The idempotency key must contain 1 to 200 characters.",
                 400,
             )
+        try:
+            DicomCanonicalizer().decode(BytesIO(payload))
+        except DicomCanonicalizationError as error:
+            return _dicom_error(request, error)
         prediction_request = PredictionRequest(
             case=CaseInput(
                 BytesIO(payload),
@@ -112,6 +129,7 @@ class PredictionCollectionView(APIView):
             ),
             mode=PredictionMode(str(values["mode"])),
             idempotency_key=idempotency_key,
+            detector_score_threshold=values.get("detector_score_threshold"),
         )
         gateway = prediction_gateway()
         try:
@@ -139,10 +157,19 @@ class PredictionCollectionView(APIView):
             )
         if request.headers.get("Prefer", "").strip().lower() == "respond-async":
             return Response(_handle_payload(handle), status=status.HTTP_202_ACCEPTED)
-        completed = gateway.wait(
-            handle.prediction_id,
-            timeout_seconds=settings.VMS_SYNC_WAIT_SECONDS,
-        )
+        try:
+            completed = gateway.wait(
+                handle.prediction_id,
+                timeout_seconds=settings.VMS_SYNC_WAIT_SECONDS,
+            )
+        except (
+            PredictionTimedOut,
+            PredictionRuntimeUnavailable,
+            PredictionFailed,
+            ResultExpired,
+            GatewayUnavailable,
+        ) as error:
+            return _completion_error(request, error)
         if isinstance(completed, PredictionHandle):
             return Response(_handle_payload(completed), status=status.HTTP_202_ACCEPTED)
         return Response(
@@ -155,7 +182,13 @@ class PredictionCollectionView(APIView):
 
 
 class PredictionStatusView(APIView):
-    @extend_schema(responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    @extend_schema(
+        responses={
+            200: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+            503: OpenApiTypes.OBJECT,
+        }
+    )
     def get(self, request: Request, prediction_id: str) -> Response:
         try:
             prediction = prediction_gateway().status(prediction_id)
@@ -196,7 +229,17 @@ class PredictionStatusView(APIView):
 
 
 class PredictionResultView(APIView):
-    @extend_schema(responses={200: OpenApiTypes.OBJECT, 404: OpenApiTypes.OBJECT})
+    @extend_schema(
+        responses={
+            200: OpenApiTypes.OBJECT,
+            404: OpenApiTypes.OBJECT,
+            409: OpenApiTypes.OBJECT,
+            410: OpenApiTypes.OBJECT,
+            500: OpenApiTypes.OBJECT,
+            503: OpenApiTypes.OBJECT,
+            504: OpenApiTypes.OBJECT,
+        }
+    )
     def get(self, request: Request, prediction_id: str) -> Response:
         try:
             result = prediction_gateway().result(prediction_id)
@@ -221,13 +264,12 @@ class PredictionResultView(APIView):
                 "Prediction result has expired.",
                 410,
             )
-        except PredictionFailed:
-            return public_error(
-                request,
-                "prediction_failed",
-                "Prediction execution failed.",
-                422,
-            )
+        except PredictionTimedOut as error:
+            return _completion_error(request, error)
+        except PredictionRuntimeUnavailable as error:
+            return _completion_error(request, error)
+        except PredictionFailed as error:
+            return _completion_error(request, error)
         except GatewayUnavailable:
             return public_error(
                 request,
@@ -262,3 +304,52 @@ def _timestamp(value: float) -> str:
 
 def _optional_timestamp(value: float | None) -> str | None:
     return None if value is None else _timestamp(value)
+
+
+def _dicom_error(request: Request, error: DicomCanonicalizationError) -> Response:
+    if isinstance(error, EncodedSizeLimitError):
+        http_status = 413
+        message = "The DICOM file exceeds the encoded-size limit."
+    elif isinstance(error, InvalidDicomError):
+        http_status = 400
+        message = "The uploaded file is not a valid DICOM object."
+    elif isinstance(
+        error,
+        (UnsupportedTransferSyntaxError, UnsupportedPhotometricInterpretationError),
+    ):
+        http_status = 415
+        message = "The DICOM encoding is not supported."
+    else:
+        http_status = 422
+        message = "The DICOM object cannot be processed."
+    return public_error(request, error.code, message, http_status)
+
+
+def _completion_error(request: Request, error: Exception) -> Response:
+    if isinstance(error, PredictionTimedOut):
+        return public_error(
+            request,
+            "prediction_timeout",
+            "Prediction execution timed out.",
+            504,
+        )
+    if isinstance(error, (PredictionRuntimeUnavailable, GatewayUnavailable)):
+        return public_error(
+            request,
+            "prediction_runtime_unavailable",
+            "Prediction execution is temporarily unavailable.",
+            503,
+        )
+    if isinstance(error, ResultExpired):
+        return public_error(
+            request,
+            "prediction_result_expired",
+            "Prediction result has expired.",
+            410,
+        )
+    return public_error(
+        request,
+        "prediction_failed",
+        "Prediction execution failed.",
+        500,
+    )

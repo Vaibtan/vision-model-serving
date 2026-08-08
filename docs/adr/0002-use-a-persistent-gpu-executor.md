@@ -51,6 +51,9 @@ and independently restartable.
   process supervisor must restart the executor before later jobs can succeed.
 - The socket directory and file are owner-only. RQ worker and executor must
   run as the same operating-system identity and share the ephemeral job root.
+- The socket also provides a sanitized status operation so the CPU-only web
+  process can report executor, artifact, device, native-operator, and model
+  residency state without importing model code or CUDA.
 - Dual residency and warm latency require a real NVIDIA L4 acceptance run;
   CPU substitutes do not establish this decision's performance or memory fit.
 

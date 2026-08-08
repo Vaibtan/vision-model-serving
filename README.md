@@ -65,11 +65,7 @@ pending-plus-running admission, idempotent opaque jobs, ephemeral private
 payload/result storage, RQ/Redis execution, a long-lived dual-resident GPU
 executor behind an owner-only Unix socket, synchronous waiting, asynchronous
 status/result polling, worker-loss semantics, and lifecycle observations
-without importing CUDA into web or RQ worker processes:
-
-```powershell
-uv run --extra gateway python -m unittest tests.test_rq_execution_gateway -v
-```
+without importing CUDA into web or RQ worker processes.
 
 The Django/DRF adapter exposes multipart prediction submission, polling,
 result retrieval, model inventory, liveness, fail-closed readiness, OpenAPI,
@@ -80,6 +76,7 @@ uv sync --extra gateway --extra web
 $env:PYTHONPATH = "src"
 $env:VMS_REDIS_URL = "redis://127.0.0.1:6379/0"
 $env:VMS_JOB_ROOT = ".jobs"
+$env:VMS_EXECUTOR_SOCKET = "/tmp/vms-executor.sock"
 uv run --extra gateway --extra web python manage.py check
 uv run --extra gateway --extra web python manage.py runserver 127.0.0.1:8000
 ```
@@ -89,12 +86,26 @@ GPU executor's artifact/device/operator report are all available. `/metrics`
 is a reserved integration point and returns a stable unavailable response
 until the observability implementation lands.
 
-The Django acceptance program requires a real Redis server and the
+The CPU-side Django acceptance program requires a real Redis server and the
 checksum-pinned public DICOM; it does not substitute fakeredis or a synthetic
-image:
+image. It validates upload preflight, queueing, errors, readiness degradation,
+schema generation, and broker privacy:
 
 ```powershell
 $env:VMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
 $env:VMS_TEST_DICOM_PATH = "C:\fixtures\cbis-ddsm-1-1.dcm"
 uv run --extra gateway --extra web python tests/real_infra/test_django_api.py
+```
+
+The complete HTTP inference gate additionally requires the running L4
+executor and standard RQ worker. It checks exact golden outputs, cold
+readiness, dual residency, warm synchronous inference, and display-only
+detector thresholding:
+
+```bash
+export VMS_TEST_REDIS_URL=redis://127.0.0.1:6379/15
+export VMS_TEST_JOB_ROOT=/tmp/vision-model-serving-jobs
+export VMS_TEST_EXECUTOR_SOCKET=/tmp/vms-executor.sock
+export VMS_TEST_DICOM_PATH=/fixtures/cbis-ddsm-1-1.dcm
+uv run --extra gateway --extra web python tests/real_infra/test_django_l4_inference.py
 ```

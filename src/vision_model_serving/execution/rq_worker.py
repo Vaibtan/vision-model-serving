@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from pathlib import Path
 from time import time
 from typing import Protocol
@@ -52,6 +53,10 @@ class PredictionJobWorker:
                 pass
             request = self._store.load_request(prediction_id, locator)
             result = self._pipeline.infer(request.case, request.mode)
+            result = _apply_detector_display_threshold(
+                result,
+                request.detector_score_threshold,
+            )
             self._store.store_result(
                 locator,
                 result,
@@ -61,6 +66,12 @@ class PredictionJobWorker:
             raise PredictionWorkerError("prediction execution failed") from None
         finally:
             self._store.purge_request(locator)
+
+    def status(self) -> object:
+        status = getattr(self._pipeline, "status", None)
+        if not callable(status):
+            raise PredictionWorkerError("prediction runtime status is unavailable")
+        return status()
 
 
 _worker_factory: Callable[[], PredictionJobWorker] | None = None
@@ -181,3 +192,27 @@ def execute_prediction_job(prediction_id: str, locator: str) -> None:
         redis.hincrby(metrics_key, "succeeded_total", 1)
     finally:
         redis.zrem(active_key, prediction_id)
+
+
+def _apply_detector_display_threshold(
+    result: PredictionResult,
+    threshold: float | None,
+) -> PredictionResult:
+    """Filter display detections after inference without changing classifier ROIs."""
+
+    if threshold is None:
+        return result
+    detector = replace(
+        result.detector,
+        top_candidates=tuple(
+            detection
+            for detection in result.detector.top_candidates
+            if detection.score >= threshold
+        ),
+        post_nms=tuple(
+            detection
+            for detection in result.detector.post_nms
+            if detection.score >= threshold
+        ),
+    )
+    return replace(result, detector=detector)

@@ -12,7 +12,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import Protocol
 
-from .contracts import PredictionId
+from .contracts import GpuExecutorStatus, PredictionId
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32}")
 _MAX_MESSAGE_BYTES = 4_096
@@ -33,6 +33,54 @@ class GpuExecutorConfigurationError(GpuExecutorError):
 class _Executor(Protocol):
     def execute(self, prediction_id: PredictionId, locator: str) -> None: ...
 
+    def status(self) -> GpuExecutorStatus: ...
+
+
+class PersistentGpuExecutor:
+    """Own prediction execution and sanitized runtime state in one process."""
+
+    def __init__(self, worker: object, *, device_name: str):
+        if not callable(getattr(worker, "execute", None)) or not callable(
+            getattr(worker, "status", None)
+        ):
+            raise TypeError("worker must implement execute() and status()")
+        if not isinstance(device_name, str) or not device_name:
+            raise ValueError("device name must not be empty")
+        self._worker = worker
+        self._device_name = device_name
+
+    def execute(self, prediction_id: PredictionId, locator: str) -> None:
+        self._worker.execute(prediction_id, locator)
+
+    def status(self) -> GpuExecutorStatus:
+        runtime = self._worker.status()
+        state_value = getattr(getattr(runtime, "state", None), "value", None)
+        if not isinstance(state_value, str) or not state_value:
+            raise GpuExecutorError("prediction runtime status is invalid")
+        active_model = getattr(runtime, "active_model", None)
+        residents = getattr(runtime, "resident_models", ())
+        last_error = getattr(runtime, "last_error", None)
+        error_code = None if last_error is None else getattr(last_error, "code", None)
+        if active_model is not None and not isinstance(active_model, str):
+            raise GpuExecutorError("prediction runtime status is invalid")
+        if not isinstance(residents, tuple) or not all(
+            isinstance(model, str) for model in residents
+        ):
+            raise GpuExecutorError("prediction runtime status is invalid")
+        if error_code is not None and not isinstance(error_code, str):
+            raise GpuExecutorError("prediction runtime status is invalid")
+        return GpuExecutorStatus(
+            ready=state_value != "failed",
+            verified_artifacts=True,
+            device=True,
+            native_operator=True,
+            runtime_state=state_value,
+            active_model=active_model,
+            resident_models=residents,
+            device_name=self._device_name,
+            last_error=error_code,
+        )
+
 
 class GpuExecutorClient:
     """Execute one opaque prediction through the local GPU-owner process."""
@@ -52,10 +100,34 @@ class GpuExecutorClient:
         request = _encode(
             {
                 "schema_version": 1,
+                "operation": "execute",
                 "prediction_id": prediction,
                 "locator": locator,
             }
         )
+        response = self._exchange(request)
+        if response == {"schema_version": 1, "ok": True}:
+            return
+        if response == {
+            "schema_version": 1,
+            "ok": False,
+            "error": "runtime_unavailable",
+        }:
+            raise GpuExecutorUnavailable("prediction executor is unavailable")
+        raise GpuExecutorError("prediction execution failed")
+
+    def status(self) -> GpuExecutorStatus:
+        response = self._exchange(_encode({"schema_version": 1, "operation": "status"}))
+        if (
+            not isinstance(response, dict)
+            or set(response) != {"schema_version", "ok", "status"}
+            or response.get("schema_version") != 1
+            or response.get("ok") is not True
+        ):
+            raise GpuExecutorUnavailable("prediction executor status is unavailable")
+        return _status_from_dict(response.get("status"))
+
+    def _exchange(self, request: bytes) -> object:
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as connection:
                 connection.settimeout(self._timeout_seconds)
@@ -64,8 +136,7 @@ class GpuExecutorClient:
                 response = _read_message(connection)
         except (OSError, TimeoutError):
             raise GpuExecutorUnavailable("prediction executor is unavailable") from None
-        if response != {"schema_version": 1, "ok": True}:
-            raise GpuExecutorError("prediction execution failed")
+        return response
 
 
 class GpuExecutorServer:
@@ -74,8 +145,10 @@ class GpuExecutorServer:
     def __init__(self, socket_path: Path, executor: _Executor):
         if not isinstance(socket_path, Path):
             raise TypeError("executor socket path must be a pathlib.Path")
-        if not callable(getattr(executor, "execute", None)):
-            raise TypeError("executor must implement execute(prediction_id, locator)")
+        if not callable(getattr(executor, "execute", None)) or not callable(
+            getattr(executor, "status", None)
+        ):
+            raise TypeError("executor must implement execute() and status()")
         self._socket_path = socket_path.expanduser().resolve()
         self._executor = executor
         self._prepare_socket_path()
@@ -86,7 +159,7 @@ class GpuExecutorServer:
                 outer._handle(self.rfile, self.wfile)
 
         try:
-            self._server = socketserver.UnixStreamServer(
+            self._server = _threading_unix_server_type()(
                 str(self._socket_path),
                 Handler,
             )
@@ -106,17 +179,36 @@ class GpuExecutorServer:
         self._unlink_socket()
 
     def _handle(self, reader: object, writer: object) -> None:
-        response = {"schema_version": 1, "ok": False}
+        response = {
+            "schema_version": 1,
+            "ok": False,
+            "error": "execution_failed",
+        }
         try:
             raw = reader.readline(_MAX_MESSAGE_BYTES + 1)
             if len(raw) > _MAX_MESSAGE_BYTES or not raw.endswith(b"\n"):
                 raise ValueError
             request = json.loads(raw)
-            if (
-                not isinstance(request, dict)
-                or set(request) != {"schema_version", "prediction_id", "locator"}
-                or request.get("schema_version") != 1
-            ):
+            if not isinstance(request, dict) or request.get("schema_version") != 1:
+                raise ValueError
+            operation = request.get("operation")
+            if operation == "status":
+                if set(request) != {"schema_version", "operation"}:
+                    raise ValueError
+                response = {
+                    "schema_version": 1,
+                    "ok": True,
+                    "status": _status_to_dict(self._executor.status()),
+                }
+                writer.write(_encode(response))
+                writer.flush()
+                return
+            if operation != "execute" or set(request) != {
+                "schema_version",
+                "operation",
+                "prediction_id",
+                "locator",
+            }:
                 raise ValueError
             prediction = request.get("prediction_id")
             locator = request.get("locator")
@@ -130,7 +222,17 @@ class GpuExecutorServer:
             self._executor.execute(PredictionId(prediction), locator)
             response["ok"] = True
         except Exception:  # noqa: BLE001 - sanitize the process seam
-            response = {"schema_version": 1, "ok": False}
+            try:
+                runtime_unavailable = not self._executor.status().ready
+            except Exception:  # noqa: BLE001 - preserve the sanitized seam
+                runtime_unavailable = True
+            response = {
+                "schema_version": 1,
+                "ok": False,
+                "error": (
+                    "runtime_unavailable" if runtime_unavailable else "execution_failed"
+                ),
+            }
         try:
             writer.write(_encode(response))
             writer.flush()
@@ -189,7 +291,8 @@ def main(argv: Sequence[str] | None = None) -> int:
         pipeline=pipeline,
         result_ttl_seconds=args.result_ttl_seconds,
     )
-    server = GpuExecutorServer(args.socket_path, worker)
+    executor = PersistentGpuExecutor(worker, device_name=args.device)
+    server = GpuExecutorServer(args.socket_path, executor)
 
     def stop(_signum: int, _frame: object) -> None:
         raise KeyboardInterrupt
@@ -256,6 +359,78 @@ def _read_message(connection: socket.socket) -> object:
         raise GpuExecutorUnavailable(
             "prediction executor response is unavailable"
         ) from None
+
+
+def _status_to_dict(status: GpuExecutorStatus) -> dict[str, object]:
+    return {
+        "ready": status.ready,
+        "verified_artifacts": status.verified_artifacts,
+        "device": status.device,
+        "native_operator": status.native_operator,
+        "runtime_state": status.runtime_state,
+        "active_model": status.active_model,
+        "resident_models": list(status.resident_models),
+        "device_name": status.device_name,
+        "last_error": status.last_error,
+    }
+
+
+def _status_from_dict(value: object) -> GpuExecutorStatus:
+    if not isinstance(value, dict) or set(value) != {
+        "ready",
+        "verified_artifacts",
+        "device",
+        "native_operator",
+        "runtime_state",
+        "active_model",
+        "resident_models",
+        "device_name",
+        "last_error",
+    }:
+        raise GpuExecutorUnavailable("prediction executor status is unavailable")
+    boolean_fields = ("ready", "verified_artifacts", "device", "native_operator")
+    if not all(isinstance(value.get(field), bool) for field in boolean_fields):
+        raise GpuExecutorUnavailable("prediction executor status is unavailable")
+    runtime_state = value.get("runtime_state")
+    active_model = value.get("active_model")
+    residents = value.get("resident_models")
+    device_name = value.get("device_name")
+    last_error = value.get("last_error")
+    if (
+        not isinstance(runtime_state, str)
+        or not isinstance(device_name, str)
+        or active_model is not None
+        and not isinstance(active_model, str)
+        or last_error is not None
+        and not isinstance(last_error, str)
+        or not isinstance(residents, list)
+        or not all(isinstance(model, str) for model in residents)
+    ):
+        raise GpuExecutorUnavailable("prediction executor status is unavailable")
+    return GpuExecutorStatus(
+        ready=value["ready"],
+        verified_artifacts=value["verified_artifacts"],
+        device=value["device"],
+        native_operator=value["native_operator"],
+        runtime_state=runtime_state,
+        active_model=active_model,
+        resident_models=tuple(residents),
+        device_name=device_name,
+        last_error=last_error,
+    )
+
+
+def _threading_unix_server_type() -> type[socketserver.BaseServer]:
+    unix_server = getattr(socketserver, "UnixStreamServer", None)
+    if unix_server is None:
+        raise GpuExecutorConfigurationError(
+            "Unix-domain sockets are unavailable on this platform"
+        )
+    return type(
+        "ThreadingUnixStreamServer",
+        (socketserver.ThreadingMixIn, unix_server),
+        {"daemon_threads": True},
+    )
 
 
 if __name__ == "__main__":

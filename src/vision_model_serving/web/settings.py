@@ -83,3 +83,9 @@ VMS_JOB_TIMEOUT_SECONDS = int(os.environ.get("VMS_JOB_TIMEOUT_SECONDS", "180"))
 VMS_RESULT_TTL_SECONDS = int(os.environ.get("VMS_RESULT_TTL_SECONDS", "300"))
 VMS_STATUS_TTL_SECONDS = int(os.environ.get("VMS_STATUS_TTL_SECONDS", "600"))
 VMS_SYNC_WAIT_SECONDS = float(os.environ.get("VMS_SYNC_WAIT_SECONDS", "2"))
+VMS_EXECUTOR_SOCKET = Path(
+    os.environ.get("VMS_EXECUTOR_SOCKET", "/tmp/vms-executor.sock")
+).resolve()
+VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS = float(
+    os.environ.get("VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS", "0.5")
+)

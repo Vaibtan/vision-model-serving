@@ -30,7 +30,8 @@ def main() -> int:
         os.environ["DJANGO_SETTINGS_MODULE"] = "vision_model_serving.web.settings"
         os.environ["VMS_REDIS_URL"] = redis_url
         os.environ["VMS_JOB_ROOT"] = job_root
-        os.environ["VMS_QUEUE_CAPACITY"] = "1"
+        os.environ["VMS_QUEUE_CAPACITY"] = "2"
+        os.environ["VMS_SYNC_WAIT_SECONDS"] = "0.1"
         os.environ["VMS_ALLOWED_HOSTS"] = "testserver,localhost"
 
         import django
@@ -93,6 +94,8 @@ def main() -> int:
             ]["schema"]
             if not multipart_schema:
                 raise AssertionError("OpenAPI omitted the multipart request contract")
+            if "504" not in prediction_operation["responses"]:
+                raise AssertionError("OpenAPI omitted the prediction-timeout contract")
             docs = client.get("/api/docs/")
             _assert_status(docs.status_code, 200, docs.content)
 
@@ -113,6 +116,40 @@ def main() -> int:
             )
             if unsupported_media.json()["error"]["code"] != "unsupported_media_type":
                 raise AssertionError("unsupported media error code is unstable")
+
+            malformed_dicom = client.post(
+                "/api/v1/predictions",
+                {
+                    "dicom": SimpleUploadedFile(
+                        "malformed.dcm",
+                        b"this is not a DICOM object",
+                        content_type="application/dicom",
+                    ),
+                    "mode": "detection",
+                },
+            )
+            _assert_status(
+                malformed_dicom.status_code,
+                400,
+                malformed_dicom.content,
+            )
+            if malformed_dicom.json()["error"]["code"] != "dicom_invalid":
+                raise AssertionError("malformed DICOM error code is unstable")
+
+            oversized = client.post(
+                "/api/v1/predictions",
+                {
+                    "dicom": SimpleUploadedFile(
+                        "oversized.dcm",
+                        b"0" * (64 * 1024 * 1024 + 1),
+                        content_type="application/dicom",
+                    ),
+                    "mode": "detection",
+                },
+            )
+            _assert_status(oversized.status_code, 413, oversized.content)
+            if oversized.json()["error"]["code"] != "dicom_encoded_size_exceeded":
+                raise AssertionError("encoded DICOM size error code is unstable")
 
             missing_history = client.post(
                 "/api/v1/predictions",
@@ -160,6 +197,24 @@ def main() -> int:
             )
             if status_response.json()["state"] != "queued":
                 raise AssertionError("queued prediction was not pollable through HTTP")
+
+            sync_timeout = client.post(
+                "/api/v1/predictions",
+                {
+                    "dicom": SimpleUploadedFile(
+                        "public-mammogram.dcm",
+                        dicom,
+                        content_type="application/dicom",
+                    ),
+                    "mode": "detection",
+                },
+                HTTP_IDEMPOTENCY_KEY="real-http-sync-timeout",
+            )
+            _assert_status(sync_timeout.status_code, 202, sync_timeout.content)
+            if sync_timeout.json()["state"] != "queued":
+                raise AssertionError(
+                    "bounded sync wait did not return a pollable handle"
+                )
 
             saturated = client.post(
                 "/api/v1/predictions",

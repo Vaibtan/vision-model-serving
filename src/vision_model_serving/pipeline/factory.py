@@ -8,7 +8,10 @@ from threading import RLock
 
 from vision_model_serving.artifacts import ArtifactRegistry
 from vision_model_serving.classifier import MmbcdClassifierAdapter
-from vision_model_serving.detector import FocalNetDinoAdapter
+from vision_model_serving.detector import (
+    FocalNetDinoAdapter,
+    probe_focalnet_native_operator,
+)
 from vision_model_serving.dicom import DicomCanonicalizer
 from vision_model_serving.residency import (
     ModelBinding,
@@ -110,9 +113,17 @@ def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipe
         artifact_root=config.artifact_root,
         tokenizer_root=config.tokenizer_root,
         repository_root=config.project_root,
+        native_operator_probe=lambda: probe_focalnet_native_operator(
+            config.focalnet_root,
+            device=config.device,
+        ),
     )
-    detector_artifact = registry.resolve(DETECTOR_MODEL_ID)
-    classifier_artifact = registry.resolve(CLASSIFIER_MODEL_ID)
+    report = registry.verify_all()
+    if not report.ready:
+        raise report.errors[0]
+    verified = {artifact.id: artifact for artifact in report.verified_artifacts}
+    detector_artifact = verified[DETECTOR_MODEL_ID]
+    classifier_artifact = verified[CLASSIFIER_MODEL_ID]
     warmup_inputs = _WarmupInputs()
 
     class DetectorResident:

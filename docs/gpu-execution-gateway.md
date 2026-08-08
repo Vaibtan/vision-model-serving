@@ -17,8 +17,12 @@ The persistent CUDA-owner topology is recorded in
   or initialize CUDA. A work-horse sends the two opaque job tokens over an
   owner-only Unix socket and waits for a generic success or failure response.
 - One long-lived executor owns CUDA and the pipeline. Artifact verification
-  completes before the socket becomes ready; detector and classifier remain
-  resident after their first successful loads.
+  plus pinned runtime, device, and native-operator verification complete before
+  the socket becomes ready; detector and classifier remain resident after
+  their first successful loads.
+- The same socket exposes a bounded, sanitized status operation used by Django
+  readiness and model inventory. It reports no paths, artifact filenames,
+  prediction identifiers, or failure details.
 - Automatic retry is disabled. An unexpected work-horse exit is terminal for
   that job; the next job receives a clean child process.
 - The queue and worker use RQ's JSON serializer.
@@ -59,29 +63,31 @@ replaced by a new submission.
 | --- | --- |
 | Queue full | Reject before creating another RQ job. |
 | Redis or enqueue unavailable | Delete the staged payload and return `prediction_gateway_unavailable`. |
-| Pipeline failure | RQ records one terminal failed job with a sanitized public error and no retry. |
-| Work-horse termination | RQ records failure; the gateway maps an abandoned execution to `prediction_worker_lost`. |
-| Executor unavailable or execution failure | The current RQ job fails once with a sanitized error; no retry is scheduled. |
-| Synchronous timeout | Return a healthy pollable handle without cancelling the job. |
+| Pipeline failure | RQ records one terminal failed job; result retrieval returns sanitized HTTP 500 and no retry. |
+| Work-horse termination | RQ records failure and result retrieval returns sanitized HTTP 503. |
+| Executor unavailable or failed runtime | The current RQ job fails once and result retrieval returns sanitized HTTP 503. |
+| RQ execution timeout | RQ records terminal failure and result retrieval returns sanitized HTTP 504. |
+| Bounded synchronous wait elapsed | Return a healthy pollable handle without cancelling the job. |
 | Result TTL elapsed | Return `prediction_result_expired` while short-lived RQ status remains available. |
 
 `observations()` reports active, queued, and running counts plus admission,
 rejection, success, failure, worker-loss, and accumulated queue-wait metrics.
 It exposes no prediction identifiers or private payload data.
 
-## Local validation
+## Real-infrastructure validation
 
 Use the repository's uv environment:
 
 ```powershell
-uv sync --extra gateway
-uv run --extra gateway python -m unittest tests.test_rq_execution_gateway -v
-uv run --extra gateway python -m unittest discover -s tests -v
+uv sync --extra gateway --extra web
+$env:VMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
+$env:VMS_TEST_DICOM_PATH = "C:\fixtures\cbis-ddsm-1-1.dcm"
+uv run --extra gateway --extra web python tests/real_infra/test_django_api.py
 ```
 
-These tests require no GPU. The production RQ worker's process-startup and
-end-to-end inference latency still require the separate NVIDIA L4 validation
-gate.
+This gate requires real Redis but no GPU. The separate
+`tests/real_infra/test_django_l4_inference.py` gate requires the real executor,
+RQ worker, model artifacts, and NVIDIA L4.
 
 ## Production processes
 
@@ -108,9 +114,10 @@ uv run --extra gateway python -m vision_model_serving.execution.rq_cli \
   --executor-timeout-seconds 180
 ```
 
-The executor socket is the readiness signal. Start the RQ worker only after it
-exists. The executor timeout must not exceed the RQ job timeout, and the result
-TTL must match the gateway configuration.
+Start the RQ worker only after the executor socket exists. Django readiness
+uses the socket's status operation rather than file existence. The executor
+timeout must not exceed the RQ job timeout, and the result TTL must match the
+gateway configuration.
 
 ## L4 acceptance evidence
 
