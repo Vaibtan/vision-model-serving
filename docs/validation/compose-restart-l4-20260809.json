@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "execution": {
-    "commit": "2bd0372a7aebb49a0ba14a4335626d045439300c",
+    "commit": "b88e1de6b37a12aa041dbfed6c99f643d8a278da",
     "runtime": {
       "gpu": "NVIDIA L4",
       "driver": "580.173.02",
@@ -19,13 +19,13 @@
         "size_bytes": 424104955
       },
       "validation": {
-        "id": "sha256:4d22e518c4bea010f20df9a80b3cc6f9401ea9888150ba9311e2611ce3c2d822",
-        "size_bytes": 424139140
+        "id": "sha256:2d086659fbd79b4714becdeb077f40c22209a2784096cad0b39b53159e5c1577",
+        "size_bytes": 424139666
       }
     },
     "reports": {
-      "before_sha256": "d9363c61081aadf0aa1f4a14a6bbef2b83e5cd792d9e3cd713853c494108ec4f",
-      "after_sha256": "a74cfe0734e54b7ea17343997ce71c4eb7da4c6b2a0cc89928576a0ebe1f1120"
+      "before_sha256": "6d692e0779015229f484cc3dacd88e60fd56ab189e08e51ef037437cb038721b",
+      "after_sha256": "9ac7ada2aae4fec3da33cc7d06c67cd162c107dff3200599ab0d3b731fd0f438"
     },
     "restart_boundary": {
       "containers_before_restart": 0,
@@ -116,6 +116,7 @@
     ]
   },
   "identity": {
+    "canonical_array_sha256": "97fa0f80a696ce7f822c1681a8c3f7c072da9262b2bd91239c9f1637eaf68552",
     "config_sha256": {
       "l4-fp32-environment.json": "ef6ac049754a2da6753aa586c2187185533597206394c009e4632ede7123c5b0",
       "model-artifacts.json": "9d949a0a7b8c64fce7109bfb7176b2986c1a895ee5fc5b037792679c0decff4f"
