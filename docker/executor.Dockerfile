@@ -41,7 +41,9 @@ RUN PATH=/app/.venv/bin:$PATH FORCE_CUDA=1 \
       --repo /opt/focalnet \
       --project-root /app \
       --spec /app/config/l4-fp32-environment.json \
-      --max-jobs 4
+      --max-jobs 4 \
+    && /app/.venv/bin/python -c \
+      "from pathlib import Path; from vision_model_serving.compatibility.environment import load_environment_spec; from vision_model_serving.compatibility.focalnet import prepare_focalnet_patches; spec=load_environment_spec(Path('/app/config/l4-fp32-environment.json')); results=prepare_focalnet_patches(Path('/opt/focalnet'), Path('/app'), spec); assert results and all(item.state == 'already_applied' for item in results)"
 RUN find /app/.venv/lib/python3.12/site-packages/nvidia \
       -mindepth 1 -maxdepth 1 -type d \
       ! -name cuda_cupti ! -name cusparselt ! -name nccl \
