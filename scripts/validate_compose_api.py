@@ -16,7 +16,12 @@ from benchmark_api import multipart_body, request_json
 from pydicom import dcmread
 from redis import Redis
 
+from vision_model_serving.dicom import DicomCanonicalizer
+
 DICOM_SHA256 = "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"
+CANONICAL_ARRAY_SHA256 = (
+    "97fa0f80a696ce7f822c1681a8c3f7c072da9262b2bd91239c9f1637eaf68552"
+)
 DETECTOR_OUTPUT_SHA256 = (
     "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5"
 )
@@ -61,6 +66,11 @@ def main() -> int:
     dicom = args.dicom.read_bytes()
     if _sha256(dicom) != DICOM_SHA256:
         raise AssertionError("DICOM bytes differ from the pinned public fixture")
+    canonical_array_sha256 = _sha256(
+        DicomCanonicalizer().decode(BytesIO(dicom)).pixels.tobytes()
+    )
+    if canonical_array_sha256 != CANONICAL_ARRAY_SHA256:
+        raise AssertionError("canonical DICOM pixels differ from the pinned fixture")
     base_url = args.base_url.rstrip("/")
     readiness = request_json(urllib.request.Request(f"{base_url}/readyz"), timeout=10.0)
     if readiness.get("status") != "ready" or not all(
@@ -120,7 +130,7 @@ def main() -> int:
     _assert_private_content_absent(args.redis_url, args.job_root, dicom)
     record = {
         "schema_version": 1,
-        "identity": _identity(initial),
+        "identity": _identity(initial, canonical_array_sha256),
         "behavior": {"cycles": cycles},
         "privacy": {
             "redis_contains_request_content": False,
@@ -329,10 +339,11 @@ def _assert_private_content_absent(
         raise AssertionError("request content persisted in the job volume")
 
 
-def _identity(inventory: dict) -> dict:
+def _identity(inventory: dict, canonical_array_sha256: str) -> dict:
     root = Path(__file__).resolve().parents[1]
     return {
         "dicom_sha256": DICOM_SHA256,
+        "canonical_array_sha256": canonical_array_sha256,
         "manifest_id": inventory["manifest_id"],
         "config_sha256": {
             name: _sha256((root / "config" / name).read_bytes())
