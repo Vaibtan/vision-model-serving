@@ -38,3 +38,8 @@ geometry used by downstream detector adapters.
 The [FocalNet-DINO detector adapter](docs/detector-adapter.md) defines the
 verified strict-load boundary, official input transform, deterministic
 top-300/NMS/top-eight proposal contract, and explicit L4 validation boundary.
+
+The [MMBCD classifier adapter](docs/classifier-adapter.md) defines the exact
+eight-crop and label-free prompt contract, checksum-pinned offline tokenizer,
+strict local-source model reconstruction, raw result semantics, and archived
+golden-hash validation boundary.
