@@ -1,0 +1,21 @@
+**
+!pyproject.toml
+!uv.lock
+!manage.py
+!config_cfg.py
+!config/
+!config/**
+!patches/
+!patches/**
+!scripts/
+!scripts/benchmark_api.py
+!scripts/l4_validation/
+!scripts/l4_validation/prepare_focalnet.py
+!src/
+!src/**
+!tests/
+!tests/real_infra/
+!tests/real_infra/test_django_api.py
+
+# The whitelist above deliberately excludes Git metadata, checkpoints, DICOMs,
+# downloaded sources, tokenizers, evidence archives, and local environments.

@@ -1,7 +1,7 @@
 # Vision Model Serving
 
-This repository defines and validates the inference pipeline and its CPU-only
-Django interface. Containerized deployment remains a separate delivery step.
+This repository defines and validates the inference pipeline, its CPU-only
+Django interface, and a split CPU/CUDA container deployment.
 
 For detailed task requirements and resource links, see [ASSIGNMENT.md](ASSIGNMENT.md).
 
@@ -83,8 +83,7 @@ uv run --extra gateway --extra web python manage.py runserver 127.0.0.1:8000
 
 `/readyz` intentionally remains unavailable until Redis, an RQ worker, and the
 GPU executor's artifact/device/operator report are all available. `/metrics`
-is a reserved integration point and returns a stable unavailable response
-until the observability implementation lands.
+is restricted to configured trusted networks and exposes bounded labels only.
 
 The CPU-side Django acceptance program requires a real Redis server and the
 checksum-pinned public DICOM; it does not substitute fakeredis or a synthetic
@@ -109,3 +108,7 @@ export VMS_TEST_EXECUTOR_SOCKET=/tmp/vms-executor.sock
 export VMS_TEST_DICOM_PATH=/fixtures/cbis-ddsm-1-1.dcm
 uv run --extra gateway --extra web python tests/real_infra/test_django_l4_inference.py
 ```
+
+The [container deployment](docs/containers.md) provides pinned non-root images,
+an internal non-persistent Redis service, read-only external model assets,
+bounded tmpfs storage, and real CPU, L4 smoke, and benchmark Compose profiles.

@@ -1,0 +1,303 @@
+name: vision-model-serving
+
+x-web-build: &web-build
+  context: .
+  dockerfile: docker/web.Dockerfile
+
+x-hardened: &hardened
+  read_only: true
+  cap_drop:
+    - ALL
+  security_opt:
+    - no-new-privileges:true
+  init: true
+
+x-app-environment: &app-environment
+  PYTHONPATH: /app/src
+  VMS_EXECUTOR_SOCKET: /run/vms/executor.sock
+  VMS_JOB_ROOT: /var/lib/vms/jobs
+  VMS_METRICS_DIR: /run/vms/metrics
+  VMS_METRICS_ENABLED: "true"
+  VMS_QUEUE_CAPACITY: "1"
+  VMS_QUEUE_NAME: gpu-inference
+  VMS_REDIS_URL: redis://redis:6379/0
+  VMS_RESULT_TTL_SECONDS: "900"
+
+services:
+  redis:
+    image: redis:7.4.10-bookworm@sha256:e9b2e45ecd47fbb69b877cf8d045d5cccaaaed52524b6e098b4abe8212994f73
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    <<: *hardened
+    user: "999:999"
+    networks:
+      - backend
+    tmpfs:
+      - /data:size=64m,mode=0700,uid=999,gid=999
+      - /tmp:size=16m,mode=0700,uid=999,gid=999
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  executor:
+    profiles: ["gpu", "benchmark"]
+    image: vision-model-serving-executor:local
+    build:
+      context: .
+      dockerfile: docker/executor.Dockerfile
+    <<: *hardened
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      PROMETHEUS_MULTIPROC_DIR: /run/vms/metrics
+      VMS_METRICS_DIR: /run/vms/metrics
+    gpus: all
+    networks:
+      - backend
+    volumes:
+      - executor-run:/run/vms
+      - jobs:/var/lib/vms/jobs
+      - metrics:/run/vms/metrics
+      - type: bind
+        source: ${VMS_ARTIFACT_ROOT:-../vision-model-serving-artifacts}
+        target: /models
+        read_only: true
+      - type: bind
+        source: ${VMS_TOKENIZER_ROOT:-../vision-model-serving-assets/roberta-tokenizer}
+        target: /assets/tokenizer
+        read_only: true
+      - type: bind
+        source: ${VMS_MMBCD_ROOT:-../vision-model-serving-sources/MMBCD}
+        target: /sources/MMBCD
+        read_only: true
+      - type: bind
+        source: ${VMS_DINO_ROOT:-../vision-model-serving-sources/dino}
+        target: /sources/dino
+        read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=0700,uid=10001,gid=10001
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from pathlib import Path; from vision_model_serving.execution.executor import GpuExecutorClient;
+          s=GpuExecutorClient(Path('/run/vms/executor.sock'), timeout_seconds=2).status();
+          raise SystemExit(0 if s.ready and s.verified_artifacts and s.device and s.native_operator else 1)
+      interval: 5s
+      timeout: 3s
+      start_period: 90s
+      retries: 12
+
+  rq-worker:
+    profiles: ["gpu", "benchmark"]
+    image: vision-model-serving-web:local
+    build:
+      <<: *web-build
+      target: runtime
+    command:
+      - python
+      - -m
+      - vision_model_serving.execution.rq_cli
+      - --redis-url
+      - redis://redis:6379/0
+      - --queue-name
+      - gpu-inference
+      - --executor-socket
+      - /run/vms/executor.sock
+      - --executor-timeout-seconds
+      - "180"
+    <<: *hardened
+    restart: unless-stopped
+    stop_grace_period: 190s
+    environment: *app-environment
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      executor:
+        condition: service_healthy
+    volumes:
+      - executor-run:/run/vms
+      - jobs:/var/lib/vms/jobs
+      - metrics:/run/vms/metrics
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid=10001,gid=10001
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          from redis import Redis; from rq import Queue, Worker;
+          r=Redis.from_url('redis://redis:6379/0'); q=Queue('gpu-inference', connection=r);
+          raise SystemExit(0 if r.ping() and Worker.all(queue=q) else 1)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  web:
+    profiles: ["gpu", "benchmark"]
+    image: vision-model-serving-web:local
+    build:
+      <<: *web-build
+      target: runtime
+    <<: *hardened
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      <<: *app-environment
+      VMS_ALLOWED_HOSTS: localhost,127.0.0.1,web
+      VMS_SECRET_KEY: ${VMS_SECRET_KEY:-local-assessment-key-change-before-deployment}
+      VMS_SYNC_WAIT_SECONDS: "5"
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+      rq-worker:
+        condition: service_healthy
+    ports:
+      - 127.0.0.1:${VMS_HTTP_PORT:-8000}:8000
+    volumes:
+      - executor-run:/run/vms
+      - jobs:/var/lib/vms/jobs
+      - metrics:/run/vms/metrics
+    tmpfs:
+      - /tmp:size=64m,mode=0700,uid=10001,gid=10001
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - >-
+          import urllib.request;
+          raise SystemExit(0 if urllib.request.urlopen('http://127.0.0.1:8000/readyz', timeout=2).status == 200 else 1)
+      interval: 5s
+      timeout: 3s
+      retries: 12
+
+  test:
+    profiles: ["test"]
+    image: vision-model-serving-test:local
+    build:
+      <<: *web-build
+      target: test
+    command: ["python", "tests/real_infra/test_django_api.py"]
+    <<: *hardened
+    environment:
+      VMS_TEST_DICOM_PATH: /fixtures/input.dcm
+      VMS_TEST_REDIS_URL: redis://redis:6379/15
+    networks:
+      - backend
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
+        target: /fixtures/input.dcm
+        read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=0700,uid=10001,gid=10001
+
+  gpu-smoke:
+    profiles: ["gpu"]
+    image: vision-model-serving-test:local
+    build:
+      <<: *web-build
+      target: test
+    command:
+      - python
+      - scripts/benchmark_api.py
+      - --base-url
+      - http://web:8000
+      - --dicom
+      - /fixtures/input.dcm
+      - --output
+      - /tmp/gpu-smoke.json
+      - --runs
+      - "1"
+      - --expected-detector-sha256
+      - 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5
+      - --expected-classifier-sha256
+      - f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
+    <<: *hardened
+    networks:
+      - backend
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
+        target: /fixtures/input.dcm
+        read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=0700,uid=10001,gid=10001
+
+  benchmark:
+    profiles: ["benchmark"]
+    image: vision-model-serving-test:local
+    build:
+      <<: *web-build
+      target: test
+    user: ${VMS_RESULT_UID:-1000}:${VMS_RESULT_GID:-1000}
+    command:
+      - python
+      - scripts/benchmark_api.py
+      - --base-url
+      - http://web:8000
+      - --dicom
+      - /fixtures/input.dcm
+      - --output
+      - /results/benchmark.json
+      - --runs
+      - ${VMS_BENCHMARK_RUNS:-5}
+      - --expected-detector-sha256
+      - 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5
+      - --expected-classifier-sha256
+      - f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
+    <<: *hardened
+    networks:
+      - backend
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+      - type: bind
+        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
+        target: /fixtures/input.dcm
+        read_only: true
+      - type: bind
+        source: ${VMS_BENCHMARK_RESULTS:-./benchmark-results}
+        target: /results
+    tmpfs:
+      - /tmp:size=256m,mode=0700
+
+networks:
+  backend:
+    internal: true
+
+volumes:
+  executor-run:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=16m,uid=10001,gid=10001,mode=0700
+  jobs:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=${VMS_JOBS_SIZE:-1g},uid=10001,gid=10001,mode=0700
+  metrics:
+    driver: local
+    driver_opts:
+      type: tmpfs
+      device: tmpfs
+      o: size=32m,uid=10001,gid=10001,mode=0700
