@@ -59,3 +59,14 @@ $env:PYTHONPATH = "src"
 python -m vision_model_serving.pipeline --help
 python -m unittest tests.test_prediction_pipeline -v
 ```
+
+The [bounded GPU execution gateway](docs/gpu-execution-gateway.md) adds atomic
+pending-plus-running admission, idempotent opaque jobs, ephemeral private
+payload/result storage, Celery/Redis production adapters, synchronous waiting,
+asynchronous status/result polling, worker-loss semantics, and lifecycle
+observations without importing CUDA into web processes:
+
+```powershell
+$env:PYTHONPATH = "src"
+python -m unittest tests.test_gpu_execution_gateway -v
+```
