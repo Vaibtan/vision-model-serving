@@ -220,7 +220,7 @@ class GpuExecutorServer:
             ):
                 raise ValueError
             self._executor.execute(PredictionId(prediction), locator)
-            response["ok"] = True
+            response = {"schema_version": 1, "ok": True}
         except Exception:  # noqa: BLE001 - sanitize the process seam
             try:
                 runtime_unavailable = not self._executor.status().ready
