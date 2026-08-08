@@ -34,6 +34,8 @@ existing Redis/RQ and executor-status contracts. It covers:
 
 The JSON event stream uses explicit safe fields. HTTP events contain only a
 bounded route name, method, outcome, status, duration, and opaque request ID.
+Sanitized internal-error events contain only the Python exception class, not
+its message or traceback.
 Executor completion events contain mode, non-identifying image shape and transfer
 syntax, short artifact hash prefixes, timing/memory observations, and ROI counts.
 They never serialize request bodies, clinical history, filenames, filesystem

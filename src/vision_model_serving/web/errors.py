@@ -11,7 +11,10 @@ from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
 
-from vision_model_serving.observability import record_http_response
+from vision_model_serving.observability import (
+    record_http_exception,
+    record_http_response,
+)
 
 
 class ClinicalHistoryRequired(APIException):
@@ -55,6 +58,7 @@ def exception_handler(error: Exception, context: dict[str, object]) -> Response:
     response = drf_exception_handler(error, context)
     request = context.get("request")
     if response is None:
+        record_http_exception(error)
         return public_error(
             request,
             "internal_error",

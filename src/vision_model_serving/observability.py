@@ -132,6 +132,12 @@ def record_http_response(
     )
 
 
+def record_http_exception(error: Exception) -> None:
+    """Record only the bounded exception type at the DRF sanitization boundary."""
+
+    _event("http_exception", exception_class=type(error).__name__)
+
+
 def record_dicom(outcome: str) -> None:
     _DICOM.labels(outcome if outcome in {"accepted", "rejected"} else "rejected").inc()
 
