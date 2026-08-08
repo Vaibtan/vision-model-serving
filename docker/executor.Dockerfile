@@ -43,7 +43,7 @@ RUN find /app/.venv/lib/python3.12/site-packages/nvidia \
       ! -name cuda_cupti ! -name cusparselt ! -name nccl \
       -exec rm -rf {} + \
     && PYTHONPATH=/opt/focalnet/models/dino/ops /app/.venv/bin/python -c \
-      "import MultiScaleDeformableAttention, torch; assert torch.version.cuda == '12.8'"
+      "import torch; import MultiScaleDeformableAttention; assert torch.version.cuda == '12.8'"
 
 FROM ${CUDA_RUNTIME_IMAGE} AS runtime
 
