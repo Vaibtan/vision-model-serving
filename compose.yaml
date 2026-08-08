@@ -52,7 +52,13 @@ services:
     environment:
       PROMETHEUS_MULTIPROC_DIR: /run/vms/metrics
       VMS_METRICS_DIR: /run/vms/metrics
-    gpus: all
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
     networks:
       - backend
     volumes:
