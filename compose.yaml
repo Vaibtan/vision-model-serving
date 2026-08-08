@@ -42,7 +42,7 @@ services:
       retries: 15
 
   executor:
-    profiles: ["gpu", "benchmark"]
+    profiles: ["gpu", "benchmark", "validation"]
     image: vision-model-serving-executor:local
     build:
       context: .
@@ -99,7 +99,7 @@ services:
       retries: 12
 
   rq-worker:
-    profiles: ["gpu", "benchmark"]
+    profiles: ["gpu", "benchmark", "validation"]
     image: vision-model-serving-web:local
     build:
       <<: *web-build
@@ -147,7 +147,7 @@ services:
       retries: 12
 
   web:
-    profiles: ["gpu", "benchmark"]
+    profiles: ["gpu", "benchmark", "validation"]
     image: vision-model-serving-web:local
     build:
       <<: *web-build
@@ -281,6 +281,48 @@ services:
         read_only: true
       - type: bind
         source: ${VMS_BENCHMARK_RESULTS:-./benchmark-results}
+        target: /results
+    tmpfs:
+      - /tmp:size=256m,mode=0700
+
+  validation:
+    profiles: ["validation"]
+    image: vision-model-serving-test:local
+    build:
+      <<: *web-build
+      target: test
+    user: ${VMS_RESULT_UID:-1000}:${VMS_RESULT_GID:-1000}
+    command:
+      - python
+      - scripts/validate_compose_api.py
+      - --base-url
+      - http://web:8000
+      - --redis-url
+      - redis://redis:6379/0
+      - --job-root
+      - /var/lib/vms/jobs
+      - --dicom
+      - /fixtures/input.dcm
+      - --output
+      - /results/${VMS_VALIDATION_PHASE:-before}.json
+      - --baseline
+      - /results/before.json
+      - --cycles
+      - ${VMS_VALIDATION_CYCLES:-2}
+    <<: *hardened
+    networks:
+      - backend
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+      - jobs:/var/lib/vms/jobs:ro
+      - type: bind
+        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
+        target: /fixtures/input.dcm
+        read_only: true
+      - type: bind
+        source: ${VMS_VALIDATION_RESULTS:-./validation-results}
         target: /results
     tmpfs:
       - /tmp:size=256m,mode=0700

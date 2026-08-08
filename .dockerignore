@@ -9,6 +9,7 @@
 !patches/**
 !scripts/
 !scripts/benchmark_api.py
+!scripts/validate_compose_api.py
 !scripts/l4_validation/
 !scripts/l4_validation/prepare_focalnet.py
 !src/

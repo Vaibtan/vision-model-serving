@@ -34,6 +34,7 @@ USER 10001:10001
 FROM app AS test
 COPY --chown=10001:10001 tests/real_infra/test_django_api.py ./tests/real_infra/test_django_api.py
 COPY --chown=10001:10001 scripts/benchmark_api.py ./scripts/benchmark_api.py
+COPY --chown=10001:10001 scripts/validate_compose_api.py ./scripts/validate_compose_api.py
 
 FROM app AS runtime
 EXPOSE 8000

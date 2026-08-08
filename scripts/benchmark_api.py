@@ -68,7 +68,7 @@ def main() -> int:
 
 def _predict(base_url: str, dicom: bytes, *, timeout_seconds: float) -> dict:
     boundary = "vms-real-infrastructure-boundary"
-    body = _multipart(
+    body = multipart_body(
         boundary,
         dicom,
         {"mode": "full", "clinical_history": "real public mammogram acceptance."},
@@ -82,16 +82,16 @@ def _predict(base_url: str, dicom: bytes, *, timeout_seconds: float) -> dict:
         },
         method="POST",
     )
-    submitted = _json(request, timeout=min(30.0, timeout_seconds))
+    submitted = request_json(request, timeout=min(30.0, timeout_seconds))
     prediction_id = submitted["prediction_id"]
     deadline = time.monotonic() + timeout_seconds
     while time.monotonic() < deadline:
-        status = _json(
+        status = request_json(
             urllib.request.Request(f"{base_url}/api/v1/predictions/{prediction_id}"),
             timeout=min(10.0, timeout_seconds),
         )
         if status["state"] == "succeeded":
-            return _json(
+            return request_json(
                 urllib.request.Request(
                     f"{base_url}/api/v1/predictions/{prediction_id}/result"
                 ),
@@ -103,7 +103,7 @@ def _predict(base_url: str, dicom: bytes, *, timeout_seconds: float) -> dict:
     raise TimeoutError("prediction did not finish before the benchmark deadline")
 
 
-def _json(request: urllib.request.Request, *, timeout: float) -> dict:
+def request_json(request: urllib.request.Request, *, timeout: float) -> dict:
     try:
         with urllib.request.urlopen(request, timeout=timeout) as response:
             return json.load(response)
@@ -112,7 +112,7 @@ def _json(request: urllib.request.Request, *, timeout: float) -> dict:
         raise RuntimeError(f"HTTP {error.code}: {message}") from error
 
 
-def _multipart(boundary: str, dicom: bytes, fields: dict[str, str]) -> bytes:
+def multipart_body(boundary: str, dicom: bytes, fields: dict[str, str]) -> bytes:
     chunks: list[bytes] = []
     for name, value in fields.items():
         chunks.extend(
