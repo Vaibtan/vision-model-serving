@@ -264,7 +264,7 @@ status(prediction_id: PredictionId) -> PredictionStatus
 result(prediction_id: PredictionId) -> PredictionResult
 ```
 
-It owns admission limits, opaque job IDs, idempotency, queue submission, status/result TTLs, and the synchronous-wait compatibility path. Its production adapter uses Celery and Redis; its test adapter runs an in-memory fake. Large DICOM bytes and clinical history are not serialized into the broker message.
+It owns admission limits, opaque job IDs, idempotency, queue submission, status/result TTLs, and the synchronous-wait compatibility path. Its production adapter uses RQ and Redis; interface tests exercise the same adapter with fakeredis. Large DICOM bytes and clinical history are not serialized into Redis job data.
 
 #### `DicomDecoder`
 
@@ -333,11 +333,11 @@ Required invariants:
 Initial Docker Compose topology:
 
 - `web`: Django/DRF, Gunicorn, templates/static files, validation, admission, status/result formatting;
-- `inference-worker`: one Celery worker process, concurrency one, prefetch one, all PyTorch/CUDA/model code, and read-only `/models`;
-- `redis`: broker and short-lived status/result backend with persistence disabled for the assessment profile; and
+- `inference-worker`: one RQ worker processing one job at a time, with all PyTorch/CUDA/model code and read-only `/models`;
+- `redis`: RQ broker plus short-lived admission and job metadata, with persistence disabled for the assessment profile; and
 - `jobs`: a size-bounded ephemeral shared volume holding opaque per-job input/preview files until cleanup.
 
-Celery tasks are idempotent with respect to a prediction ID. Late acknowledgement may be used only with idempotent result writes; automatic retries stop once GPU execution has begun unless the failure is explicitly classified as safe to retry. The worker must initialize CUDA in its execution process, not in a parent that will later fork. Hard task termination is treated as worker loss and requires a clean worker/runtime restart.
+RQ jobs are idempotent with respect to a prediction ID and have no automatic retry. The standard RQ worker forks one isolated work-horse per prediction; CUDA is initialized inside that child, never in the parent. Unexpected work-horse termination becomes a failed job, and the next prediction starts in a clean child process.
 
 This is an explicit constraint, not an accidental default. Web worker count cannot create additional model copies because only `inference-worker` mounts weights and sees the GPU. The worker entrypoint fixes concurrency to one and the readiness/status interface exposes conflicting configuration.
 
@@ -796,7 +796,7 @@ Deliver:
 - artifact registry;
 - single-residency runtime and state machine;
 - prediction pipeline module;
-- Celery/Redis GPU execution gateway, bounded admission, TTLs, and idempotent job state;
+- RQ/Redis GPU execution gateway, bounded admission, TTLs, and idempotent job state;
 - REST, health, model, schema, and error interfaces;
 - concurrency, switch, overload, and failure tests; and
 - structured logs and metrics.
@@ -911,7 +911,7 @@ The submission is complete when:
 - [pydicom pixel data guide](https://pydicom.github.io/pydicom/stable/guides/user/working_with_pixel_data.html)
 - [Django deployment checklist](https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/)
 - [Django REST framework parsers](https://www.django-rest-framework.org/api-guide/parsers/)
-- [Celery optimizing guide](https://docs.celeryq.dev/en/stable/userguide/optimizing.html)
+- [RQ worker lifecycle](https://python-rq.org/docs/workers/)
 - [Docker Django guide](https://docs.docker.com/guides/frameworks/django/)
 - [NVIDIA TensorRT best practices](https://docs.nvidia.com/deeplearning/tensorrt/latest/performance/best-practices.html)
 - [NVIDIA TensorRT custom layers/plugins](https://docs.nvidia.com/deeplearning/tensorrt/latest/inference-library/extending-custom-layers.html)

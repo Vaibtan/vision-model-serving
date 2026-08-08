@@ -44,6 +44,7 @@ from vision_model_serving.pipeline import (  # noqa: E402
     PredictionMode,
     PredictionInputError,
     PredictionPipeline,
+    prediction_from_dict,
     prediction_to_dict,
 )
 from vision_model_serving.pipeline.cli import main as pipeline_cli_main  # noqa: E402
@@ -526,6 +527,7 @@ class PredictionPipelineFullTests(unittest.TestCase):
         self.assertEqual(payload["classification"]["logits"], [-1.5, 2.5])
         self.assertNotIn("prior surgery", encoded)
         self.assertNotIn("Indication", encoded)
+        self.assertEqual(prediction_from_dict(payload), result)
 
     def test_full_mode_drives_the_single_residency_switch(self) -> None:
         mammogram = canonical_mammogram()

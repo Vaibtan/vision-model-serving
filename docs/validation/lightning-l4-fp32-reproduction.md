@@ -624,7 +624,7 @@ python "${VMS_REPO}/scripts/l4_validation/17_validate_prediction_pipeline.py" \
   --cycles 2
 ```
 
-Do not close the prediction-pipeline implementation gate unless the command
-ends with `PREDICTION PIPELINE L4 PASSED` and preserves the archived detector,
-MMBCD-input, and MMBCD-output hashes. Django, queueing, and frontend work remain
-outside this command.
+The two-cycle command passed on an NVIDIA L4 on 2026-08-08 and preserved the
+archived detector, MMBCD-input, and MMBCD-output hashes. The generated record is
+committed at `docs/validation/prediction-pipeline-l4-20260808.json`. Django,
+queueing, and frontend work remain outside this command.
