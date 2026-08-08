@@ -71,7 +71,7 @@ def _predict(base_url: str, dicom: bytes, *, timeout_seconds: float) -> dict:
     body = _multipart(
         boundary,
         dicom,
-        {"mode": "full", "clinical_history": "benchmark mammogram acceptance."},
+        {"mode": "full", "clinical_history": "real public mammogram acceptance."},
     )
     request = urllib.request.Request(
         f"{base_url}/api/v1/predictions",
