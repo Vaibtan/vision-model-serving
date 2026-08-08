@@ -38,7 +38,7 @@
     },
     {
       "path": "patches/focalnet-serving-no-backbone-preload.patch",
-      "sha256": "553c4b282201499e68558c6867275a6e429e72cec1ebdb482887a5a850955ad5"
+      "sha256": "934e10005eeed016565f15e5cacb8612cb863615918cfabd90989fbaddded7a7"
     },
     {
       "path": "patches/focalnet-docker-force-cuda.patch",
