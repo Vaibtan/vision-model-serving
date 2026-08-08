@@ -91,11 +91,12 @@ threshold.
 
 The immutable Lightning evidence records raw detector prediction SHA-256
 `4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5` on
-an NVIDIA L4. This local checkout cannot rerun that forward pass because these
-runtime inputs are not installed:
+an NVIDIA L4. The checkpoint is intentionally outside this checkout. The
+sibling read-only artifact directory contains `focalnet-dino-finetuned.pth` at
+exactly 2,731,092,364 bytes, and its SHA-256 was rechecked as
+`67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4`.
+This workstation still cannot rerun that forward pass because it lacks:
 
-- `focalnet-dino-finetuned.pth`, exactly 2,731,092,364 bytes, SHA-256
-  `67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4`;
 - a FocalNet-DINO checkout at revision
   `23901e021dc6ec8f66bad47983f45a25574452cc` with both repository patches
   applied and its native CUDA operator built; and
@@ -103,9 +104,9 @@ runtime inputs are not installed:
 
 The evidence archive intentionally does not contain the multi-gigabyte model
 checkpoint or source checkout. Do not treat CPU unit tests or the archived hash
-as a fresh detector run. After the missing inputs are available, the explicit
-success gate remains `REAL DICOM DETECTOR INFERENCE PASSED` with an exact raw
-prediction-hash match.
+as a fresh detector run. After the external checkpoint, source checkout, and
+L4 runtime are available together, the explicit success gate remains
+`REAL DICOM DETECTOR INFERENCE PASSED` with an exact raw prediction-hash match.
 
 Run the locally available coverage with:
 
