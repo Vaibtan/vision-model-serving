@@ -306,7 +306,7 @@
       "kind": "patch",
       "path": "patches/focalnet-serving-no-backbone-preload.patch",
       "size_bytes": 1065,
-      "sha256": "934e10005eeed016565f15e5cacb8612cb863615918cfabd90989fbaddded7a7",
+      "sha256": "fe88967e13ead7496c68e1a005ba0317b88e0fd3bfc39af7b75038403d7ddf57",
       "applies_to_revision": "23901e021dc6ec8f66bad47983f45a25574452cc"
     },
     {

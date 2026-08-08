@@ -10,7 +10,7 @@ diff --git a/models/dino/backbone.py b/models/dino/backbone.py
          from collections import OrderedDict
          def key_select_function(keyname):
              if 'head' in keyname:
-@@ -236,7 +236,7 @@ def build_backbone(args):
+@@ -236,6 +236,6 @@ def build_backbone(args):
          }
          pretrainedpath = os.path.join(pretrained_dir, PTDICT[args.backbone])
 -        checkpoint = torch.load(pretrainedpath, map_location='cpu')['model']
