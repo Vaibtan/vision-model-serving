@@ -2,16 +2,16 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from io import BytesIO
 import json
 import os
-from pathlib import Path
 import re
 import secrets
 import shutil
+from collections.abc import Callable
+from dataclasses import dataclass
+from io import BytesIO
+from pathlib import Path
 from time import time
-from typing import Callable
 
 from vision_model_serving.pipeline.contracts import (
     CaseInput,
@@ -25,7 +25,6 @@ from vision_model_serving.pipeline.serialization import (
 
 from .contracts import PredictionGatewayError, PredictionId, PredictionRequest
 from .fingerprinting import request_fingerprint
-
 
 _LOCATOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32}$")
 
@@ -183,12 +182,11 @@ class EphemeralJobStore:
                     raise JobResultConflict(
                         "stored prediction result is inconsistent"
                     ) from None
-                if not isinstance(existing, dict) or existing.get("result") != envelope[
-                    "result"
-                ]:
-                    raise JobResultConflict(
-                        "stored prediction result is inconsistent"
-                    )
+                if (
+                    not isinstance(existing, dict)
+                    or existing.get("result") != envelope["result"]
+                ):
+                    raise JobResultConflict("stored prediction result is inconsistent")
         finally:
             temporary.unlink(missing_ok=True)
         self.purge_request(locator)
@@ -196,9 +194,7 @@ class EphemeralJobStore:
     def load_result(self, locator: str) -> PredictionResult:
         try:
             envelope = json.loads(
-                (self._directory(locator) / "result.json").read_text(
-                    encoding="utf-8"
-                )
+                (self._directory(locator) / "result.json").read_text(encoding="utf-8")
             )
             if (
                 not isinstance(envelope, dict)

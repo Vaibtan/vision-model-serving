@@ -1,8 +1,8 @@
-"""Bounded GPU prediction execution gateway."""
+"""Bounded GPU prediction execution through RQ."""
 
 from .contracts import (
-    GatewayUnavailable,
     GatewayObservations,
+    GatewayUnavailable,
     GpuExecutionGateway,
     IdempotencyConflict,
     PredictionFailed,
@@ -17,69 +17,37 @@ from .contracts import (
     ResultExpired,
     ResultNotReady,
 )
-from .memory import InMemoryGpuExecutionGateway
-from .gateway import StoredGpuExecutionGateway
-from .state import (
-    Admission,
-    InMemoryPredictionStateRepository,
-    JobStateRecord,
-    PredictionStateRepository,
-)
-from .worker import PredictionJobWorker
-from .celery import (
-    GPU_TASK_NAME,
-    CeleryTaskDispatcher,
-    configure_gpu_worker,
-    register_prediction_task,
-)
-from .redis_state import RedisPredictionStateRepository
-from .production import (
-    CeleryRedisGpuExecutionGateway,
-    GpuExecutionConfig,
+from .rq_gateway import RQ_TASK_PATH, RqExecutionConfig, RqGpuExecutionGateway
+from .rq_worker import (
+    PredictionJobWorker,
     build_prediction_worker_factory,
-)
-from .storage import (
-    EphemeralJobStore,
-    JobPayloadNotFound,
-    JobResultConflict,
-    JobResultNotFound,
-    StoredJobPayload,
+    configure_prediction_worker,
+    create_prediction_rq_worker,
+    execute_prediction_job,
 )
 
 __all__ = [
-    "CeleryTaskDispatcher",
-    "CeleryRedisGpuExecutionGateway",
-    "IdempotencyConflict",
-    "GatewayUnavailable",
+    "RQ_TASK_PATH",
     "GatewayObservations",
-    "GPU_TASK_NAME",
-    "GpuExecutionConfig",
+    "GatewayUnavailable",
     "GpuExecutionGateway",
-    "Admission",
-    "EphemeralJobStore",
-    "InMemoryGpuExecutionGateway",
-    "InMemoryPredictionStateRepository",
-    "JobPayloadNotFound",
-    "JobResultConflict",
-    "JobResultNotFound",
-    "JobStateRecord",
-    "PredictionHandle",
+    "IdempotencyConflict",
     "PredictionFailed",
     "PredictionFailure",
+    "PredictionHandle",
     "PredictionId",
     "PredictionJobState",
     "PredictionJobWorker",
     "PredictionNotFound",
     "PredictionRequest",
     "PredictionStatus",
-    "PredictionStateRepository",
     "QueueSaturated",
-    "RedisPredictionStateRepository",
     "ResultExpired",
     "ResultNotReady",
-    "StoredJobPayload",
-    "StoredGpuExecutionGateway",
-    "configure_gpu_worker",
+    "RqExecutionConfig",
+    "RqGpuExecutionGateway",
     "build_prediction_worker_factory",
-    "register_prediction_task",
+    "configure_prediction_worker",
+    "create_prediction_rq_worker",
+    "execute_prediction_job",
 ]

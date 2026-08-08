@@ -12,7 +12,6 @@ from vision_model_serving.pipeline.contracts import (
     PredictionResult,
 )
 
-
 PredictionId = NewType("PredictionId", str)
 
 
