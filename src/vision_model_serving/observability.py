@@ -118,6 +118,8 @@ def record_http_response(
     _HTTP_REQUESTS.labels(route, method, outcome).inc()
     _HTTP_DURATION.labels(route, method).observe(max(0.0, duration_seconds))
     _CPU_RSS.labels("web").set(_rss_bytes())
+    if route == "prediction-status" and outcome == "success":
+        return
     _event(
         "http_response",
         route=route,
