@@ -107,6 +107,29 @@ docker compose --profile benchmark up --build \
 hashes, one excluded warmup, and min/median/p95/max end-to-end latency. It does
 not record clinical text, DICOM identifiers, filenames, or prediction IDs.
 
+## Destructive-restart validation profile
+
+The validation profile runs detection and full inference twice, verifies warm
+model reuse and bounded outputs, and writes a report to an explicit bind mount.
+Run it once as `before`, destroy the complete stack including volumes, then run
+it as `after`; the second report must match the first model, configuration, and
+behavior identity.
+
+```bash
+mkdir -p validation-results
+export VMS_VALIDATION_RESULTS="$PWD/validation-results"
+export VMS_RESULT_UID="$(id -u)"
+export VMS_RESULT_GID="$(id -g)"
+export VMS_VALIDATION_PHASE=before
+docker compose --profile validation up --no-build --pull never \
+  --abort-on-container-exit --exit-code-from validation
+docker compose --profile validation down --volumes --remove-orphans
+export VMS_VALIDATION_PHASE=after
+docker compose --profile validation up --no-build --pull never \
+  --abort-on-container-exit --exit-code-from validation
+docker compose --profile validation down --volumes --remove-orphans
+```
+
 ## Runtime limits and inspection
 
 - RQ's standard worker reserves no batch or prefetched jobs and processes one
@@ -138,4 +161,6 @@ hash, clinical text, evidence-archive name, nor a mounted host path. Native
 
 The clean-build, profile-isolation, golden-smoke, benchmark, image-inspection,
 and cleanup results are captured in the
-[bounded L4 validation record](validation/container-l4-20260809.json).
+[bounded L4 validation record](validation/container-l4-20260809.json). The
+two-lifecycle public-DICOM proof is captured separately in the
+[destructive-restart validation record](validation/compose-restart-l4-20260809.json).
