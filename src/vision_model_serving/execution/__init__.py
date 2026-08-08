@@ -17,9 +17,17 @@ from .contracts import (
     ResultExpired,
     ResultNotReady,
 )
+from .executor import (
+    GpuExecutorClient,
+    GpuExecutorConfigurationError,
+    GpuExecutorError,
+    GpuExecutorServer,
+    GpuExecutorUnavailable,
+)
 from .rq_gateway import RQ_TASK_PATH, RqExecutionConfig, RqGpuExecutionGateway
 from .rq_worker import (
     PredictionJobWorker,
+    build_executor_client_factory,
     build_prediction_worker_factory,
     configure_prediction_worker,
     create_prediction_rq_worker,
@@ -31,6 +39,11 @@ __all__ = [
     "GatewayObservations",
     "GatewayUnavailable",
     "GpuExecutionGateway",
+    "GpuExecutorClient",
+    "GpuExecutorConfigurationError",
+    "GpuExecutorError",
+    "GpuExecutorServer",
+    "GpuExecutorUnavailable",
     "IdempotencyConflict",
     "PredictionFailed",
     "PredictionFailure",
@@ -46,6 +59,7 @@ __all__ = [
     "ResultNotReady",
     "RqExecutionConfig",
     "RqGpuExecutionGateway",
+    "build_executor_client_factory",
     "build_prediction_worker_factory",
     "configure_prediction_worker",
     "create_prediction_rq_worker",

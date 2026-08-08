@@ -99,6 +99,21 @@ def build_prediction_worker_factory(
     return build
 
 
+def build_executor_client_factory(
+    *,
+    socket_path: Path,
+    timeout_seconds: float,
+) -> Callable[[], object]:
+    """Build only the lightweight executor client inside each RQ work-horse."""
+
+    def build() -> object:
+        from .executor import GpuExecutorClient
+
+        return GpuExecutorClient(socket_path, timeout_seconds=timeout_seconds)
+
+    return build
+
+
 def create_prediction_rq_worker(
     *,
     redis_client: object,

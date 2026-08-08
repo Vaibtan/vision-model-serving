@@ -62,9 +62,10 @@ python -m unittest tests.test_prediction_pipeline -v
 
 The [bounded GPU execution gateway](docs/gpu-execution-gateway.md) adds atomic
 pending-plus-running admission, idempotent opaque jobs, ephemeral private
-payload/result storage, RQ/Redis execution, synchronous waiting,
-asynchronous status/result polling, worker-loss semantics, and lifecycle
-observations without importing CUDA into web processes:
+payload/result storage, RQ/Redis execution, a long-lived dual-resident GPU
+executor behind an owner-only Unix socket, synchronous waiting, asynchronous
+status/result polling, worker-loss semantics, and lifecycle observations
+without importing CUDA into web or RQ worker processes:
 
 ```powershell
 uv run --extra gateway python -m unittest tests.test_rq_execution_gateway -v

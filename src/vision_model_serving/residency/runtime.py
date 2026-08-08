@@ -153,6 +153,7 @@ class RuntimeStatus:
     memory: MemorySnapshot
     metrics: LifecycleMetrics
     timings: LifecycleTimings
+    resident_models: tuple[str, ...] = ()
 
 
 class ResidentModel(Protocol):
@@ -245,17 +246,22 @@ class SingleResidencyRuntime:
         *,
         bindings: Sequence[ModelBinding],
         accelerator: AcceleratorLifecycle,
+        retain_models: bool = False,
     ):
         binding_map = {binding.model_id: binding for binding in bindings}
         if not binding_map or len(binding_map) != len(bindings):
             raise ValueError("runtime model bindings must be non-empty and unique")
         self._bindings = binding_map
+        if not isinstance(retain_models, bool):
+            raise TypeError("retain_models must be boolean")
+        self._retain_models = retain_models
         self._accelerator = accelerator
         self._execution_lock = Lock()
         self._status_lock = Lock()
         self._resident: ResidentModel | None = None
         self._active_model: str | None = None
         self._artifact: RuntimeArtifactIdentity | None = None
+        self._retained: dict[str, tuple[ResidentModel, RuntimeArtifactIdentity]] = {}
         self._state = RuntimeState.UNLOADED
         self._active_inferences = 0
         self._last_error: RuntimeFailure | None = None
@@ -292,7 +298,10 @@ class SingleResidencyRuntime:
                     raise RuntimeUnavailableError(
                         "runtime failure cause has not changed"
                     )
-            reused = self._active_model == model_id and self._resident is not None
+            retained = self._retained.pop(model_id, None)
+            reused = (
+                self._active_model == model_id and self._resident is not None
+            ) or retained is not None
             load_ms = 0.0
             switch_ms = 0.0
             if not reused:
@@ -301,7 +310,10 @@ class SingleResidencyRuntime:
                     switch_started = perf_counter()
                     self._set_state(RuntimeState.DRAINING)
                     try:
-                        self._unload()
+                        if self._retain_models:
+                            self._park_active()
+                        else:
+                            self._unload()
                     except Exception as error:
                         cleanup_error = type(error).__name__
                         del error
@@ -336,7 +348,10 @@ class SingleResidencyRuntime:
                         resident_reference = None
                     resident = None
                     try:
-                        self._cleanup_accelerator()
+                        if self._resident is not None or self._retained:
+                            self._unload()
+                        else:
+                            self._cleanup_accelerator()
                     except Exception as error:
                         cleanup_error = type(error).__name__
                         del error
@@ -386,7 +401,18 @@ class SingleResidencyRuntime:
                 del resident
             else:
                 with self._status_lock:
+                    if retained is not None:
+                        switch_started = perf_counter()
+                        if self._resident is not None:
+                            self._park_active_locked()
+                        self._resident, self._artifact = retained
+                        self._active_model = model_id
+                        self._state = RuntimeState.READY
+                        switch_ms = (perf_counter() - switch_started) * 1000.0
+                        self._switch_count += 1
+                        self._last_switch_ms = switch_ms
                     self._reuse_count += 1
+                retained = None
 
             inference_started = perf_counter()
             inference_error: str | None = None
@@ -472,7 +498,16 @@ class SingleResidencyRuntime:
                     last_switch_ms=self._last_switch_ms,
                     last_unload_ms=self._last_unload_ms,
                 ),
+                resident_models=(
+                    ((self._active_model,) if self._active_model is not None else ())
+                    + tuple(self._retained)
+                ),
             )
+
+    def close(self) -> None:
+        with self._execution_lock:
+            if self._resident is not None or self._retained:
+                self._unload()
 
     def _set_state(self, state: RuntimeState) -> None:
         with self._status_lock:
@@ -480,22 +515,44 @@ class SingleResidencyRuntime:
 
     def _unload(self) -> None:
         self._set_state(RuntimeState.UNLOADING)
-        resident_reference = weakref.ref(self._resident)
+        residents = ((self._resident,) if self._resident is not None else ()) + tuple(
+            item[0] for item in self._retained.values()
+        )
+        resident_references = tuple(weakref.ref(item) for item in residents)
+        unload_count = len(resident_references)
+        residents = ()
         started = perf_counter()
         with self._status_lock:
             self._resident = None
             self._active_model = None
             self._artifact = None
+            self._retained.clear()
         memory = self._cleanup_accelerator()
         unload_ms = (perf_counter() - started) * 1000.0
         with self._status_lock:
             self._memory = memory
             self._last_unload_ms = unload_ms
-        if resident_reference() is not None:
+        if any(reference() is not None for reference in resident_references):
             raise RuntimeError("resident adapter remains reachable after unload")
         with self._status_lock:
-            self._unload_count += 1
+            self._unload_count += unload_count
             self._state = RuntimeState.UNLOADED
+
+    def _park_active(self) -> None:
+        with self._status_lock:
+            self._park_active_locked()
+
+    def _park_active_locked(self) -> None:
+        if (
+            self._resident is None
+            or self._active_model is None
+            or self._artifact is None
+        ):
+            return
+        self._retained[self._active_model] = (self._resident, self._artifact)
+        self._resident = None
+        self._active_model = None
+        self._artifact = None
 
     def _cleanup_accelerator(self) -> MemorySnapshot:
         self._accelerator.synchronize()
@@ -516,6 +573,7 @@ class SingleResidencyRuntime:
             self._resident = None
             self._active_model = None
             self._artifact = None
+            self._retained.clear()
             self._active_inferences = 0
             self._state = RuntimeState.FAILED
             self._failure_count += 1
@@ -526,6 +584,22 @@ class SingleResidencyRuntime:
                 code=code,
                 cause_token_sha256=failure_key,
             )
+
+
+class PersistentResidencyRuntime(SingleResidencyRuntime):
+    """Retain every loaded model while preserving the lifecycle interface."""
+
+    def __init__(
+        self,
+        *,
+        bindings: Sequence[ModelBinding],
+        accelerator: AcceleratorLifecycle,
+    ):
+        super().__init__(
+            bindings=bindings,
+            accelerator=accelerator,
+            retain_models=True,
+        )
 
 
 def _artifact_identity(value: object, model_id: str) -> RuntimeArtifactIdentity:

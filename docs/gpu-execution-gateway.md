@@ -7,22 +7,27 @@ not know about.
 
 The queue choice is recorded in
 [ADR 0001](adr/0001-use-rq-for-gpu-job-execution.md).
+The persistent CUDA-owner topology is recorded in
+[ADR 0002](adr/0002-use-a-persistent-gpu-executor.md).
 
 ## Execution contract
 
 - One standard RQ worker consumes `gpu-inference` one job at a time.
-- The worker parent configures a lazy pipeline factory but never initializes
-  CUDA. RQ forks an isolated work-horse that constructs the pipeline and runs
-  one prediction.
+- The worker parent and its isolated work-horses never construct the pipeline
+  or initialize CUDA. A work-horse sends the two opaque job tokens over an
+  owner-only Unix socket and waits for a generic success or failure response.
+- One long-lived executor owns CUDA and the pipeline. Artifact verification
+  completes before the socket becomes ready; detector and classifier remain
+  resident after their first successful loads.
 - Automatic retry is disabled. An unexpected work-horse exit is terminal for
   that job; the next job receives a clean child process.
 - The queue and worker use RQ's JSON serializer.
 - The only job arguments are the opaque prediction ID and storage locator.
 
-The default forked worker deliberately trades process-startup overhead for
-clean CUDA failure isolation. That overhead must be measured on the L4 before
-claiming API latency; the ADR explains why `SimpleWorker` is not the production
-default.
+RQ retains clean work-horse failure isolation without forcing CUDA or model
+construction into every job process. The executor is deliberately not an RQ
+`SimpleWorker`: its narrow interface keeps queue lifecycle and GPU ownership
+separate.
 
 ## Privacy and storage
 
@@ -56,6 +61,7 @@ replaced by a new submission.
 | Redis or enqueue unavailable | Delete the staged payload and return `prediction_gateway_unavailable`. |
 | Pipeline failure | RQ records one terminal failed job with a sanitized public error and no retry. |
 | Work-horse termination | RQ records failure; the gateway maps an abandoned execution to `prediction_worker_lost`. |
+| Executor unavailable or execution failure | The current RQ job fails once with a sanitized error; no retry is scheduled. |
 | Synchronous timeout | Return a healthy pollable handle without cancelling the job. |
 | Result TTL elapsed | Return `prediction_result_expired` while short-lived RQ status remains available. |
 
@@ -76,3 +82,32 @@ uv run --extra gateway python -m unittest discover -s tests -v
 These tests require no GPU. The production RQ worker's process-startup and
 end-to-end inference latency still require the separate NVIDIA L4 validation
 gate.
+
+## Production processes
+
+The processes share the same private socket directory and ephemeral job root.
+Set `PYTHONPATH` because this repository is not packaged as an installed wheel:
+
+```bash
+export PYTHONPATH="$PWD/src"
+
+uv run --extra gateway python -m vision_model_serving.execution.executor_cli \
+  --socket-path /run/vision-model-serving/executor.sock \
+  --job-root /var/lib/vision-model-serving/jobs \
+  --result-ttl-seconds 900 \
+  --artifact-root /models \
+  --tokenizer-root /assets/roberta-tokenizer \
+  --focalnet-root /sources/FocalNet-DINO \
+  --mmbcd-root /sources/MMBCD \
+  --dino-root /sources/dino
+
+uv run --extra gateway python -m vision_model_serving.execution.rq_cli \
+  --redis-url redis://127.0.0.1:6379/0 \
+  --queue-name gpu-inference \
+  --executor-socket /run/vision-model-serving/executor.sock \
+  --executor-timeout-seconds 180
+```
+
+The executor socket is the readiness signal. Start the RQ worker only after it
+exists. The executor timeout must not exceed the RQ job timeout, and the result
+TTL must match the gateway configuration.

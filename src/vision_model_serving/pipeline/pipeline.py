@@ -189,6 +189,11 @@ class PredictionPipeline:
             warnings=warnings,
         )
 
+    def close(self) -> None:
+        close = getattr(self._runtime, "close", None)
+        if callable(close):
+            close()
+
 
 def _detector_result(execution: ModelOutputs) -> DetectorResult:
     if execution.model_id != DETECTOR_MODEL_ID or not isinstance(

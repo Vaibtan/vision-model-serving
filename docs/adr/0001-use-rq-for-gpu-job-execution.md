@@ -4,6 +4,9 @@ status: accepted
 
 # Use RQ for GPU job execution
 
+The process topology consequence below is refined by
+[ADR 0002](0002-use-a-persistent-gpu-executor.md).
+
 The inference gateway will use RQ over Redis instead of Celery because RQ already owns the job lifecycle, status registries, failure handling, and TTLs required by this single-queue deployment. The gateway will retain only project-specific admission and idempotency rules, enqueue opaque prediction and storage identifiers, disable automatic retries, and keep private request and result payloads outside Redis.
 
 ## Considered options
