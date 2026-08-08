@@ -32,7 +32,7 @@ COPY patches ./patches
 COPY scripts/l4_validation/prepare_focalnet.py ./scripts/l4_validation/prepare_focalnet.py
 COPY src ./src
 ENV PYTHONPATH=/app/src
-RUN /app/.venv/bin/python scripts/l4_validation/prepare_focalnet.py build \
+RUN FORCE_CUDA=1 /app/.venv/bin/python scripts/l4_validation/prepare_focalnet.py build \
       --repo /opt/focalnet \
       --project-root /app \
       --spec /app/config/l4-fp32-environment.json \

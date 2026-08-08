@@ -324,10 +324,12 @@ backbone, as proven by the strict-load gate below.
 
 ## 6. Patch and build MultiScaleDeformableAttention
 
-Check both reviewed patches against the pinned upstream commit before changing
-the checkout. The first replaces the deprecated dispatch argument used by the
-PyTorch 2.8 extension build. The second removes the training-only FocalNet
-backbone preload; the complete task checkpoint is strict-loaded afterward.
+Check all three reviewed patches against the pinned upstream commit before
+changing the checkout. The first replaces the deprecated dispatch argument
+used by the PyTorch 2.8 extension build. The second removes the training-only
+FocalNet backbone preload; the complete task checkpoint is strict-loaded
+afterward. The third permits a toolkit-only Docker build when `FORCE_CUDA=1`;
+runtime device and functional parity gates remain mandatory.
 
 ```bash
 python "${VMS_REPO}/scripts/l4_validation/prepare_focalnet.py" check \

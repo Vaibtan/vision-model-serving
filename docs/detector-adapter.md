@@ -19,9 +19,10 @@ result = adapter.predict(canonical_mammogram)
 
 Before construction, production startup should require the artifact registry's
 aggregate readiness gate. `from_local_source` additionally requires the exact
-pinned FocalNet-DINO revision, both checked-in serving patches in their applied
-state, the checksum-pinned `config_cfg.py`, and modules that resolve inside that
-source checkout. It performs no clone, download, hub, or URL operation.
+pinned FocalNet-DINO revision, all checked-in compatibility patches in their
+applied state, the checksum-pinned `config_cfg.py`, and modules that resolve
+inside that source checkout. It performs no clone, download, hub, or URL
+operation.
 
 ## Detector input
 
@@ -103,7 +104,7 @@ exactly 2,731,092,364 bytes, and its SHA-256 was rechecked as
 This workstation still cannot rerun that forward pass because it lacks:
 
 - a FocalNet-DINO checkout at revision
-  `23901e021dc6ec8f66bad47983f45a25574452cc` with both repository patches
+  `23901e021dc6ec8f66bad47983f45a25574452cc` with all repository patches
   applied and its native CUDA operator built; and
 - the pinned NVIDIA L4 / PyTorch 2.8.0+cu128 environment.
 

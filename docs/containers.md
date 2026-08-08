@@ -22,8 +22,10 @@ network and runs with RDB and AOF persistence disabled.
 
 All base images, Python packages, upstream revisions, and uv itself are pinned.
 The CUDA build stage checks out the Apache-2.0 FocalNet-DINO revision, applies
-the two checksum-pinned serving patches, and compiles deformable attention for
-compute capability 8.9. The final image receives the virtual environment,
+the three checksum-pinned serving/build patches, and compiles deformable
+attention for compute capability 8.9. `FORCE_CUDA=1` only bypasses upstream's
+build-time device-presence check; the toolkit and runtime functional gates
+still fail closed. The final image receives the virtual environment,
 patched FocalNet source, and native operator, but not the compiler toolchain.
 
 The following inputs remain outside the build context and are mounted read-only

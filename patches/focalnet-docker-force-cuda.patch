@@ -1,0 +1,13 @@
+diff --git a/models/dino/ops/setup.py b/models/dino/ops/setup.py
+--- a/models/dino/ops/setup.py
++++ b/models/dino/ops/setup.py
+@@ -34,7 +34,8 @@ def get_extensions():
+ 
+     # import ipdb; ipdb.set_trace()
+ 
+-    if torch.cuda.is_available() and CUDA_HOME is not None:
++    force_cuda = os.environ.get("FORCE_CUDA") == "1"
++    if (torch.cuda.is_available() or force_cuda) and CUDA_HOME is not None:
+         extension = CUDAExtension
+         sources += source_cuda
+         define_macros += [("WITH_CUDA", None)]
