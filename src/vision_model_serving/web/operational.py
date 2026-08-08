@@ -182,7 +182,7 @@ def _metrics_payload(
     if settings.VMS_METRICS_DIR is None:
         instrumented = generate_latest(REGISTRY)
     else:
-        registry = CollectorRegistry(support_collectors_without_names=True)
+        registry = CollectorRegistry()
         multiprocess.MultiProcessCollector(
             registry,
             path=str(settings.VMS_METRICS_DIR),
