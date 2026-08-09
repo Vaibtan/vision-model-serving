@@ -110,6 +110,12 @@ hashes. The longer two-lifecycle gate is documented in
 
 ## 5. Operate the API
 
+Open `http://127.0.0.1:8000/` for the server-rendered inspection workbench. It
+submits through the same versioned prediction API shown below and displays the
+canonical mammogram, ROI overlays/crops, non-causal attention weights, timings,
+runtime residency, warnings, and downloadable sanitized JSON/PNG. The preview
+is returned with `Cache-Control: no-store`; the browser keeps no job history.
+
 Start only the long-running services:
 
 ```bash

@@ -8,7 +8,7 @@ import logging
 import os
 import re
 import tempfile
-from io import StringIO
+from io import BytesIO, StringIO
 from pathlib import Path
 
 EXPECTED_DICOM_SHA256 = (
@@ -27,6 +27,19 @@ def main() -> int:
             f"public DICOM hash mismatch: expected {EXPECTED_DICOM_SHA256}, "
             f"observed {observed_hash}"
         )
+    from pydicom import dcmread
+
+    dataset = dcmread(BytesIO(dicom), stop_before_pixels=True)
+    dicom_identifiers = tuple(
+        str(value)
+        for value in (
+            dataset.get("PatientID"),
+            dataset.get("PatientName"),
+            dataset.get("StudyInstanceUID"),
+            dataset.get("SOPInstanceUID"),
+        )
+        if value
+    )
 
     with tempfile.TemporaryDirectory(prefix="vms-django-real-") as job_root:
         os.environ["DJANGO_SETTINGS_MODULE"] = "vision_model_serving.web.settings"
@@ -56,7 +69,50 @@ def main() -> int:
         redis.ping()
         redis.flushdb()
         try:
-            client = Client()
+            client = Client(enforce_csrf_checks=True)
+            inspection = client.get("/")
+            _assert_status(inspection.status_code, 200, inspection.content)
+            if "csrftoken" not in inspection.cookies:
+                raise AssertionError("inspection workbench did not issue a CSRF cookie")
+            for required_surface in (
+                b'id="inspection-form"',
+                b'id="mammogram-viewport"',
+                b'id="prediction-status"',
+                b'aria-live="polite"',
+                b"Research use only",
+            ):
+                if required_surface not in inspection.content:
+                    raise AssertionError(
+                        f"inspection workbench omitted {required_surface!r}"
+                    )
+
+            csrf_token = inspection.cookies["csrftoken"].value
+            preview = client.post(
+                "/api/v1/dicom-preview",
+                {
+                    "dicom": SimpleUploadedFile(
+                        "public-mammogram.dcm",
+                        dicom,
+                        content_type="application/dicom",
+                    )
+                },
+                HTTP_X_CSRFTOKEN=csrf_token,
+            )
+            _assert_status(preview.status_code, 200, preview.content)
+            if preview["Content-Type"] != "image/png":
+                raise AssertionError("DICOM preview did not return a PNG")
+            if preview.get("Cache-Control") != "no-store":
+                raise AssertionError("DICOM preview was not marked private and ephemeral")
+            from PIL import Image
+
+            with Image.open(BytesIO(preview.content)) as image:
+                if image.size != (1024, 1024) or image.mode != "L":
+                    raise AssertionError(
+                        f"unexpected canonical preview: {image.mode} {image.size!r}"
+                    )
+            if any(value.encode() in preview.content for value in dicom_identifiers):
+                raise AssertionError("DICOM preview retained a source identifier")
+
             liveness = client.get("/livez")
             _assert_status(liveness.status_code, 200, liveness.content)
             if liveness.json() != {"status": "alive"}:
@@ -91,6 +147,8 @@ def main() -> int:
             _assert_status(schema.status_code, 200, schema.content)
             if b"/api/v1/predictions" not in schema.content:
                 raise AssertionError("OpenAPI schema omitted the prediction interface")
+            if b"/api/v1/dicom-preview" not in schema.content:
+                raise AssertionError("OpenAPI schema omitted the preview interface")
             schema_json_response = client.get("/api/schema/?format=json")
             _assert_status(
                 schema_json_response.status_code,

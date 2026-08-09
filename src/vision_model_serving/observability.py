@@ -81,6 +81,8 @@ _OOM = Counter(
 )
 
 _ROUTES = {
+    "inspection-workbench",
+    "dicom-preview",
     "prediction-collection",
     "prediction-status",
     "prediction-result",

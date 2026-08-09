@@ -37,6 +37,7 @@ DATABASES = {"default": {"ENGINE": "django.db.backends.dummy"}}
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "src" / "vision_model_serving" / "web" / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {},
     }

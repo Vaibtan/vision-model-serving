@@ -30,7 +30,7 @@ Unix socket are reachable only on the internal Compose network/shared tmpfs.
 | `pipeline` | Detector-then-optional-classifier ordering and typed serializable result | Queueing, HTTP, or device ownership |
 | `residency` | Serialized accelerator lifecycle, reuse/retention, memory/timing observations | Redis job state or API schemas |
 | `execution` | Private job storage, capacity/idempotency, RQ state, socket protocol, persistent executor | HTTP parsing or medical interpretation |
-| `web` | Multipart validation, submission/poll/result endpoints, readiness/inventory/OpenAPI | CUDA import, model objects, or checkpoint paths |
+| `web` | Multipart validation, inspection UI/preview, submission/poll/result endpoints, readiness/inventory/OpenAPI | CUDA import, model objects, or checkpoint paths |
 | `observability` | Bounded Prometheus labels and structured safe events | Clinical audit logs or request payload logging |
 
 These are deep interfaces: callers exchange immutable host-side contracts,
@@ -52,6 +52,12 @@ not PyTorch modules, CUDA tensors, DICOM datasets, or filesystem paths.
 6. The result contains finite host values, provenance, timings, warnings, and
    original/canonical coordinates. It excludes pixels, history, prompt text,
    DICOM identifiers, model objects, and invented medical semantics.
+
+The local workbench at `/` uses these same public resources. Its preview route
+canonicalizes the selected DICOM into a metadata-free grayscale PNG, marks the
+response `no-store`, and retains nothing. ROI crops and overlays are derived in
+the browser from that preview plus canonical result coordinates; no second
+inference path or server-side image history exists.
 
 ## GPU lifecycle: active is not resident
 

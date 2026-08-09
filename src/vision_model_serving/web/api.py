@@ -6,9 +6,11 @@ from datetime import UTC, datetime
 from io import BytesIO
 
 from django.conf import settings
+from django.http import HttpResponse
 from django.urls import reverse
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
+from PIL import Image
 from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.request import Request
@@ -76,6 +78,58 @@ class PredictionSubmissionSerializer(serializers.Serializer):
         if size > 64 * 1024 * 1024:
             raise EncodedDicomTooLarge
         return attrs
+
+
+class DicomPreviewSerializer(serializers.Serializer):
+    dicom = serializers.FileField(write_only=True)
+
+    def validate_dicom(self, upload: object) -> object:
+        size = getattr(upload, "size", None)
+        if not isinstance(size, int) or size < 1:
+            raise serializers.ValidationError("The DICOM file is empty.")
+        if size > 64 * 1024 * 1024:
+            raise EncodedDicomTooLarge
+        return upload
+
+
+class DicomPreviewView(APIView):
+    """Return an ephemeral metadata-free rendering of canonical pixels."""
+
+    parser_classes = (MultiPartParser, FormParser)
+
+    @extend_schema(
+        request=DicomPreviewSerializer,
+        responses={
+            200: OpenApiTypes.BINARY,
+            400: OpenApiTypes.OBJECT,
+            413: OpenApiTypes.OBJECT,
+            415: OpenApiTypes.OBJECT,
+            422: OpenApiTypes.OBJECT,
+        },
+    )
+    def post(self, request: Request) -> HttpResponse | Response:
+        serializer = DicomPreviewSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        upload = serializer.validated_data["dicom"]
+        payload = upload.read()
+        if not isinstance(payload, bytes):
+            return public_error(
+                request,
+                "dicom_invalid",
+                "The DICOM upload is unreadable.",
+                400,
+            )
+        try:
+            canonical = DicomCanonicalizer().decode(BytesIO(payload))
+        except DicomCanonicalizationError as error:
+            return _dicom_error(request, error)
+
+        encoded = BytesIO()
+        Image.fromarray(canonical.pixels).save(encoded, format="PNG", optimize=True)
+        response = HttpResponse(encoded.getvalue(), content_type="image/png")
+        response["Cache-Control"] = "no-store"
+        response["Content-Disposition"] = 'inline; filename="mammogram-preview.png"'
+        return response
 
 
 class PredictionCollectionView(APIView):

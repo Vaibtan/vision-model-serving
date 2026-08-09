@@ -14,6 +14,8 @@ robustness, and checkpoint redistribution rights are not established.
 - strict, checksum-pinned offline detector and classifier adapters;
 - deterministic top-300, strict `IoU > 0.1` NMS, and exactly eight MMBCD ROIs;
 - detection-only and full multipart prediction endpoints with polling/results;
+- a server-rendered upload/inspection workbench with an ephemeral mammogram
+  preview, ROI overlay/gallery, timings, warnings, and sanitized exports;
 - Redis Queue admission, idempotency, TTLs, sanitized failures, and private
   tmpfs request/result storage;
 - a persistent serialized L4 executor with both models reused after first load;
@@ -41,6 +43,8 @@ claims require the separate Redis/DICOM or L4/Compose gates; see
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/predictions` | Submit multipart DICOM, mode, and full-mode history |
+| `GET` | `/` | Open the local DICOM and ROI inspection workbench |
+| `POST` | `/api/v1/dicom-preview` | Render an ephemeral metadata-free canonical PNG |
 | `GET` | `/api/v1/predictions/{id}` | Poll bounded job status |
 | `GET` | `/api/v1/predictions/{id}/result` | Retrieve a completed typed result |
 | `GET` | `/api/v1/models` | Manifest and sanitized executor inventory |
