@@ -4,11 +4,12 @@ from __future__ import annotations
 
 import argparse
 import json
-import os
 from pathlib import Path
 import subprocess
 import sys
 from typing import Sequence
+
+from vision_model_serving.validation.reporting import write_json_atomic
 
 from .environment import (
     EnvironmentSnapshot,
@@ -51,7 +52,7 @@ def environment_main(argv: Sequence[str] | None = None) -> int:
     payload = {"lane_id": spec.lane_id, **result.as_dict()}
     serialized = json.dumps(payload, indent=2, sort_keys=True) + "\n"
     if args.output:
-        _write_atomic(args.output, serialized)
+        write_json_atomic(args.output.expanduser().resolve(), payload)
     if args.json:
         print(serialized, end="")
     else:
@@ -97,11 +98,3 @@ def focalnet_main(argv: Sequence[str] | None = None) -> int:
         print(f"FOCALNET PREPARATION FAILED: {error}", file=sys.stderr)
         return 1
     return 0
-
-
-def _write_atomic(path: Path, content: str) -> None:
-    destination = path.expanduser().resolve()
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    temporary = destination.with_suffix(destination.suffix + ".tmp")
-    temporary.write_text(content, encoding="utf-8")
-    os.replace(temporary, destination)

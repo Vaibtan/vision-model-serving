@@ -18,10 +18,12 @@ robustness, and checkpoint redistribution rights are not established.
   preview, ROI overlay/gallery, timings, warnings, and sanitized exports;
 - Redis Queue admission, idempotency, TTLs, sanitized failures, and private
   tmpfs request/result storage;
-- a persistent serialized L4 executor with both models reused after first load;
-- liveness, fail-closed readiness, model inventory, OpenAPI, safe metrics/logs;
+- a persistent serialized L4 executor with an enforced maximum of one resident
+  model, same-model reuse, and unload-before-switch behavior;
+- scoped artifact readiness, model-specific inference-warm state, liveness,
+  model inventory, OpenAPI, and safe metrics/logs;
 - pinned non-root/read-only Docker images, smoke/restart profiles, and
-  JSON/Markdown cold-and-warm L4 benchmark reporting; and
+  schema-v3 benchmark, optimization/TensorRT, and browser acceptance tooling; and
 - an attributed, checksum-pinned public CBIS-DDSM fixture fetcher.
 
 ## Quick verification
@@ -34,6 +36,10 @@ uv run python -m vision_model_serving.artifacts config/model-artifacts.json
 uv run python -m unittest discover -s tests
 uv run python manage.py check
 ```
+
+The browser lane additionally runs `uv sync --group browser`,
+`uv run playwright install chromium`, and
+`uv run --group browser python tests/browser/test_inspection_workbench.py`.
 
 The unit suite validates contracts without proprietary weights. Real service
 claims require the separate Redis/DICOM or L4/Compose gates; see
@@ -61,13 +67,11 @@ Put authenticated TLS ingress in front of it before any remote exposure.
 
 ## Architecture decision to notice
 
-The assignment asks for one model loaded at a time. The repository contains a
-validated strict unload/switch implementation, but the accepted deployed ADR
-retains both models after first use because repeated reconstruction dominated
-latency and both fit on the L4. Inference remains serialized under one GPU
-owner, but this is not literal compliance with the load/unload sentence. The
-tradeoff and rollback path are explicit in
-[the architecture guide](docs/architecture.md#gpu-lifecycle-active-is-not-resident).
+The executor process is long-lived, but model residency is strict. It starts
+artifact-ready and unloaded. A same-model request reuses the sole resident;
+requesting the other stage unloads the active model before loading the next.
+Artifact readiness and model-specific inference warmth are separate facts. See
+[the architecture guide](docs/architecture.md#gpu-lifecycle-strict-single-residency).
 
 ## Documentation
 
@@ -80,6 +84,7 @@ tradeoff and rollback path are explicit in
 - [Detector adapter](docs/detector-adapter.md) and [classifier adapter](docs/classifier-adapter.md)
 - [RQ/executor gateway and failure semantics](docs/gpu-execution-gateway.md)
 - [Privacy-safe monitoring, metrics, and structured logs](docs/observability.md)
+- [PyTorch optimization and strict TensorRT gates](docs/acceleration.md)
 - [Detailed L4 upstream reproduction](docs/validation/lightning-l4-fp32-reproduction.md)
 
 The source requirements are in [ASSIGNMENT.md](ASSIGNMENT.md) and the

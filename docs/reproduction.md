@@ -206,26 +206,22 @@ classifier hash `f994ccfa…f1a3`, eight ROIs, unverified-semantics warnings, an
 or medical decision threshold. Browse `/api/docs/` for the generated OpenAPI
 view and `/api/schema/?format=json` for the machine-readable schema.
 
-## 6. Benchmark and cleanup
+## 6. Browser acceptance, benchmark, and cleanup
 
 ```bash
 docker compose --profile gpu down --volumes --remove-orphans
-mkdir -p benchmark-results
-export VMS_BENCHMARK_RESULTS="$PWD/benchmark-results"
-export VMS_RESULT_UID="$(id -u)"
-export VMS_RESULT_GID="$(id -g)"
-export VMS_BENCHMARK_RUNS=5
-export VMS_BENCHMARK_REVISION="$(git rev-parse HEAD)"
-docker compose --profile benchmark up --no-build --pull never \
-  --abort-on-container-exit --exit-code-from benchmark
-docker compose --profile benchmark down --volumes --remove-orphans
+docker compose --profile browser up --build --pull never \
+  --abort-on-container-exit --exit-code-from browser-acceptance
+docker compose --profile browser down --volumes --remove-orphans
 ```
 
-Run this from a clean executor lifecycle. The profile writes both
-`benchmark.json` and `benchmark.md`, verifies the exact detector/classifier
-hashes, and reports cold full, warm detection, warm full, serialized
-throughput, stage latency, peak reserved memory, runtime residency, and the
-recorded revision without retaining request identifiers or clinical text.
+The browser gate drives real upload, polling, overlay/crop/attention
+inspection, and sanitized JSON/PNG export through Chromium. For the schema-v3
+host benchmark and strict TensorRT/PyTorch L4 lanes, use
+[`containers.md`](containers.md#benchmark-profile) and
+[`acceleration.md`](acceleration.md). The benchmark requires a clean exact
+revision, fresh unloaded executor, concurrency 1/2/4, Docker identity, and
+`nvidia-smi` sampling; it writes both JSON and Markdown or fails.
 
 Always remove the stack volumes after assessment work; they are tmpfs-backed
 but can contain bounded results until their TTL expires:
@@ -246,6 +242,8 @@ docker compose --profile gpu down --volumes --remove-orphans
 | A golden hash changes | Stop, preserve the report, compare commit/config/artifact/runtime identities, and explain drift before updating any baseline. |
 | DICOM is rejected | Check the supported syntax/pixel limits in [`dicom-canonicalization.md`](dicom-canonicalization.md); do not convert it silently. |
 
-TensorRT, ONNX, FP16/BF16, TF32, `torch.compile`, and CUDA graphs are not
-enabled. They require separate numerical-parity, execution-provider, memory,
-and end-to-end performance evidence on the actual artifacts and L4.
+TensorRT, FP16/BF16, TF32, and `torch.compile` are not selected in production.
+The repository implements isolated fail-closed L4 evaluation lanes; promotion
+still requires generated same-revision parity, memory, reliability, restart,
+and end-to-end performance evidence. There is no eager fallback inside the
+TensorRT engine verifier.

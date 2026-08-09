@@ -16,6 +16,7 @@ import numpy as np
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
+import vision_model_serving.pipeline as pipeline_api  # noqa: E402
 from vision_model_serving.detector import (  # noqa: E402
     DetectorArtifactIdentity,
     DetectorInput,
@@ -37,6 +38,10 @@ from vision_model_serving.dicom import (  # noqa: E402
     DicomMetadata,
     DicomWarning,
     GeometryLedger,
+)
+from vision_model_serving.model_ids import (  # noqa: E402
+    CLASSIFIER_MODEL_ID,
+    DETECTOR_MODEL_ID,
 )
 from vision_model_serving.pipeline import (  # noqa: E402
     CaseInput,
@@ -116,7 +121,7 @@ def detector_result(mammogram: CanonicalMammogram) -> DetectorResult:
     detector_tensor.setflags(write=False)
     return DetectorResult(
         artifact=DetectorArtifactIdentity(
-            id="focalnet-dino-detector",
+            id=DETECTOR_MODEL_ID,
             sha256=DETECTOR_SHA256,
             repository_revision=DETECTOR_REVISION,
         ),
@@ -156,7 +161,7 @@ class RuntimeFake:
         self._detector = detector
 
     def execute(self, model_id: str, inputs: object) -> ModelOutputs:
-        if model_id != "focalnet-dino-detector":
+        if model_id != DETECTOR_MODEL_ID:
             raise AssertionError("detection mode requested an unexpected model")
         return ModelOutputs(
             model_id=model_id,
@@ -218,7 +223,7 @@ def classifier_result() -> MmbcdResult:
         prediction_sha256="4" * 64,
         provenance=ClassifierProvenance(
             artifact=ClassifierArtifactIdentity(
-                id="mmbcd-classifier",
+                id=CLASSIFIER_MODEL_ID,
                 sha256=CLASSIFIER_SHA256,
                 repository_revision=CLASSIFIER_REVISION,
             ),
@@ -257,9 +262,9 @@ class FullRuntimeFake(RuntimeFake):
         self._mammogram = mammogram
 
     def execute(self, model_id: str, inputs: object) -> ModelOutputs:
-        if model_id == "focalnet-dino-detector":
+        if model_id == DETECTOR_MODEL_ID:
             return super().execute(model_id, inputs)
-        if model_id != "mmbcd-classifier":
+        if model_id != CLASSIFIER_MODEL_ID:
             raise AssertionError("full mode requested an unexpected model")
         mammogram, rois, history = inputs
         if mammogram is not self._mammogram or len(rois) != 8:
@@ -311,7 +316,7 @@ class AcceleratorFake:
 
 class DetectorResidentFake:
     artifact = SimpleNamespace(
-        id="focalnet-dino-detector",
+        id=DETECTOR_MODEL_ID,
         sha256=DETECTOR_SHA256,
         repository_revision=DETECTOR_REVISION,
     )
@@ -325,7 +330,7 @@ class DetectorResidentFake:
 
 class ClassifierResidentFake:
     artifact = SimpleNamespace(
-        id="mmbcd-classifier",
+        id=CLASSIFIER_MODEL_ID,
         sha256=CLASSIFIER_SHA256,
         repository_revision=CLASSIFIER_REVISION,
     )
@@ -341,12 +346,12 @@ def single_residency_runtime() -> SingleResidencyRuntime:
     return SingleResidencyRuntime(
         bindings=(
             ModelBinding(
-                model_id="focalnet-dino-detector",
+                model_id=DETECTOR_MODEL_ID,
                 load=DetectorResidentFake,
                 failure_token=lambda: "detector-v1",
             ),
             ModelBinding(
-                model_id="mmbcd-classifier",
+                model_id=CLASSIFIER_MODEL_ID,
                 load=ClassifierResidentFake,
                 failure_token=lambda: "classifier-v1",
             ),
@@ -419,7 +424,7 @@ class PredictionPipelineDetectionTests(unittest.TestCase):
             result.detector.classifier_rois[0].original_xyxy,
         )
         self.assertIsNone(result.classification)
-        self.assertEqual(result.provenance.detector.id, "focalnet-dino-detector")
+        self.assertEqual(result.provenance.detector.id, DETECTOR_MODEL_ID)
         self.assertEqual(result.provenance.detector.sha256, DETECTOR_SHA256)
         self.assertIsNone(result.provenance.classifier)
         self.assertIsNone(result.provenance.tokenizer)
@@ -472,7 +477,7 @@ class PredictionPipelineFullTests(unittest.TestCase):
         self.assertFalse(hasattr(classification.input, "prompt"))
         self.assertEqual(classification.input.token_count, 5)
         self.assertFalse(classification.input.label_information_used)
-        self.assertEqual(result.provenance.classifier.id, "mmbcd-classifier")
+        self.assertEqual(result.provenance.classifier.id, CLASSIFIER_MODEL_ID)
         self.assertEqual(result.provenance.classifier.sha256, CLASSIFIER_SHA256)
         self.assertEqual(result.provenance.tokenizer.id, "roberta-base")
         self.assertEqual(result.provenance.tokenizer.revision, TOKENIZER_REVISION)
@@ -532,7 +537,7 @@ class PredictionPipelineFullTests(unittest.TestCase):
         status = runtime.status()
 
         self.assertIsNotNone(result.classification)
-        self.assertEqual(status.active_model, "mmbcd-classifier")
+        self.assertEqual(status.active_model, CLASSIFIER_MODEL_ID)
         self.assertEqual(status.metrics.load_count, 2)
         self.assertEqual(status.metrics.switch_count, 1)
         self.assertEqual(status.metrics.unload_count, 1)
@@ -540,6 +545,12 @@ class PredictionPipelineFullTests(unittest.TestCase):
 
 
 class PredictionPipelineFailureAndCleanupTests(unittest.TestCase):
+    def test_public_package_does_not_expose_executor_composition(self) -> None:
+        self.assertNotIn("ExecutorPipelineConfig", pipeline_api.__all__)
+        self.assertNotIn("build_executor_pipeline", pipeline_api.__all__)
+        self.assertFalse(hasattr(pipeline_api, "LocalCudaPipelineConfig"))
+        self.assertFalse(hasattr(pipeline_api, "build_local_cuda_pipeline"))
+
     def test_full_mode_rejects_blank_history_before_decoding(self) -> None:
         pipeline = PredictionPipeline(
             decoder=DecoderFake(canonical_mammogram()),

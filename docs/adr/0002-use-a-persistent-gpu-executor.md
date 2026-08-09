@@ -2,6 +2,11 @@
 status: accepted
 ---
 
+The process-topology decision remains accepted. Its dual-model residency
+consequence is superseded by
+[ADR 0003](0003-enforce-single-model-residency.md); this file preserves the
+historical performance rationale and evidence.
+
 # Use a persistent GPU executor behind RQ
 
 The standard RQ worker will retain its forked work-horse model for queue
@@ -9,8 +14,8 @@ lifecycle, heartbeats, timeouts, and failure isolation. Each work-horse will
 send only the opaque prediction ID and storage locator over a private Unix
 socket to one long-lived GPU executor. The executor verifies artifacts before
 opening the socket, owns the prediction pipeline for its lifetime, serializes
-all inference, and retains both detector and classifier residents after their
-first successful loads.
+all inference, and originally retained both detector and classifier residents
+after their first successful loads.
 
 ## Context
 
@@ -23,11 +28,12 @@ the pipeline in the per-job work-horse, while the pipeline lifecycle took
 ## Why pair RQ with a separate executor
 
 Model residency is deliberately owned by the GPU executor rather than by the
-queue worker. Once CUDA and both models live behind that process boundary,
-neither RQ nor Celery determines warm inference latency; the queue worker only
-delivers a job and waits for the executor. Keeping RQ therefore preserves its
-smaller job-lifecycle surface and per-job work-horse isolation without paying
-per-job model construction.
+queue worker. In the original dual-resident design, once CUDA and both models
+lived behind that process boundary, neither RQ nor Celery determined warm
+inference latency; the queue worker only delivered a job and waited for the
+executor. Keeping RQ therefore preserves its smaller job-lifecycle surface and
+per-job work-horse isolation. ADR 0003 replaces only the residency policy: the
+same executor now pays model loading when a request switches to another model.
 
 A concurrency-one Celery worker with resident models would also be technically
 possible, but it would couple CUDA lifetime to Celery's pool lifecycle and
@@ -45,8 +51,10 @@ and independently restartable.
   CUDA. Losing a work-horse remains a terminal RQ job failure.
 - DICOM bytes, clinical history, and prediction results stay in the private
   ephemeral job directory. The socket carries two 32-character opaque tokens.
-- Artifact verification moves to executor startup. The first request still
-  pays model load and warmup; later requests reuse both resident models.
+- Artifact verification moves to executor startup. Under the superseded
+  policy, the first request paid model load and warmup and later requests
+  reused both resident models. ADR 0003 now permits reuse only when the next
+  stage needs the already-resident model.
 - Executor failure makes the current RQ job fail without automatic retry. A
   process supervisor must restart the executor before later jobs can succeed.
 - The socket directory and file are owner-only. RQ worker and executor must
@@ -54,8 +62,9 @@ and independently restartable.
 - The socket also provides a sanitized status operation so the CPU-only web
   process can report executor, artifact, device, native-operator, and model
   residency state without importing model code or CUDA.
-- Dual residency and warm latency require a real NVIDIA L4 acceptance run;
-  CPU substitutes do not establish this decision's performance or memory fit.
+- The historical dual-residency and warm-latency claims required a real NVIDIA
+  L4 acceptance run; CPU substitutes did not establish their performance or
+  memory fit. Current evidence must instead prove ADR 0003's max-one policy.
 
 ## Validation
 

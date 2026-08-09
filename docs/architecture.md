@@ -28,7 +28,7 @@ Unix socket are reachable only on the internal Compose network/shared tmpfs.
 | `detector` | Strict FocalNet-DINO load, transform, raw tensors, top-300/NMS/eight-ROI contract | Classifier semantics or HTTP filtering policy |
 | `classifier` | Strict MMBCD load, eight crops, local tokenizer, label-free prompt, raw logits/probabilities | Clinical labels, thresholds, or causal explanations |
 | `pipeline` | Detector-then-optional-classifier ordering and typed serializable result | Queueing, HTTP, or device ownership |
-| `residency` | Serialized accelerator lifecycle, reuse/retention, memory/timing observations | Redis job state or API schemas |
+| `residency` | Serialized one-resident lifecycle, compatible reuse, unload-before-switch, memory/timing observations | Redis job state or API schemas |
 | `execution` | Private job storage, capacity/idempotency, RQ state, socket protocol, persistent executor | HTTP parsing or medical interpretation |
 | `web` | Multipart validation, inspection/operations UIs, submission/poll/result endpoints, one bounded operational snapshot, readiness/inventory/OpenAPI | CUDA import, model objects, or checkpoint paths |
 | `observability` | Bounded Prometheus labels and structured safe events | Clinical audit logs or request payload logging |
@@ -59,24 +59,20 @@ response `no-store`, and retains nothing. ROI crops and overlays are derived in
 the browser from that preview plus canonical result coordinates; no second
 inference path or server-side image history exists.
 
-## GPU lifecycle: active is not resident
+## GPU lifecycle: strict single residency
 
-The executor starts with verified artifacts but no loaded models. Its first
-detection loads and warms the detector. The first full request reuses that
-detector, then loads the classifier and retains both. Later detection/full
-requests serialize on one execution lock and reuse both residents; only the
-currently executing stage is `active_model`.
+The executor starts with verified artifacts and an initialized controller but
+no loaded model. Its first detection loads and warms the detector. A repeated
+detection reuses that sole resident. A full request reuses the detector only if
+it is active, then unloads it before loading MMBCD. A later detector request
+unloads MMBCD before reloading the detector. Stable status is empty or exactly
+`[active_model]`; impossible dual-resident socket status is rejected.
 
-This is an accepted change from the original strict-switching implementation.
-[`ADR 0002`](adr/0002-use-a-persistent-gpu-executor.md) records why the deployed
-path retains both models: the strict unload/reload proof was correct but caused
-large repeat latency, while dual residency used 2,334 MiB and reduced a
-validated warm full request to roughly 1.2 seconds. The original assignment
-also says “one model at a time, load and unload.” The deployed topology does
-not satisfy that sentence literally. It instead guarantees one GPU owner and
-one active inference at a time. If literal single residency is mandatory, use
-the proven switching policy in `SingleResidencyRuntime` and accept/re-measure
-its reload latency; do not describe dual residency as equivalent.
+The process remains persistent for RQ isolation and artifact/device
+verification, while model residency follows the assignment literally.
+[`ADR 0003`](adr/0003-enforce-single-model-residency.md) supersedes only the
+dual-residency portion of ADR 0002. Historical 2026-08-08/09 records describe
+the former topology and are not current lifecycle evidence.
 
 ## Queue and failure semantics
 
@@ -98,9 +94,11 @@ The complete mapping from failures to HTTP behavior is in
 
 ## Health and observability
 
-`/livez` proves only the web process. `/readyz` requires Redis, an RQ worker,
-the executor, verified artifacts, an L4 device, and the functional native
-operator. `/api/v1/models` exposes manifest identity and sanitized runtime
+`/livez` proves only the web process. `/readyz` is scoped to
+`artifact_ready`: it requires Redis, an RQ worker, the initialized executor,
+verified artifacts, an L4 device, and the functional native operator. It may
+be HTTP 200 while the runtime is unloaded. `inference_warm` and `warm_model`
+report model-specific warmth. `/api/v1/models` exposes manifest identity and sanitized runtime
 state without paths. `/api/v1/operations` is the shared bounded snapshot behind
 readiness, model inventory, the `/monitoring` console, and the queue/executor
 portion of Prometheus export, preventing those surfaces from disagreeing about
@@ -133,4 +131,6 @@ uncompressed/RLE paths; see [`dicom-canonicalization.md`](dicom-canonicalization
 The public fixture is one uncompressed Secondary Capture object. It proves
 compatibility and deterministic FP32 execution only—not native mammography
 coverage, accuracy, calibration, robustness, class semantics, or clinical
-utility. TensorRT and other acceleration paths remain unimplemented gates.
+utility. PyTorch optimization and TensorRT are implemented as isolated,
+fail-closed L4 evidence lanes. Eager FP32 remains the selected backend until
+same-revision parity and performance evidence passes.

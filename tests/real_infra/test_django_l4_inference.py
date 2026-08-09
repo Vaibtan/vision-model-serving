@@ -9,7 +9,7 @@ from io import BytesIO
 from pathlib import Path
 from time import monotonic, sleep
 
-from vision_model_serving.model_ids import DETECTOR_MODEL_ID, MODEL_IDS
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
 from vision_model_serving.validation.packaged_http import PACKAGED_ACCEPTANCE_HISTORY
 
 EXPECTED_DICOM_SHA256 = (
@@ -71,13 +71,58 @@ def main() -> int:
 
     readiness = client.get("/readyz")
     _assert_status(readiness.status_code, 200, readiness.content)
-    if not all(readiness.json()["checks"].values()):
+    if (
+        readiness.json().get("readiness_scope") != "artifact_ready"
+        or readiness.json().get("runtime", {}).get("inference_warm") is not False
+        or not all(readiness.json()["checks"].values())
+    ):
         raise AssertionError(f"readiness check failed: {readiness.json()!r}")
 
     before = client.get("/api/v1/models")
     _assert_status(before.status_code, 200, before.content)
     if before.json()["runtime"]["state"] != "unloaded":
         raise AssertionError(f"executor did not start cold: {before.json()!r}")
+
+    cold_detection = client.post(
+        "/api/v1/predictions",
+        {"dicom": _upload(dicom), "mode": "detection"},
+        HTTP_IDEMPOTENCY_KEY="real-l4-cold-detection",
+    )
+    _assert_status(cold_detection.status_code, 200, cold_detection.content)
+    cold_detection_result = cold_detection.json()["result"]
+    if cold_detection_result["classification"] is not None:
+        raise AssertionError("detection mode unexpectedly ran the classifier")
+    if (
+        cold_detection_result["detector"]["prediction_sha256"]
+        != EXPECTED_DETECTOR_SHA256
+    ):
+        raise AssertionError("cold HTTP detector result differs from the L4 golden")
+    if cold_detection_result["timings"]["detector"]["runtime"]["reused"]:
+        raise AssertionError("cold detection unexpectedly reused a detector")
+    after_cold_detection = client.get("/api/v1/models")
+    _assert_status(
+        after_cold_detection.status_code,
+        200,
+        after_cold_detection.content,
+    )
+    if after_cold_detection.json()["runtime"]["resident_models"] != [
+        DETECTOR_MODEL_ID
+    ]:
+        raise AssertionError("cold detection violated single residency")
+
+    warm_started = monotonic()
+    detection = client.post(
+        "/api/v1/predictions",
+        {"dicom": _upload(dicom), "mode": "detection"},
+        HTTP_IDEMPOTENCY_KEY="real-l4-warm-detection",
+    )
+    warm_elapsed = monotonic() - warm_started
+    _assert_status(detection.status_code, 200, detection.content)
+    detection_result = detection.json()["result"]
+    if not detection_result["timings"]["detector"]["runtime"]["reused"]:
+        raise AssertionError("consecutive detection did not reuse the detector")
+    if detection_result["detector"]["prediction_sha256"] != EXPECTED_DETECTOR_SHA256:
+        raise AssertionError("warm HTTP detector result differs from the L4 golden")
 
     full = client.post(
         "/api/v1/predictions",
@@ -104,26 +149,21 @@ def main() -> int:
         raise AssertionError("display threshold did not filter detector presentation")
     if len(result["detector"]["classifier_rois"]) != 8:
         raise AssertionError("display threshold changed classifier ROI selection")
+    if not result["timings"]["detector"]["runtime"]["reused"]:
+        raise AssertionError("full prediction did not reuse the resident detector")
+    if result["timings"]["classifier"]["runtime"]["reused"]:
+        raise AssertionError("full prediction reused an evicted classifier")
 
     after = client.get("/api/v1/models")
     _assert_status(after.status_code, 200, after.content)
     runtime = after.json()["runtime"]
-    if set(runtime["resident_models"]) != set(MODEL_IDS):
-        raise AssertionError(f"models are not dual-resident: {runtime!r}")
-
-    warm_started = monotonic()
-    detection = client.post(
-        "/api/v1/predictions",
-        {"dicom": _upload(dicom), "mode": "detection"},
-        HTTP_IDEMPOTENCY_KEY="real-l4-warm-detection",
-    )
-    warm_elapsed = monotonic() - warm_started
-    _assert_status(detection.status_code, 200, detection.content)
-    detection_result = detection.json()["result"]
-    if detection_result["classification"] is not None:
-        raise AssertionError("detection mode unexpectedly ran the classifier")
-    if detection_result["detector"]["prediction_sha256"] != EXPECTED_DETECTOR_SHA256:
-        raise AssertionError("warm HTTP detector result differs from the L4 golden")
+    if (
+        runtime["resident_models"] != [CLASSIFIER_MODEL_ID]
+        or runtime["active_model"] != CLASSIFIER_MODEL_ID
+        or runtime["warm_model"] != CLASSIFIER_MODEL_ID
+        or runtime["inference_warm"] is not True
+    ):
+        raise AssertionError(f"final runtime violated single residency: {runtime!r}")
 
     monitoring = client.get("/monitoring")
     _assert_status(monitoring.status_code, 200, monitoring.content)
@@ -134,19 +174,22 @@ def main() -> int:
         operations_response.content,
     )
     operations = operations_response.json()
-    if operations.get("schema_version") != 1 or operations.get("status") != "ready":
+    if operations.get("schema_version") != 2 or operations.get("status") != "ready":
         raise AssertionError(f"operations snapshot is not ready: {operations!r}")
     if not all(operations.get("checks", {}).values()):
         raise AssertionError(f"operations checks are incomplete: {operations!r}")
     queue = operations["queue"]
-    if queue["succeeded_total"] != 2 or any(
+    if queue["succeeded_total"] != 3 or any(
         queue[name] != 0 for name in ("active", "queued", "running")
     ):
         raise AssertionError(f"operations queue state is invalid: {queue!r}")
     executor = operations["executor"]
     if (
-        executor["active_model"] != DETECTOR_MODEL_ID
-        or set(executor["resident_models"]) != set(MODEL_IDS)
+        executor["active_model"] != CLASSIFIER_MODEL_ID
+        or executor["resident_models"] != [CLASSIFIER_MODEL_ID]
+        or executor["warm_model"] != CLASSIFIER_MODEL_ID
+        or executor["artifact_ready"] is not True
+        or executor["inference_warm"] is not True
         or executor["device"] != "cuda:0"
         or executor["precision"] != "float32"
     ):
@@ -160,7 +203,7 @@ def main() -> int:
         raise AssertionError("operations snapshot omitted completed predictions")
     pipeline_latency = telemetry["latency_seconds"]["pipeline_total"]
     if (
-        pipeline_latency["count"] < 2
+        pipeline_latency["count"] < 3
         or not pipeline_latency["p50"]
         or not pipeline_latency["p95"]
     ):
@@ -178,6 +221,7 @@ def main() -> int:
     if (
         lifecycle["detector"]["load"] < 1
         or lifecycle["detector"]["reuse"] < 1
+        or lifecycle["detector"]["unload"] < 1
         or lifecycle["classifier"]["load"] < 1
     ):
         raise AssertionError(f"operations lifecycle is incomplete: {lifecycle!r}")
@@ -204,11 +248,16 @@ def main() -> int:
     metrics_text = metrics.content.decode("utf-8")
     for sample in (
         'vms_predictions_total{mode="full",outcome="succeeded"} 1.0',
-        'vms_predictions_total{mode="detection",outcome="succeeded"} 1.0',
+        'vms_predictions_total{mode="detection",outcome="succeeded"} 2.0',
         'vms_model_lifecycle_total{event="load",model="detector"} 1.0',
+        'vms_model_lifecycle_total{event="unload",model="detector"} 1.0',
         'vms_cuda_memory_bytes{kind="allocated",model="detector"}',
-        f'vms_executor_model_resident{{model="{DETECTOR_MODEL_ID}"}} 1.0',
-        "vms_queue_succeeded_total 2.0",
+        f'vms_executor_model_resident{{model="{CLASSIFIER_MODEL_ID}"}} 1.0',
+        f'vms_executor_model_resident{{model="{DETECTOR_MODEL_ID}"}} 0.0',
+        "vms_executor_artifact_ready 1.0",
+        "vms_executor_runtime_initialized 1.0",
+        "vms_executor_inference_warm 1.0",
+        "vms_queue_succeeded_total 3.0",
     ):
         if sample not in metrics_text:
             raise AssertionError(f"required bounded metric is absent: {sample}")
@@ -243,7 +292,7 @@ def main() -> int:
         for event in structured_events
         if event.get("event") == "prediction_completed"
     ]
-    if len(prediction_events) != 2:
+    if len(prediction_events) != 3:
         raise AssertionError(
             "executor did not emit one structured event per prediction"
         )
@@ -257,7 +306,7 @@ def main() -> int:
     serialized_events = json.dumps(prediction_events, sort_keys=True)
     for private_value in (
         prediction_id,
-        CLINICAL_HISTORY,
+        PACKAGED_ACCEPTANCE_HISTORY,
         "public-mammogram.dcm",
         str(job_root),
         *dicom_identifiers,
@@ -270,14 +319,14 @@ def main() -> int:
         for line in rq_worker_log.read_text(encoding="utf-8").splitlines()
         if line.startswith("{") and '"event":"queue_started"' in line
     ]
-    if len(queue_events) != 2 or any(
+    if len(queue_events) != 3 or any(
         "queue_wait_ms" not in event for event in queue_events
     ):
         raise AssertionError("RQ did not emit bounded queue-wait events")
     serialized_queue_events = json.dumps(queue_events, sort_keys=True)
     if (
         prediction_id in serialized_queue_events
-        or CLINICAL_HISTORY in serialized_queue_events
+        or PACKAGED_ACCEPTANCE_HISTORY in serialized_queue_events
     ):
         raise AssertionError("private identifiers leaked into queue logs")
 
@@ -287,7 +336,7 @@ def main() -> int:
                 "classifier_sha256": EXPECTED_CLASSIFIER_SHA256,
                 "detector_sha256": EXPECTED_DETECTOR_SHA256,
                 "display_threshold_preserved_classifier_rois": True,
-                "dual_resident_models": sorted(runtime["resident_models"]),
+                "single_resident_model": runtime["warm_model"],
                 "readiness": readiness.status_code,
                 "redis": redis.info("server")["redis_version"],
                 "operations": operations["status"],

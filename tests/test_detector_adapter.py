@@ -28,6 +28,10 @@ from vision_model_serving.detector import (  # noqa: E402
 )
 from vision_model_serving.artifacts import ArtifactChangedError  # noqa: E402
 from vision_model_serving.dicom import GeometryLedger  # noqa: E402
+from vision_model_serving.model_ids import (  # noqa: E402
+    CLASSIFIER_MODEL_ID,
+    DETECTOR_MODEL_ID,
+)
 
 
 def geometry() -> GeometryLedger:
@@ -380,7 +384,7 @@ class WrongShapeModelStub(ModelStub):
 
 
 class ArtifactStub:
-    id = "focalnet-dino-detector"
+    id = DETECTOR_MODEL_ID
     role = "detector"
     sha256 = "a" * 64
     repository_revision = "b" * 40
@@ -568,14 +572,14 @@ class DetectorRuntimeTests(unittest.TestCase):
     def test_non_detector_or_unverified_artifact_is_rejected(self) -> None:
         for artifact in (
             SimpleNamespace(
-                id="mmbcd-classifier",
+                id=CLASSIFIER_MODEL_ID,
                 role="classifier",
                 sha256="a" * 64,
                 repository_revision="b" * 40,
                 strict_load_verified=True,
             ),
             SimpleNamespace(
-                id="focalnet-dino-detector",
+                id=DETECTOR_MODEL_ID,
                 role="detector",
                 sha256="a" * 64,
                 repository_revision="b" * 40,

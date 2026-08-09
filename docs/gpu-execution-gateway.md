@@ -9,6 +9,8 @@ The queue choice is recorded in
 [ADR 0001](adr/0001-use-rq-for-gpu-job-execution.md).
 The persistent CUDA-owner topology is recorded in
 [ADR 0002](adr/0002-use-a-persistent-gpu-executor.md).
+The model-residency correction is recorded in
+[ADR 0003](adr/0003-enforce-single-model-residency.md).
 
 ## Execution contract
 
@@ -18,8 +20,9 @@ The persistent CUDA-owner topology is recorded in
   owner-only Unix socket and waits for a generic success or failure response.
 - One long-lived executor owns CUDA and the pipeline. Artifact verification
   plus pinned runtime, device, and native-operator verification complete before
-  the socket becomes ready; detector and classifier remain resident after
-  their first successful loads.
+  the socket becomes artifact-ready. The controller may remain unloaded;
+  exactly one model loads and warms on demand, and cross-model requests unload
+  it before loading the other model.
 - The same socket exposes a bounded, sanitized status operation used by Django
   readiness and model inventory. It reports no paths, artifact filenames,
   prediction identifiers, or failure details.
@@ -123,11 +126,9 @@ gateway configuration.
 
 ## L4 acceptance evidence
 
-A real Redis 7.4 container, standard forked RQ 2.10 worker, Unix-socket
-executor, real FP32 artifacts, and the public DICOM fixture completed two
-sequential full predictions. The first request took 25.871 seconds; the warm
-request took 1.211 seconds with both models reused and no reload. Both exact
-golden hashes and classifier logits matched, and dual residency used 2,334 MiB
-of the L4. See
-[`persistent-rq-executor-l4-20260808.json`](validation/persistent-rq-executor-l4-20260808.json)
-for the evidence and its stated boundary.
+The checked-in 2026-08-08/09 packaged records describe the superseded
+dual-resident policy and remain historical only. The standalone
+single-residency record proves real adapter unload/switch behavior but predates
+the corrected packaged topology. Run current GPU smoke, browser,
+destructive-restart, and schema-v3 benchmark gates on one clean revision before
+claiming current packaged L4 acceptance.

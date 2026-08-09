@@ -74,17 +74,13 @@ class PredictionPipeline:
         *,
         decoder: _Decoder,
         runtime: _Runtime,
-        require_history_for_full: bool = True,
     ):
         if not callable(getattr(decoder, "decode", None)):
             raise TypeError("decoder must implement decode(stream)")
         if not callable(getattr(runtime, "execute", None)):
             raise TypeError("runtime must implement execute(model_id, inputs)")
-        if not isinstance(require_history_for_full, bool):
-            raise TypeError("require_history_for_full must be boolean")
         self._decoder = decoder
         self._runtime = runtime
-        self._require_history_for_full = require_history_for_full
 
     def infer(self, case: CaseInput, mode: PredictionMode) -> PredictionResult:
         if not isinstance(case, CaseInput):
@@ -92,11 +88,7 @@ class PredictionPipeline:
         if not isinstance(mode, PredictionMode):
             raise PredictionInputError("mode must be a PredictionMode")
         history = case.clinical_history or ""
-        if (
-            mode is PredictionMode.FULL
-            and self._require_history_for_full
-            and not history.strip()
-        ):
+        if mode is PredictionMode.FULL and not history.strip():
             raise PredictionInputError(
                 "clinical history is required for full-pipeline mode"
             )

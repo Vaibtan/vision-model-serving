@@ -23,9 +23,10 @@ x-app-environment: &app-environment
   VMS_EXECUTOR_SOCKET: /run/vms/executor.sock
   VMS_JOB_ROOT: /var/lib/vms/jobs
   PROMETHEUS_MULTIPROC_DIR: /run/vms/metrics
+  VMS_METRICS_ALLOWED_NETWORKS: "${VMS_METRICS_ALLOWED_NETWORKS:-127.0.0.0/8,::1/128}"
   VMS_METRICS_DIR: /run/vms/metrics
   VMS_METRICS_ENABLED: "${VMS_METRICS_ENABLED:-false}"
-  VMS_QUEUE_CAPACITY: "1"
+  VMS_QUEUE_CAPACITY: "${VMS_QUEUE_CAPACITY:-1}"
   VMS_QUEUE_NAME: gpu-inference
   VMS_REDIS_URL: redis://redis:6379/0
   VMS_RESULT_TTL_SECONDS: "900"
@@ -49,7 +50,7 @@ services:
       retries: 15
 
   executor:
-    profiles: ["gpu", "benchmark", "validation"]
+    profiles: ["gpu", "benchmark", "validation", "browser"]
     image: vision-model-serving-executor:local
     build:
       context: .
@@ -99,14 +100,14 @@ services:
         - >-
           from pathlib import Path; from vision_model_serving.execution.executor import GpuExecutorClient;
           s=GpuExecutorClient(Path('/run/vms/executor.sock'), timeout_seconds=2).status();
-          raise SystemExit(0 if s.ready and s.verified_artifacts and s.device and s.native_operator else 1)
+          raise SystemExit(0 if s.artifact_ready else 1)
       interval: 5s
       timeout: 3s
       start_period: 90s
       retries: 12
 
   rq-worker:
-    profiles: ["gpu", "benchmark", "validation"]
+    profiles: ["gpu", "benchmark", "validation", "browser"]
     image: vision-model-serving-web:local
     build:
       <<: *web-build
@@ -154,7 +155,7 @@ services:
       retries: 12
 
   web:
-    profiles: ["gpu", "benchmark", "validation"]
+    profiles: ["gpu", "benchmark", "validation", "browser"]
     image: vision-model-serving-web:local
     build:
       <<: *web-build
@@ -223,15 +224,11 @@ services:
       target: test
     command:
       - python
-      - scripts/benchmark_api.py
+      - scripts/smoke_api.py
       - --base-url
       - http://web:8000
       - --dicom
       - /fixtures/input.dcm
-      - --output
-      - /tmp/gpu-smoke.json
-      - --runs
-      - "1"
       - --expected-detector-sha256
       - 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5
       - --expected-classifier-sha256
@@ -246,46 +243,6 @@ services:
       - *public-dicom-mount
     tmpfs:
       - /tmp:size=256m,mode=0700,uid=10001,gid=10001
-
-  benchmark:
-    profiles: ["benchmark"]
-    image: vision-model-serving-test:local
-    build:
-      <<: *web-build
-      target: test
-    user: ${VMS_RESULT_UID:-1000}:${VMS_RESULT_GID:-1000}
-    command:
-      - python
-      - scripts/benchmark_api.py
-      - --base-url
-      - http://web:8000
-      - --dicom
-      - /fixtures/input.dcm
-      - --output
-      - /results/benchmark.json
-      - --markdown-output
-      - /results/benchmark.md
-      - --runs
-      - ${VMS_BENCHMARK_RUNS:-5}
-      - --revision
-      - ${VMS_BENCHMARK_REVISION:-unrecorded}
-      - --expected-detector-sha256
-      - 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5
-      - --expected-classifier-sha256
-      - f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
-    <<: *hardened
-    networks:
-      - backend
-    depends_on:
-      web:
-        condition: service_healthy
-    volumes:
-      - *public-dicom-mount
-      - type: bind
-        source: ${VMS_BENCHMARK_RESULTS:-./benchmark-results}
-        target: /results
-    tmpfs:
-      - /tmp:size=256m,mode=0700
 
   validation:
     profiles: ["validation"]
@@ -325,6 +282,34 @@ services:
         target: /results
     tmpfs:
       - /tmp:size=256m,mode=0700
+
+  browser-acceptance:
+    profiles: ["browser"]
+    image: vision-model-serving-browser:local
+    build:
+      context: .
+      dockerfile: docker/browser.Dockerfile
+    command:
+      - python
+      - scripts/validate_browser_workbench.py
+      - --base-url
+      - http://web:8000
+      - --dicom
+      - /fixtures/input.dcm
+      - --expected-detector-sha256
+      - 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5
+      - --expected-classifier-sha256
+      - f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
+    <<: *hardened
+    networks:
+      - backend
+    depends_on:
+      web:
+        condition: service_healthy
+    volumes:
+      - *public-dicom-mount
+    tmpfs:
+      - /tmp:size=256m,mode=0700,uid=1000,gid=1000
 
 networks:
   backend:

@@ -145,6 +145,12 @@ def main() -> None:
         detector_hash = detector_result.proposals.prediction_sha256
         if detector_hash != DETECTOR_PREDICTION_SHA256:
             raise RuntimeError("detector prediction hash differs from L4 reference")
+        after_detector = runtime.status()
+        if (
+            after_detector.active_model != DETECTOR_MODEL_ID
+            or after_detector.resident_models != (DETECTOR_MODEL_ID,)
+        ):
+            raise RuntimeError("detector stage violated single residency")
 
         classifier_input = (
             canonical,
@@ -156,6 +162,12 @@ def main() -> None:
         classifier_result = classifier_output.value
         if classifier_result.prediction_sha256 != MMBCD_PREDICTION_SHA256:
             raise RuntimeError("classifier prediction hash differs from L4 reference")
+        after_classifier = runtime.status()
+        if (
+            after_classifier.active_model != CLASSIFIER_MODEL_ID
+            or after_classifier.resident_models != (CLASSIFIER_MODEL_ID,)
+        ):
+            raise RuntimeError("classifier stage violated single residency")
         records.append(
             {
                 "cycle": cycle,
@@ -165,6 +177,10 @@ def main() -> None:
                 "detector_memory": asdict(detector_output.memory),
                 "classifier_timings": asdict(classifier_output.timings),
                 "classifier_memory": asdict(classifier_output.memory),
+                "resident_after_detector": list(after_detector.resident_models),
+                "resident_after_classifier": list(
+                    after_classifier.resident_models
+                ),
             }
         )
         classifier_inputs.clear()
@@ -175,6 +191,8 @@ def main() -> None:
         raise RuntimeError("single-residency runtime is not ready after live cycles")
     if status.active_model != CLASSIFIER_MODEL_ID:
         raise RuntimeError("unexpected final resident model")
+    if status.resident_models != (CLASSIFIER_MODEL_ID,):
+        raise RuntimeError("final runtime violated single residency")
     if status.active_inferences != 0 or status.last_error is not None:
         raise RuntimeError("single-residency runtime has unfinished or failed work")
     if status.metrics.load_count != expected_loads:
@@ -193,6 +211,7 @@ def main() -> None:
         "final_status": {
             "state": status.state.value,
             "active_model": status.active_model,
+            "resident_models": list(status.resident_models),
             "active_inferences": status.active_inferences,
             "artifact": asdict(status.artifact),
             "memory": asdict(status.memory),

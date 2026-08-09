@@ -113,80 +113,16 @@ class _TorchDetectorRuntime:
         model_factory: DetectorModelFactory,
         device: str,
     ):
-        self.identity = _validate_artifact(artifact)
-        self._device = _validate_device(device)
-        prior_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
-        workspace_config = os.environ.setdefault(
-            "CUBLAS_WORKSPACE_CONFIG",
-            ":4096:8",
+        loaded = _load_verified_detector_model(
+            artifact,
+            model_factory=model_factory,
+            device=device,
         )
-        if workspace_config != ":4096:8":
-            raise DetectorLoadError(
-                "detector CUBLAS determinism configuration differs"
-            )
-        try:
-            import torch
-        except ImportError:
-            raise DetectorLoadError(
-                "PyTorch is unavailable in the pinned detector runtime"
-            ) from None
-        self._torch = torch
-        if (
-            self._device.startswith("cuda")
-            and torch.cuda.is_initialized()
-            and prior_workspace_config != ":4096:8"
-        ):
-            raise DetectorLoadError(
-                "CUBLAS determinism was configured after CUDA initialization"
-            )
-        _configure_determinism(torch)
-
-        started = perf_counter()
-        try:
-            model = model_factory()
-        except DetectorLoadError:
-            raise
-        except Exception as error:
-            raise DetectorLoadError(
-                f"detector construction failed ({type(error).__name__})"
-            ) from None
-
-        try:
-            with artifact.open_checkpoint() as stream:
-                with torch.serialization.safe_globals([argparse.Namespace]):
-                    checkpoint = torch.load(
-                        stream,
-                        map_location="cpu",
-                        weights_only=True,
-                    )
-        except ArtifactRegistryError:
-            raise
-        except Exception as error:
-            raise DetectorLoadError(
-                f"restricted checkpoint loading failed ({type(error).__name__})"
-            ) from None
-        if not isinstance(checkpoint, Mapping) or "model" not in checkpoint:
-            raise DetectorLoadError("verified checkpoint has no model state root")
-        state_dict = checkpoint["model"]
-        if not isinstance(state_dict, Mapping) or not state_dict:
-            raise DetectorLoadError("verified model state root is invalid")
-
-        try:
-            load_result = model.load_state_dict(state_dict, strict=True)
-        except Exception as error:
-            raise DetectorLoadError(
-                f"strict detector state load failed ({type(error).__name__})"
-            ) from None
-        if load_result.missing_keys or load_result.unexpected_keys:
-            raise DetectorLoadError("strict detector state load reported key differences")
-        try:
-            self._model = model.to(device=self._device, dtype=torch.float32)
-            self._model.eval()
-        except Exception as error:
-            raise DetectorLoadError(
-                f"detector device initialization failed ({type(error).__name__})"
-            ) from None
-        self.load_ms = (perf_counter() - started) * 1000.0
+        self.identity = loaded.identity
+        self._device = loaded.device
+        self._torch = loaded.torch
+        self._model = loaded.model
+        self.load_ms = loaded.load_ms
 
     def predict(self, detector_input: DetectorInput) -> _RuntimePrediction:
         host_values = np.array(
@@ -232,6 +168,106 @@ class _TorchDetectorRuntime:
     def _synchronize(self) -> None:
         if self._device.startswith("cuda"):
             self._torch.cuda.synchronize(self._device)
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedDetectorModel:
+    identity: DetectorArtifactIdentity
+    device: str
+    torch: object
+    model: object
+    load_ms: float
+
+
+def _load_verified_detector_model(
+    artifact: DetectorArtifact,
+    *,
+    model_factory: DetectorModelFactory,
+    device: str,
+) -> _LoadedDetectorModel:
+    """Build and strict-load the one detector used by eager validation."""
+
+    identity = _validate_artifact(artifact)
+    validated_device = _validate_device(device)
+    prior_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    workspace_config = os.environ.setdefault(
+        "CUBLAS_WORKSPACE_CONFIG",
+        ":4096:8",
+    )
+    if workspace_config != ":4096:8":
+        raise DetectorLoadError(
+            "detector CUBLAS determinism configuration differs"
+        )
+    try:
+        import torch
+    except ImportError:
+        raise DetectorLoadError(
+            "PyTorch is unavailable in the pinned detector runtime"
+        ) from None
+    if (
+        validated_device.startswith("cuda")
+        and torch.cuda.is_initialized()
+        and prior_workspace_config != ":4096:8"
+    ):
+        raise DetectorLoadError(
+            "CUBLAS determinism was configured after CUDA initialization"
+        )
+    _configure_determinism(torch)
+
+    started = perf_counter()
+    try:
+        model = model_factory()
+    except DetectorLoadError:
+        raise
+    except Exception as error:
+        raise DetectorLoadError(
+            f"detector construction failed ({type(error).__name__})"
+        ) from None
+
+    try:
+        with artifact.open_checkpoint() as stream:
+            with torch.serialization.safe_globals([argparse.Namespace]):
+                checkpoint = torch.load(
+                    stream,
+                    map_location="cpu",
+                    weights_only=True,
+                )
+    except ArtifactRegistryError:
+        raise
+    except Exception as error:
+        raise DetectorLoadError(
+            f"restricted checkpoint loading failed ({type(error).__name__})"
+        ) from None
+    if not isinstance(checkpoint, Mapping) or "model" not in checkpoint:
+        raise DetectorLoadError("verified checkpoint has no model state root")
+    state_dict = checkpoint["model"]
+    if not isinstance(state_dict, Mapping) or not state_dict:
+        raise DetectorLoadError("verified model state root is invalid")
+
+    try:
+        load_result = model.load_state_dict(state_dict, strict=True)
+    except Exception as error:
+        raise DetectorLoadError(
+            f"strict detector state load failed ({type(error).__name__})"
+        ) from None
+    if load_result.missing_keys or load_result.unexpected_keys:
+        raise DetectorLoadError(
+            "strict detector state load reported key differences"
+        )
+    try:
+        model = model.to(device=validated_device, dtype=torch.float32)
+        model.eval()
+    except Exception as error:
+        raise DetectorLoadError(
+            f"detector device initialization failed ({type(error).__name__})"
+        ) from None
+    return _LoadedDetectorModel(
+        identity=identity,
+        device=validated_device,
+        torch=torch,
+        model=model,
+        load_ms=(perf_counter() - started) * 1_000.0,
+    )
 
 
 class FocalNetDinoAdapter:

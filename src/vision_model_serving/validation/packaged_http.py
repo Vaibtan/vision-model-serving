@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import json
 import time
 import urllib.error
@@ -13,6 +14,20 @@ from vision_model_serving.pipeline.contracts import PredictionMode
 
 PACKAGED_ACCEPTANCE_HISTORY: Final = "real public mammogram acceptance."
 _POLL_INTERVAL_SECONDS: Final = 0.1
+
+
+class PackagedHttpError(RuntimeError):
+    def __init__(self, code: str, detail: str):
+        self.code = code
+        super().__init__(detail)
+
+
+@dataclass(frozen=True, slots=True)
+class PredictionObservation:
+    result: dict[str, Any]
+    wall_seconds: float
+    queue_wait_seconds: float
+    states: tuple[str, ...]
 
 
 class PackagedPredictionClient:
@@ -38,12 +53,26 @@ class PackagedPredictionClient:
             timeout=self._request_timeout(10.0),
         )
 
+    def operations(self) -> dict[str, Any]:
+        return _request_json(
+            urllib.request.Request(f"{self._base_url}/api/v1/operations"),
+            timeout=self._request_timeout(10.0),
+        )
+
     def predict(
         self,
         dicom: bytes,
         *,
         mode: PredictionMode,
     ) -> dict[str, Any]:
+        return self.predict_observed(dicom, mode=mode).result
+
+    def predict_observed(
+        self,
+        dicom: bytes,
+        *,
+        mode: PredictionMode,
+    ) -> PredictionObservation:
         if not isinstance(dicom, bytes):
             raise TypeError("DICOM input must be bytes")
         if not isinstance(mode, PredictionMode):
@@ -52,6 +81,7 @@ class PackagedPredictionClient:
         fields = {"mode": mode.value}
         if mode is PredictionMode.FULL:
             fields["clinical_history"] = PACKAGED_ACCEPTANCE_HISTORY
+        started = time.monotonic()
         submitted = _request_json(
             urllib.request.Request(
                 f"{self._base_url}/api/v1/predictions",
@@ -65,6 +95,7 @@ class PackagedPredictionClient:
             timeout=self._request_timeout(30.0),
         )
         prediction_id = submitted["prediction_id"]
+        states = [str(submitted.get("state", "submitted"))]
         deadline = time.monotonic() + self._timeout_seconds
         while time.monotonic() < deadline:
             status = _request_json(
@@ -73,15 +104,29 @@ class PackagedPredictionClient:
                 ),
                 timeout=self._request_timeout(10.0),
             )
+            states.append(str(status["state"]))
             if status["state"] == "succeeded":
-                return _request_json(
+                result = _request_json(
                     urllib.request.Request(
                         f"{self._base_url}/api/v1/predictions/{prediction_id}/result"
                     ),
                     timeout=self._request_timeout(10.0),
                 )["result"]
+                return PredictionObservation(
+                    result=result,
+                    wall_seconds=time.monotonic() - started,
+                    queue_wait_seconds=max(
+                        0.0, float(status.get("queue_wait_ms") or 0.0) / 1_000.0
+                    ),
+                    states=tuple(states),
+                )
             if status["state"] in {"failed", "expired"}:
-                raise RuntimeError(f"prediction ended in state {status['state']}")
+                failure = status.get("failure") or {}
+                code = str(failure.get("code") or f"prediction_{status['state']}")
+                raise PackagedHttpError(
+                    code,
+                    f"prediction ended in state {status['state']}",
+                )
             time.sleep(_POLL_INTERVAL_SECONDS)
         raise TimeoutError("prediction did not finish before the acceptance deadline")
 
@@ -95,7 +140,13 @@ def _request_json(request: urllib.request.Request, *, timeout: float) -> dict[st
             payload = json.load(response)
     except urllib.error.HTTPError as error:
         message = error.read(4096).decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {error.code}: {message}") from error
+        code = f"http_{error.code}"
+        try:
+            body = json.loads(message)
+            code = str(body.get("error", {}).get("code") or code)
+        except (AttributeError, json.JSONDecodeError):
+            pass
+        raise PackagedHttpError(code, f"HTTP {error.code}: {message}") from error
     if not isinstance(payload, dict):
         raise RuntimeError("HTTP response must be a JSON object")
     return payload

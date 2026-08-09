@@ -55,6 +55,8 @@ class EnvironmentSnapshot:
     nvcc_release: str | None
     compiler: str | None
     driver: str | None
+    total_device_memory_bytes: int | None = None
+    cudnn_version: str | None = None
     collection_errors: tuple[str, ...] = ()
 
     @classmethod
@@ -75,18 +77,25 @@ class EnvironmentSnapshot:
         compute_capability: str | None = None
         cuda_home_present = False
         cuda_sanity_passed: bool | None = None
+        total_device_memory_bytes: int | None = None
+        cudnn_version: str | None = None
         if packages.get("torch") is not None:
             try:
                 import torch
                 from torch.utils.cpp_extension import CUDA_HOME
 
                 torch_cuda = torch.version.cuda
+                cudnn_value = torch.backends.cudnn.version()
+                cudnn_version = None if cudnn_value is None else str(cudnn_value)
                 cuda_home_present = bool(CUDA_HOME and Path(CUDA_HOME).is_dir())
                 cuda_available = torch.cuda.is_available()
                 if cuda_available:
                     device_name = torch.cuda.get_device_name(0)
                     compute_capability = ".".join(
                         str(part) for part in torch.cuda.get_device_capability(0)
+                    )
+                    total_device_memory_bytes = int(
+                        torch.cuda.get_device_properties(0).total_memory
                     )
                     value = torch.randn(128, 128, device="cuda")
                     result = value @ value.T
@@ -125,6 +134,8 @@ class EnvironmentSnapshot:
             nvcc_release=nvcc_release,
             compiler=compiler,
             driver=driver.splitlines()[0].strip() if driver else None,
+            total_device_memory_bytes=total_device_memory_bytes,
+            cudnn_version=cudnn_version,
             collection_errors=tuple(errors),
         )
 
@@ -142,6 +153,8 @@ class EnvironmentSnapshot:
             "nvcc_release": self.nvcc_release,
             "compiler": self.compiler,
             "driver": self.driver,
+            "total_device_memory_bytes": self.total_device_memory_bytes,
+            "cudnn_version": self.cudnn_version,
             "collection_errors": list(self.collection_errors),
         }
 

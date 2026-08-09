@@ -33,6 +33,10 @@ from vision_model_serving.classifier import (  # noqa: E402
 )
 from vision_model_serving.classifier import runtime as classifier_runtime  # noqa: E402
 from vision_model_serving.dicom import DicomCanonicalizer  # noqa: E402
+from vision_model_serving.model_ids import (  # noqa: E402
+    CLASSIFIER_MODEL_ID,
+    DETECTOR_MODEL_ID,
+)
 
 
 class TokenizerStub:
@@ -145,7 +149,7 @@ class ModelStub:
 
 
 class ArtifactStub:
-    id = "mmbcd-classifier"
+    id = CLASSIFIER_MODEL_ID
     role = "classifier"
     sha256 = "a" * 64
     repository_revision = "b" * 40
@@ -240,7 +244,7 @@ def adapter(
         runtime=runtime or RuntimeStub(),
         tokenizer=tokenizer or TokenizerStub(),
         artifact=ClassifierArtifactIdentity(
-            id="mmbcd-classifier",
+            id=CLASSIFIER_MODEL_ID,
             sha256="a" * 64,
             repository_revision="b" * 40,
         ),
@@ -540,7 +544,7 @@ class ClassifierResultTests(unittest.TestCase):
             first.input.attention_mask_sha256,
             second.input.attention_mask_sha256,
         )
-        self.assertEqual(first.provenance.artifact.id, "mmbcd-classifier")
+        self.assertEqual(first.provenance.artifact.id, CLASSIFIER_MODEL_ID)
         self.assertEqual(first.provenance.tokenizer.id, "roberta-base")
         self.assertTrue(first.provenance.offline_assets_only)
         self.assertFalse(first.provenance.strict_checkpoint_load)
@@ -686,14 +690,14 @@ class ClassifierRuntimeTests(unittest.TestCase):
     def test_non_classifier_or_unverified_artifact_fails_closed(self) -> None:
         for artifact_value in (
             SimpleNamespace(
-                id="focalnet-dino-detector",
+                id=DETECTOR_MODEL_ID,
                 role="detector",
                 sha256="a" * 64,
                 repository_revision="b" * 40,
                 strict_load_verified=True,
             ),
             SimpleNamespace(
-                id="mmbcd-classifier",
+                id=CLASSIFIER_MODEL_ID,
                 role="classifier",
                 sha256="a" * 64,
                 repository_revision="b" * 40,

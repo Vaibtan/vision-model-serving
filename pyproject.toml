@@ -35,6 +35,9 @@ web = [
 ]
 
 [dependency-groups]
+browser = [
+    "playwright==1.62.0",
+]
 dev = [
     "fakeredis==2.37.0",
 ]

@@ -8,11 +8,10 @@ result = pipeline.infer(case, mode)
 ```
 
 The module decodes the caller-owned stream, executes the detector through the
-accelerator lifecycle runtime, and optionally executes MMBCD. That runtime can
-strictly switch residents; the deployed executor enables its accepted
-two-resident retention policy. The persistent executor and tests consume the
-same interface; neither reimplements model ordering, ROI selection, or
-result shaping.
+accelerator lifecycle runtime, and optionally executes MMBCD. The deployed
+runtime reuses only the current model and unloads it before a cross-model
+switch. The persistent executor and tests consume the same interface; neither
+reimplements model ordering, ROI selection, or result shaping.
 
 ## Input and mode contract
 
@@ -69,25 +68,15 @@ uv run python -m unittest tests.test_prediction_pipeline -v
 uv run python -m unittest discover -s tests -v
 ```
 
-The NVIDIA L4 gate uses the real public DICOM, external weights, pinned source
-trees, offline tokenizer, production adapters, and repeated full cycles:
-
-```bash
-export PYTHONPATH="$PWD/src"
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-uv run python scripts/l4_validation/17_validate_prediction_pipeline.py --cycles 2
-```
-
-The required terminal marker is `PREDICTION PIPELINE L4 PASSED`. This validates
-reproducible execution and lifecycle behavior on one public fixture, not model
-accuracy, calibration, class semantics, or clinical fitness.
-
-The two-cycle gate passed on an NVIDIA L4 on 2026-08-08. Both detector cycles
-reproduced prediction SHA-256
-`4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5`,
-both classifier cycles reproduced
-`43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b`,
-and the logits were identical. The committed evidence is
-[`docs/validation/prediction-pipeline-l4-20260808.json`](validation/prediction-pipeline-l4-20260808.json).
+Real GPU validation runs only through the packaged executor topology described
+in [the reproduction guide](reproduction.md#4-build-and-run-the-packaged-l4-smoke-test).
+That gate uses the public DICOM, external weights, pinned source trees, offline
+tokenizer, standard RQ worker, and the private executor composition root. The
+current destructive-restart evidence reproduced detector SHA-256
+`4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5` and
+served-request classifier SHA-256
+`f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3`.
+See
+[`compose-restart-l4-20260809.json`](validation/compose-restart-l4-20260809.json).
+This validates reproducible execution and lifecycle behavior on one public
+fixture, not model accuracy, calibration, class semantics, or clinical fitness.

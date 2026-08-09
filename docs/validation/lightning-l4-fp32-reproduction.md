@@ -223,8 +223,9 @@ if [[ ! -d "${VMS_REPO}/.git" ]]; then
   git clone https://github.com/Vaibtan/vision-model-serving.git "${VMS_REPO}"
 fi
 
-git -C "${VMS_REPO}" fetch origin agent/django-api
-git -C "${VMS_REPO}" switch agent/django-api
+git -C "${VMS_REPO}" fetch origin main
+git -C "${VMS_REPO}" switch main
+git -C "${VMS_REPO}" merge --ff-only origin/main
 
 if [[ ! -d "${FOCAL_REPO}/.git" ]]; then
   git clone https://github.com/FocalNet/FocalNet-DINO.git "${FOCAL_REPO}"
@@ -604,23 +605,16 @@ must remain external until licensing is clarified.
 - **An inference script cannot produce its success marker:** stop before FP16,
   BF16, `torch.compile`, ONNX, or TensorRT work.
 
-## Next engineering gate
+## Superseded direct-pipeline gate
 
-The repository modules and single-residency runtime now have their own public
-`PredictionPipeline` orchestration boundary. Validate that boundary, including
-detection-only output and two complete detector-to-MMBCD cycles, with:
+A direct `PredictionPipeline` harness passed on an NVIDIA L4 on 2026-08-08 and
+preserved the archived detector, MMBCD-input, and empty-history MMBCD-output
+hashes. Its generated record remains committed at
+`docs/validation/prediction-pipeline-l4-20260808.json` as bounded historical
+evidence.
 
-```bash
-export PYTHONPATH="${VMS_REPO}/src"
-export CUBLAS_WORKSPACE_CONFIG=":4096:8"
-export PYTHONHASHSEED=0
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-uv run python scripts/l4_validation/17_validate_prediction_pipeline.py \
-  --cycles 2
-```
-
-The two-cycle command passed on an NVIDIA L4 on 2026-08-08 and preserved the
-archived detector, MMBCD-input, and MMBCD-output hashes. The generated record is
-committed at `docs/validation/prediction-pipeline-l4-20260808.json`. Django,
-queueing, and frontend work remain outside this command.
+That harness was retired after the persistent RQ/executor topology became the
+sole serving path. Current live validation must use the packaged L4 smoke or
+destructive-restart profiles in `docs/reproduction.md` and `docs/containers.md`;
+those profiles enforce the served full-mode history contract and exercise
+Django, RQ, the private socket, and the executor together.

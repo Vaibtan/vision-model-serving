@@ -70,7 +70,11 @@ operations snapshot can report bounded telemetry. The externally scrapeable
 
 ```bash
 export VMS_METRICS_ENABLED=true
+export VMS_METRICS_ALLOWED_NETWORKS="${TRUSTED_SCRAPER_CIDRS:?set trusted scraper CIDRs}"
 ```
+
+Set `TRUSTED_SCRAPER_CIDRS` to the comma-separated exact scraper CIDRs for the
+deployment. Compose passes that allowlist to the web process.
 
 ## L4 smoke profile
 
@@ -103,31 +107,59 @@ docker compose --profile gpu up --no-build --pull never \
 
 ## Benchmark profile
 
-The benchmark is the same real HTTP path, not a model stub. Its result directory
-is an explicit writable bind mount; every other runtime mount remains read-only.
+The benchmark is the same real HTTP path, not a model stub. Start the stack
+with queue capacity four, but run the harness on the L4 host so it can record
+Docker image identity and sample `nvidia-smi` truthfully.
 
 ```bash
-mkdir -p benchmark-results
-export VMS_BENCHMARK_RESULTS="$PWD/benchmark-results"
-export VMS_RESULT_UID="$(id -u)"
-export VMS_RESULT_GID="$(id -g)"
-export VMS_BENCHMARK_RUNS=5
-export VMS_BENCHMARK_REVISION="$(git rev-parse HEAD)"
-docker compose --profile benchmark up --build \
-  --abort-on-container-exit --exit-code-from benchmark
+export VMS_QUEUE_CAPACITY=4
+docker compose --profile benchmark up --build -d redis executor rq-worker web
+
+REVISION="$(git rev-parse HEAD)"
+IMAGE_ID="$(docker image inspect vision-model-serving-executor:local --format '{{.Id}}')"
+IMAGE_DIGEST="$(docker image inspect vision-model-serving-executor:local --format '{{index .RepoDigests 0}}')"
+uv run --extra gateway --extra web python scripts/benchmark_api.py \
+  --base-url http://127.0.0.1:8000 \
+  --dicom "$VMS_DICOM_PATH" \
+  --output benchmark-results/benchmark.json \
+  --markdown-output benchmark-results/benchmark.md \
+  --runs 20 \
+  --revision "$REVISION" \
+  --environment-evidence config/l4-fp32-environment.json \
+  --executor-image-id "$IMAGE_ID" \
+  --executor-image-digest "$IMAGE_DIGEST" \
+  --expected-detector-sha256 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5 \
+  --expected-classifier-sha256 f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
 ```
 
-The profile requires a fresh unloaded executor. `benchmark.json` and
-`benchmark.md` record the cold full request, warm detection and full samples,
-serialized throughput, stage latency, peak reserved memory, readiness,
-residency, revision, artifact/input/output identity, and promotion gates. They
-do not record clinical text, DICOM identifiers, filenames, prediction IDs, or
-host paths.
+The harness requires a clean exact revision and a fresh unloaded executor.
+Schema v3 records cold full, switch-to-detection, compatible warm detections,
+full-after-detection, repeated switch-bound full requests, concurrency 1/2/4,
+failure accounting, stage distributions, startup timing, runtime/compiler/
+container identity, utilization, memory/OOM state, and max-one residency. It
+writes both JSON and Markdown or fails.
+
+## Browser acceptance profile
+
+The fast browser test intercepts only prediction lifecycle APIs while using the
+real workbench and DICOM preview. The L4 profile below drives the complete
+packaged API with Chromium and verifies upload, polling, overlay/crop/attention
+inspection, probabilities/runtime panels, and JSON/PNG exports:
+
+```bash
+docker compose --profile browser up --build \
+  --abort-on-container-exit --exit-code-from browser-acceptance
+docker compose --profile browser down --volumes --remove-orphans
+```
+
+The browser image contains no CUDA/model code and joins only the internal
+network. The public DICOM is mounted read-only.
 
 ## Destructive-restart validation profile
 
-The validation profile runs detection and full inference twice, verifies warm
-model reuse and bounded outputs, and writes a report to an explicit bind mount.
+The validation profile runs detection, compatible repeated detection, and full
+inference twice. It verifies detector reuse, unload-before-classifier switch,
+max-one residency, and bounded outputs, then writes a report to an explicit bind mount.
 Run it once as `before`, destroy the complete stack including volumes, then run
 it as `after`; the second report must match the first model, configuration, and
 behavior identity.
@@ -176,8 +208,8 @@ Image history and files must contain neither checkpoint filename, public input
 hash, clinical text, evidence-archive name, nor a mounted host path. Native
 `.so` files are expected; model `.pt` and `.pth` files are not.
 
-The clean-build, profile-isolation, golden-smoke, benchmark, image-inspection,
-and cleanup results are captured in the
+The existing clean-build, profile-isolation, golden-smoke, benchmark,
+image-inspection, and cleanup results are historical dual-resident evidence in the
 [bounded L4 validation record](validation/container-l4-20260809.json). The
-two-lifecycle public-DICOM proof is captured separately in the
+historical two-lifecycle public-DICOM proof is captured separately in the
 [destructive-restart validation record](validation/compose-restart-l4-20260809.json).

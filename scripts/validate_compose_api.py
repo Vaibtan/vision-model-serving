@@ -79,13 +79,18 @@ def main() -> int:
         timeout_seconds=args.timeout_seconds,
     )
     readiness = client.readiness()
-    if readiness.get("status") != "ready" or not all(
-        readiness.get("checks", {}).values()
+    if (
+        readiness.get("status") != "ready"
+        or readiness.get("readiness_scope") != "artifact_ready"
+        or not all(readiness.get("checks", {}).values())
     ):
         raise AssertionError(f"packaged API is not ready: {readiness!r}")
 
     initial = _inventory(client.model_inventory())
-    if initial["runtime"]["state"] != "unloaded":
+    if (
+        initial["runtime"]["state"] != "unloaded"
+        or initial["runtime"]["inference_warm"] is not False
+    ):
         raise AssertionError(f"executor did not start cold: {initial['runtime']!r}")
     cycles = []
     for cycle in range(1, args.cycles + 1):
@@ -95,10 +100,19 @@ def main() -> int:
         _validate_runtime(
             after_detection,
             active=DETECTOR["id"],
-            residents=(
-                {DETECTOR["id"]} if cycle == 1 else {DETECTOR["id"], CLASSIFIER["id"]}
-            ),
+            residents={DETECTOR["id"]},
         )
+
+        repeated_detection = client.predict(dicom, mode=PredictionMode.DETECTION)
+        _validate_result(repeated_detection, mode="detection")
+        after_repeated_detection = _inventory(client.model_inventory())["runtime"]
+        _validate_runtime(
+            after_repeated_detection,
+            active=DETECTOR["id"],
+            residents={DETECTOR["id"]},
+        )
+        if not repeated_detection["timings"]["detector"]["runtime"]["reused"]:
+            raise AssertionError("consecutive detection did not reuse the detector")
 
         full = client.predict(dicom, mode=PredictionMode.FULL)
         _validate_result(full, mode="full")
@@ -106,26 +120,29 @@ def main() -> int:
         _validate_runtime(
             after_full,
             active=CLASSIFIER["id"],
-            residents={DETECTOR["id"], CLASSIFIER["id"]},
+            residents={CLASSIFIER["id"]},
         )
         if not full["timings"]["detector"]["runtime"]["reused"]:
             raise AssertionError("full prediction did not reuse the resident detector")
-        if cycle > 1 and not (
-            detection["timings"]["detector"]["runtime"]["reused"]
-            and full["timings"]["classifier"]["runtime"]["reused"]
-        ):
-            raise AssertionError("warm cycle reloaded a resident model")
+        if full["timings"]["classifier"]["runtime"]["reused"]:
+            raise AssertionError("full prediction reused an evicted classifier")
+        if detection["timings"]["detector"]["runtime"]["reused"]:
+            raise AssertionError("detection reused a detector evicted by prior full")
         cycles.append(
             {
                 "cycle": cycle,
                 "detection": _behavior(detection, after_detection),
+                "repeated_detection": _behavior(
+                    repeated_detection,
+                    after_repeated_detection,
+                ),
                 "full": _behavior(full, after_full),
             }
         )
 
     _assert_private_content_absent(args.redis_url, args.job_root, dicom)
     record = {
-        "schema_version": 1,
+        "schema_version": 2,
         "identity": _identity(initial, canonical_array_sha256),
         "behavior": {"cycles": cycles},
         "privacy": {
@@ -172,7 +189,7 @@ def _inventory(inventory: dict) -> dict:
     if observed != expected:
         raise AssertionError(f"model inventory differs from the manifest: {observed!r}")
     residents = set(inventory["runtime"]["resident_models"])
-    if not residents <= set(expected):
+    if len(residents) > 1 or not residents <= set(expected):
         raise AssertionError("executor exposed a model outside the manifest")
     return inventory
 
@@ -254,6 +271,10 @@ def _validate_detections(result: dict) -> None:
 def _validate_runtime(runtime: dict, *, active: str, residents: set[str]) -> None:
     if (
         runtime["state"] != "ready"
+        or runtime["initialized"] is not True
+        or runtime["artifact_ready"] is not True
+        or runtime["inference_warm"] is not True
+        or runtime["warm_model"] != active
         or runtime["active_model"] != active
         or set(runtime["resident_models"]) != residents
         or runtime["last_error"] is not None

@@ -1,6 +1,7 @@
 """Bounded GPU prediction execution through RQ."""
 
 from .contracts import (
+    ExecutorStartupTimings,
     GatewayObservations,
     GatewayUnavailable,
     GpuExecutionGateway,
@@ -26,6 +27,7 @@ __all__ = [
     "RQ_TASK_PATH",
     "GatewayObservations",
     "GatewayUnavailable",
+    "ExecutorStartupTimings",
     "GpuExecutionGateway",
     "GpuExecutorStatus",
     "IdempotencyConflict",

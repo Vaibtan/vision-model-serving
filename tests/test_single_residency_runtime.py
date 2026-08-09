@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from dataclasses import dataclass
+import inspect
 from pathlib import Path
 import sys
 from threading import Event, Lock, Thread
@@ -25,6 +26,11 @@ from vision_model_serving.residency import (  # noqa: E402
     SingleResidencyRuntime,
     TorchCudaLifecycle,
 )
+import vision_model_serving.residency as residency  # noqa: E402
+
+
+MODEL_A = "model-a"
+MODEL_B = "model-b"
 
 
 @dataclass(frozen=True)
@@ -210,13 +216,17 @@ class BlockingCleanupAcceleratorStub(AcceleratorStub):
 
 
 class RuntimeLoadTests(unittest.TestCase):
+    def test_runtime_has_one_mandatory_residency_policy(self) -> None:
+        self.assertNotIn("retain_models", inspect.signature(SingleResidencyRuntime).parameters)
+        self.assertFalse(hasattr(residency, "PersistentResidencyRuntime"))
+
     def test_first_execute_loads_warms_and_reports_ready(self) -> None:
-        loader = LoaderStub("focalnet-dino-detector")
+        loader = LoaderStub(MODEL_A)
         accelerator = AcceleratorStub()
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="focalnet-dino-detector",
+                    model_id=MODEL_A,
                     load=loader.load,
                     failure_token=loader.failure_token,
                 ),
@@ -225,12 +235,12 @@ class RuntimeLoadTests(unittest.TestCase):
         )
 
         before = runtime.status()
-        output = runtime.execute("focalnet-dino-detector", "scan-1")
+        output = runtime.execute(MODEL_A, "scan-1")
         after = runtime.status()
 
         self.assertEqual(before.state, RuntimeState.UNLOADED)
-        self.assertEqual(output.model_id, "focalnet-dino-detector")
-        self.assertEqual(output.value, "focalnet-dino-detector:scan-1")
+        self.assertEqual(output.model_id, MODEL_A)
+        self.assertEqual(output.value, f"{MODEL_A}:scan-1")
         self.assertFalse(output.reused)
         self.assertEqual(loader.loads, 1)
         resident = loader.last_resident()
@@ -238,8 +248,9 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertEqual(resident.warmup_calls, 1)
         self.assertEqual(resident.execute_calls, ["scan-1"])
         self.assertEqual(after.state, RuntimeState.READY)
-        self.assertEqual(after.active_model, "focalnet-dino-detector")
-        self.assertEqual(after.artifact.id, "focalnet-dino-detector")
+        self.assertEqual(after.active_model, MODEL_A)
+        self.assertEqual(after.resident_models, (MODEL_A,))
+        self.assertEqual(after.artifact.id, MODEL_A)
         self.assertEqual(after.memory.allocated_bytes, 100)
         self.assertEqual(after.memory.reserved_bytes, 200)
         self.assertEqual(after.memory.peak_allocated_bytes, 300)
@@ -255,18 +266,18 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertFalse(hasattr(output, "accelerator"))
 
     def test_cross_model_switch_proves_old_resident_is_unreachable(self) -> None:
-        detector = LoaderStub("focalnet-dino-detector")
-        classifier = LoaderStub("mmbcd-classifier")
+        detector = LoaderStub(MODEL_A)
+        classifier = LoaderStub(MODEL_B)
         accelerator = AcceleratorStub()
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="focalnet-dino-detector",
+                    model_id=MODEL_A,
                     load=detector.load,
                     failure_token=detector.failure_token,
                 ),
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=classifier.load,
                     failure_token=classifier.failure_token,
                 ),
@@ -274,18 +285,19 @@ class RuntimeLoadTests(unittest.TestCase):
             accelerator=accelerator,
         )
 
-        runtime.execute("focalnet-dino-detector", "scan-1")
+        runtime.execute(MODEL_A, "scan-1")
         old_resident = detector.last_resident
-        switched = runtime.execute("mmbcd-classifier", "eight-rois")
+        switched = runtime.execute(MODEL_B, "eight-rois")
         status = runtime.status()
 
         self.assertIsNone(old_resident())
-        self.assertEqual(switched.model_id, "mmbcd-classifier")
-        self.assertEqual(switched.value, "mmbcd-classifier:eight-rois")
+        self.assertEqual(switched.model_id, MODEL_B)
+        self.assertEqual(switched.value, f"{MODEL_B}:eight-rois")
         self.assertFalse(switched.reused)
         self.assertGreaterEqual(switched.timings.switch_ms, 0.0)
         self.assertEqual(status.state, RuntimeState.READY)
-        self.assertEqual(status.active_model, "mmbcd-classifier")
+        self.assertEqual(status.active_model, MODEL_B)
+        self.assertEqual(status.resident_models, (MODEL_B,))
         self.assertEqual(status.metrics.load_count, 2)
         self.assertEqual(status.metrics.switch_count, 1)
         self.assertEqual(status.metrics.unload_count, 1)
@@ -294,11 +306,11 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertIn("empty_cache", accelerator.events)
 
     def test_same_model_execute_reuses_the_ready_resident(self) -> None:
-        loader = LoaderStub("mmbcd-classifier")
+        loader = LoaderStub(MODEL_B)
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=loader.load,
                     failure_token=loader.failure_token,
                 ),
@@ -306,8 +318,8 @@ class RuntimeLoadTests(unittest.TestCase):
             accelerator=AcceleratorStub(),
         )
 
-        first = runtime.execute("mmbcd-classifier", "rois-1")
-        second = runtime.execute("mmbcd-classifier", "rois-2")
+        first = runtime.execute(MODEL_B, "rois-1")
+        second = runtime.execute(MODEL_B, "rois-2")
         status = runtime.status()
 
         self.assertFalse(first.reused)
@@ -321,14 +333,69 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertEqual(status.metrics.reuse_count, 1)
         self.assertEqual(status.metrics.switch_count, 0)
         self.assertEqual(status.metrics.unload_count, 0)
+        self.assertEqual(status.resident_models, (MODEL_B,))
+
+    def test_a_to_b_to_a_reloads_each_evicted_model_without_overlap(self) -> None:
+        first = LoaderStub(MODEL_A)
+        second = LoaderStub(MODEL_B)
+        runtime = SingleResidencyRuntime(
+            bindings=(
+                ModelBinding(
+                    model_id=MODEL_A,
+                    load=first.load,
+                    failure_token=first.failure_token,
+                ),
+                ModelBinding(
+                    model_id=MODEL_B,
+                    load=second.load,
+                    failure_token=second.failure_token,
+                ),
+            ),
+            accelerator=AcceleratorStub(),
+        )
+
+        runtime.execute(MODEL_A, "first")
+        runtime.execute(MODEL_B, "second")
+        runtime.execute(MODEL_A, "third")
+        status = runtime.status()
+
+        self.assertEqual(first.loads, 2)
+        self.assertEqual(second.loads, 1)
+        self.assertEqual(status.active_model, MODEL_A)
+        self.assertEqual(status.resident_models, (MODEL_A,))
+        self.assertEqual(status.metrics.load_count, 3)
+        self.assertEqual(status.metrics.switch_count, 2)
+        self.assertEqual(status.metrics.unload_count, 2)
+
+    def test_close_unloads_the_only_resident(self) -> None:
+        loader = LoaderStub(MODEL_A)
+        runtime = SingleResidencyRuntime(
+            bindings=(
+                ModelBinding(
+                    model_id=MODEL_A,
+                    load=loader.load,
+                    failure_token=loader.failure_token,
+                ),
+            ),
+            accelerator=AcceleratorStub(),
+        )
+        runtime.execute(MODEL_A, "scan")
+
+        runtime.close()
+        status = runtime.status()
+
+        self.assertEqual(status.state, RuntimeState.UNLOADED)
+        self.assertIsNone(status.active_model)
+        self.assertEqual(status.resident_models, ())
+        self.assertEqual(status.metrics.unload_count, 1)
 
     def test_load_failure_retries_only_after_the_cause_token_changes(self) -> None:
-        loader = LoaderStub("mmbcd-classifier")
+        loader = LoaderStub(MODEL_B)
         loader.fail_load = True
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=loader.load,
                     failure_token=loader.failure_token,
                 ),
@@ -337,10 +404,10 @@ class RuntimeLoadTests(unittest.TestCase):
         )
 
         with self.assertRaises(RuntimeLoadError) as first_error:
-            runtime.execute("mmbcd-classifier", "rois")
+            runtime.execute(MODEL_B, "rois")
         failed = runtime.status()
         with self.assertRaises(RuntimeUnavailableError):
-            runtime.execute("mmbcd-classifier", "rois")
+            runtime.execute(MODEL_B, "rois")
 
         self.assertEqual(first_error.exception.code, "runtime_model_load_failed")
         self.assertNotIn("patients", str(first_error.exception))
@@ -354,20 +421,20 @@ class RuntimeLoadTests(unittest.TestCase):
 
         loader.generation = 2
         loader.fail_load = False
-        recovered = runtime.execute("mmbcd-classifier", "rois")
+        recovered = runtime.execute(MODEL_B, "rois")
 
-        self.assertEqual(recovered.value, "mmbcd-classifier:rois")
+        self.assertEqual(recovered.value, f"{MODEL_B}:rois")
         self.assertEqual(loader.loads, 2)
         self.assertEqual(runtime.status().state, RuntimeState.READY)
         self.assertIsNone(runtime.status().last_error)
 
     def test_warmup_failure_releases_resident_before_cache_cleanup(self) -> None:
         trace: list[str] = []
-        loader = WarmupFailureLoader("mmbcd-classifier", trace)
+        loader = WarmupFailureLoader(MODEL_B, trace)
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=loader.load,
                     failure_token=loader.failure_token,
                 ),
@@ -376,20 +443,20 @@ class RuntimeLoadTests(unittest.TestCase):
         )
 
         with self.assertRaises(RuntimeLoadError):
-            runtime.execute("mmbcd-classifier", "rois")
+            runtime.execute(MODEL_B, "rois")
 
         self.assertIsNone(loader.last_resident())
         self.assertEqual(trace, ["resident_deleted", "empty_cache"])
         self.assertEqual(runtime.status().state, RuntimeState.FAILED)
 
     def test_inference_failure_unloads_and_enters_sanitized_failed_state(self) -> None:
-        loader = LoaderStub("focalnet-dino-detector")
+        loader = LoaderStub(MODEL_A)
         loader.fail_execute = True
         accelerator = AcceleratorStub()
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="focalnet-dino-detector",
+                    model_id=MODEL_A,
                     load=loader.load,
                     failure_token=loader.failure_token,
                 ),
@@ -398,7 +465,7 @@ class RuntimeLoadTests(unittest.TestCase):
         )
 
         with self.assertRaises(RuntimeInferenceError) as raised:
-            runtime.execute("focalnet-dino-detector", "scan")
+            runtime.execute(MODEL_A, "scan")
         failed = runtime.status()
 
         self.assertEqual(raised.exception.code, "runtime_model_inference_failed")
@@ -418,26 +485,26 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertIn("empty_cache", accelerator.events)
 
         with self.assertRaises(RuntimeUnavailableError):
-            runtime.execute("focalnet-dino-detector", "scan")
+            runtime.execute(MODEL_A, "scan")
 
     def test_different_model_waits_in_draining_state_without_overlap(self) -> None:
         entered = Event()
         release = Event()
         detector = BlockingLoaderStub(
-            "focalnet-dino-detector",
+            MODEL_A,
             entered,
             release,
         )
-        classifier = LoaderStub("mmbcd-classifier")
+        classifier = LoaderStub(MODEL_B)
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="focalnet-dino-detector",
+                    model_id=MODEL_A,
                     load=detector.load,
                     failure_token=detector.failure_token,
                 ),
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=classifier.load,
                     failure_token=classifier.failure_token,
                 ),
@@ -455,7 +522,7 @@ class RuntimeLoadTests(unittest.TestCase):
 
         detector_thread = Thread(
             target=run,
-            args=("focalnet-dino-detector", "scan"),
+            args=(MODEL_A, "scan"),
         )
         detector_thread.start()
         self.assertTrue(entered.wait(1))
@@ -463,7 +530,7 @@ class RuntimeLoadTests(unittest.TestCase):
 
         classifier_thread = Thread(
             target=run,
-            args=("mmbcd-classifier", "rois"),
+            args=(MODEL_B, "rois"),
         )
         classifier_thread.start()
         classifier_thread.join(0.05)
@@ -471,7 +538,7 @@ class RuntimeLoadTests(unittest.TestCase):
         draining = runtime.status()
 
         self.assertEqual(draining.state, RuntimeState.DRAINING)
-        self.assertEqual(draining.active_model, "focalnet-dino-detector")
+        self.assertEqual(draining.active_model, MODEL_A)
         self.assertEqual(draining.active_inferences, 1)
         self.assertEqual(detector_resident.max_active, 1)
         del detector_resident
@@ -485,32 +552,32 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertEqual(errors, [])
         self.assertEqual(len(outputs), 2)
         self.assertIsNone(detector.last_resident())
-        self.assertEqual(runtime.status().active_model, "mmbcd-classifier")
+        self.assertEqual(runtime.status().active_model, MODEL_B)
 
     def test_reachable_old_resident_fails_closed_after_allocator_cleanup(self) -> None:
-        detector = LoaderStub("focalnet-dino-detector")
-        classifier = LoaderStub("mmbcd-classifier")
+        detector = LoaderStub(MODEL_A)
+        classifier = LoaderStub(MODEL_B)
         accelerator = AcceleratorStub()
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="focalnet-dino-detector",
+                    model_id=MODEL_A,
                     load=detector.load,
                     failure_token=detector.failure_token,
                 ),
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=classifier.load,
                     failure_token=classifier.failure_token,
                 ),
             ),
             accelerator=accelerator,
         )
-        runtime.execute("focalnet-dino-detector", "scan")
+        runtime.execute(MODEL_A, "scan")
         leaked_resident = detector.last_resident()
 
         with self.assertRaises(RuntimeUnloadError) as raised:
-            runtime.execute("mmbcd-classifier", "rois")
+            runtime.execute(MODEL_B, "rois")
         failed = runtime.status()
 
         self.assertEqual(raised.exception.code, "runtime_model_unload_failed")
@@ -525,8 +592,8 @@ class RuntimeLoadTests(unittest.TestCase):
 
         del leaked_resident
         classifier.generation = 2
-        recovered = runtime.execute("mmbcd-classifier", "rois")
-        self.assertEqual(recovered.value, "mmbcd-classifier:rois")
+        recovered = runtime.execute(MODEL_B, "rois")
+        self.assertEqual(recovered.value, f"{MODEL_B}:rois")
         self.assertEqual(runtime.status().state, RuntimeState.READY)
 
     def test_status_observes_loading_and_unloading_transitions(self) -> None:
@@ -535,11 +602,11 @@ class RuntimeLoadTests(unittest.TestCase):
         cleanup_entered = Event()
         cleanup_release = Event()
         detector = BlockingLoadLoaderStub(
-            "focalnet-dino-detector",
+            MODEL_A,
             load_entered,
             load_release,
         )
-        classifier = LoaderStub("mmbcd-classifier")
+        classifier = LoaderStub(MODEL_B)
         accelerator = BlockingCleanupAcceleratorStub(
             cleanup_entered,
             cleanup_release,
@@ -547,12 +614,12 @@ class RuntimeLoadTests(unittest.TestCase):
         runtime = SingleResidencyRuntime(
             bindings=(
                 ModelBinding(
-                    model_id="focalnet-dino-detector",
+                    model_id=MODEL_A,
                     load=detector.load,
                     failure_token=detector.failure_token,
                 ),
                 ModelBinding(
-                    model_id="mmbcd-classifier",
+                    model_id=MODEL_B,
                     load=classifier.load,
                     failure_token=classifier.failure_token,
                 ),
@@ -569,7 +636,7 @@ class RuntimeLoadTests(unittest.TestCase):
 
         loading_thread = Thread(
             target=execute,
-            args=("focalnet-dino-detector", "scan"),
+            args=(MODEL_A, "scan"),
         )
         loading_thread.start()
         self.assertTrue(load_entered.wait(1))
@@ -581,7 +648,7 @@ class RuntimeLoadTests(unittest.TestCase):
         accelerator.block_next_synchronize = True
         unloading_thread = Thread(
             target=execute,
-            args=("mmbcd-classifier", "rois"),
+            args=(MODEL_B, "rois"),
         )
         unloading_thread.start()
         self.assertTrue(cleanup_entered.wait(1))

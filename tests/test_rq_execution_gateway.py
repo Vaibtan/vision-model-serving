@@ -459,7 +459,7 @@ class RqGatewayTests(unittest.TestCase):
                     "import sys; "
                     "import vision_model_serving.execution.rq_worker; "
                     "assert 'torch' not in sys.modules; "
-                    "assert 'vision_model_serving.pipeline.factory' not in sys.modules; "
+                    "assert 'vision_model_serving.execution._composition' not in sys.modules; "
                     "assert 'vision_model_serving.execution.job_processor' not in sys.modules"
                 ),
             ],

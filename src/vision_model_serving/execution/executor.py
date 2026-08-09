@@ -10,9 +10,10 @@ import socket
 import socketserver
 from collections.abc import Sequence
 from pathlib import Path
+from time import perf_counter
 from typing import Protocol
 
-from .contracts import GpuExecutorStatus, PredictionId
+from .contracts import ExecutorStartupTimings, GpuExecutorStatus, PredictionId
 
 _TOKEN = re.compile(r"[A-Za-z0-9_-]{32}")
 _MAX_MESSAGE_BYTES = 4_096
@@ -39,21 +40,28 @@ class _Executor(Protocol):
 class PersistentGpuExecutor:
     """Own prediction execution and sanitized runtime state in one process."""
 
-    def __init__(self, worker: object, *, device_name: str):
-        if not callable(getattr(worker, "execute", None)) or not callable(
-            getattr(worker, "status", None)
+    def __init__(
+        self,
+        processor: object,
+        *,
+        device_name: str,
+        startup: ExecutorStartupTimings | None = None,
+    ):
+        if not callable(getattr(processor, "execute", None)) or not callable(
+            getattr(processor, "status", None)
         ):
-            raise TypeError("worker must implement execute() and status()")
+            raise TypeError("processor must implement execute() and status()")
         if not isinstance(device_name, str) or not device_name:
             raise ValueError("device name must not be empty")
-        self._worker = worker
+        self._processor = processor
         self._device_name = device_name
+        self._startup = startup or ExecutorStartupTimings(0.0, 0.0, 0.0)
 
     def execute(self, prediction_id: PredictionId, locator: str) -> None:
-        self._worker.execute(prediction_id, locator)
+        self._processor.execute(prediction_id, locator)
 
     def status(self) -> GpuExecutorStatus:
-        runtime = self._worker.status()
+        runtime = self._processor.status()
         state_value = getattr(getattr(runtime, "state", None), "value", None)
         if not isinstance(state_value, str) or not state_value:
             raise GpuExecutorError("prediction runtime status is invalid")
@@ -69,17 +77,21 @@ class PersistentGpuExecutor:
             raise GpuExecutorError("prediction runtime status is invalid")
         if error_code is not None and not isinstance(error_code, str):
             raise GpuExecutorError("prediction runtime status is invalid")
-        return GpuExecutorStatus(
-            ready=state_value != "failed",
-            verified_artifacts=True,
-            device=True,
-            native_operator=True,
-            runtime_state=state_value,
-            active_model=active_model,
-            resident_models=residents,
-            device_name=self._device_name,
-            last_error=error_code,
-        )
+        try:
+            return GpuExecutorStatus(
+                verified_artifacts=True,
+                runtime_initialized=True,
+                device_available=True,
+                native_operator_available=True,
+                runtime_state=state_value,
+                active_model=active_model,
+                resident_models=residents,
+                device_name=self._device_name,
+                last_error=error_code,
+                startup=self._startup,
+            )
+        except (TypeError, ValueError):
+            raise GpuExecutorError("prediction runtime status is invalid") from None
 
 
 class GpuExecutorClient:
@@ -265,21 +277,19 @@ class GpuExecutorServer:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    process_started = perf_counter()
     args = _parser().parse_args(argv)
     from vision_model_serving.observability import (
         configure_structured_logging,
         record_executor_cleanup,
     )
-    from vision_model_serving.pipeline import (
-        LocalCudaPipelineConfig,
-        build_local_cuda_pipeline,
-    )
 
+    from ._composition import ExecutorPipelineConfig, build_executor_pipeline
     from .job_processor import StoredPredictionProcessor
 
     configure_structured_logging(args.logging_level)
-    pipeline = build_local_cuda_pipeline(
-        LocalCudaPipelineConfig(
+    composition = build_executor_pipeline(
+        ExecutorPipelineConfig(
             project_root=args.project_root,
             artifact_root=args.artifact_root,
             tokenizer_root=args.tokenizer_root,
@@ -287,15 +297,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             mmbcd_root=args.mmbcd_root,
             dino_root=args.dino_root,
             device=args.device,
-            retain_models=True,
         )
     )
     processor = StoredPredictionProcessor(
         job_root=args.job_root,
-        pipeline=pipeline,
+        pipeline=composition.pipeline,
         result_ttl_seconds=args.result_ttl_seconds,
     )
-    executor = PersistentGpuExecutor(processor, device_name=args.device)
+    executor = PersistentGpuExecutor(
+        processor,
+        device_name=args.device,
+        startup=ExecutorStartupTimings(
+            artifact_verification_ms=composition.artifact_verification_ms,
+            runtime_initialization_ms=composition.runtime_initialization_ms,
+            process_start_to_artifact_ready_ms=(
+                perf_counter() - process_started
+            )
+            * 1_000.0,
+        ),
+    )
     server = GpuExecutorServer(args.socket_path, executor)
 
     def stop(_signum: int, _frame: object) -> None:
@@ -313,7 +333,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         except Exception:  # noqa: BLE001 - cleanup must still close the pipeline
             resident_models = ()
         try:
-            pipeline.close()
+            composition.pipeline.close()
         finally:
             try:
                 record_executor_cleanup(resident_models)
@@ -377,32 +397,49 @@ def _read_message(connection: socket.socket) -> object:
 
 def _status_to_dict(status: GpuExecutorStatus) -> dict[str, object]:
     return {
-        "ready": status.ready,
+        "schema_version": 2,
         "verified_artifacts": status.verified_artifacts,
-        "device": status.device,
-        "native_operator": status.native_operator,
+        "runtime_initialized": status.runtime_initialized,
+        "device_available": status.device_available,
+        "native_operator_available": status.native_operator_available,
         "runtime_state": status.runtime_state,
         "active_model": status.active_model,
         "resident_models": list(status.resident_models),
         "device_name": status.device_name,
         "last_error": status.last_error,
+        "startup": {
+            "artifact_verification_ms": status.startup.artifact_verification_ms,
+            "runtime_initialization_ms": status.startup.runtime_initialization_ms,
+            "process_start_to_artifact_ready_ms": (
+                status.startup.process_start_to_artifact_ready_ms
+            ),
+        },
     }
 
 
 def _status_from_dict(value: object) -> GpuExecutorStatus:
     if not isinstance(value, dict) or set(value) != {
-        "ready",
+        "schema_version",
         "verified_artifacts",
-        "device",
-        "native_operator",
+        "runtime_initialized",
+        "device_available",
+        "native_operator_available",
         "runtime_state",
         "active_model",
         "resident_models",
         "device_name",
         "last_error",
+        "startup",
     }:
         raise GpuExecutorUnavailable("prediction executor status is unavailable")
-    boolean_fields = ("ready", "verified_artifacts", "device", "native_operator")
+    if value.get("schema_version") != 2:
+        raise GpuExecutorUnavailable("prediction executor status is unavailable")
+    boolean_fields = (
+        "verified_artifacts",
+        "runtime_initialized",
+        "device_available",
+        "native_operator_available",
+    )
     if not all(isinstance(value.get(field), bool) for field in boolean_fields):
         raise GpuExecutorUnavailable("prediction executor status is unavailable")
     runtime_state = value.get("runtime_state")
@@ -410,6 +447,7 @@ def _status_from_dict(value: object) -> GpuExecutorStatus:
     residents = value.get("resident_models")
     device_name = value.get("device_name")
     last_error = value.get("last_error")
+    startup = value.get("startup")
     if (
         not isinstance(runtime_state, str)
         or not isinstance(device_name, str)
@@ -419,19 +457,38 @@ def _status_from_dict(value: object) -> GpuExecutorStatus:
         and not isinstance(last_error, str)
         or not isinstance(residents, list)
         or not all(isinstance(model, str) for model in residents)
+        or not isinstance(startup, dict)
+        or set(startup)
+        != {
+            "artifact_verification_ms",
+            "runtime_initialization_ms",
+            "process_start_to_artifact_ready_ms",
+        }
     ):
         raise GpuExecutorUnavailable("prediction executor status is unavailable")
-    return GpuExecutorStatus(
-        ready=value["ready"],
-        verified_artifacts=value["verified_artifacts"],
-        device=value["device"],
-        native_operator=value["native_operator"],
-        runtime_state=runtime_state,
-        active_model=active_model,
-        resident_models=tuple(residents),
-        device_name=device_name,
-        last_error=last_error,
-    )
+    try:
+        return GpuExecutorStatus(
+            verified_artifacts=value["verified_artifacts"],
+            runtime_initialized=value["runtime_initialized"],
+            device_available=value["device_available"],
+            native_operator_available=value["native_operator_available"],
+            runtime_state=runtime_state,
+            active_model=active_model,
+            resident_models=tuple(residents),
+            device_name=device_name,
+            last_error=last_error,
+            startup=ExecutorStartupTimings(
+                artifact_verification_ms=startup["artifact_verification_ms"],
+                runtime_initialization_ms=startup["runtime_initialization_ms"],
+                process_start_to_artifact_ready_ms=startup[
+                    "process_start_to_artifact_ready_ms"
+                ],
+            ),
+        )
+    except (TypeError, ValueError):
+        raise GpuExecutorUnavailable(
+            "prediction executor status is unavailable"
+        ) from None
 
 
 def _threading_unix_server_type() -> type[socketserver.BaseServer]:

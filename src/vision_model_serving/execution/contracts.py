@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import NewType, Protocol
 
+from vision_model_serving.model_ids import MODEL_IDS
 from vision_model_serving.pipeline.contracts import (
     CaseInput,
     PredictionMode,
@@ -143,16 +144,100 @@ class GatewayObservations:
 
 
 @dataclass(frozen=True, slots=True)
+class ExecutorStartupTimings:
+    artifact_verification_ms: float
+    runtime_initialization_ms: float
+    process_start_to_artifact_ready_ms: float
+
+    def __post_init__(self) -> None:
+        if any(
+            not math.isfinite(value) or value < 0.0
+            for value in (
+                self.artifact_verification_ms,
+                self.runtime_initialization_ms,
+                self.process_start_to_artifact_ready_ms,
+            )
+        ):
+            raise ValueError("executor startup timings must be finite and non-negative")
+
+
+@dataclass(frozen=True, slots=True)
 class GpuExecutorStatus:
-    ready: bool
     verified_artifacts: bool
-    device: bool
-    native_operator: bool
+    runtime_initialized: bool
+    device_available: bool
+    native_operator_available: bool
     runtime_state: str
     active_model: str | None
     resident_models: tuple[str, ...]
     device_name: str
     last_error: str | None
+    startup: ExecutorStartupTimings = field(
+        default_factory=lambda: ExecutorStartupTimings(0.0, 0.0, 0.0)
+    )
+
+    def __post_init__(self) -> None:
+        booleans = (
+            self.verified_artifacts,
+            self.runtime_initialized,
+            self.device_available,
+            self.native_operator_available,
+        )
+        if not all(isinstance(value, bool) for value in booleans):
+            raise TypeError("executor readiness facts must be boolean")
+        if self.runtime_state not in {
+            "unloaded",
+            "loading",
+            "ready",
+            "draining",
+            "unloading",
+            "failed",
+        }:
+            raise ValueError("executor runtime state is invalid")
+        if not isinstance(self.device_name, str) or not self.device_name:
+            raise ValueError("executor device name must not be empty")
+        if self.last_error is not None and (
+            not isinstance(self.last_error, str) or not self.last_error
+        ):
+            raise ValueError("executor failure code is invalid")
+        if (
+            not isinstance(self.resident_models, tuple)
+            or len(self.resident_models) > 1
+            or len(set(self.resident_models)) != len(self.resident_models)
+            or any(model not in MODEL_IDS for model in self.resident_models)
+        ):
+            raise ValueError("executor may report at most one known resident model")
+        if self.active_model is not None and self.active_model not in MODEL_IDS:
+            raise ValueError("executor active model is invalid")
+        expected = () if self.active_model is None else (self.active_model,)
+        if self.resident_models != expected:
+            raise ValueError("executor active and resident model must be identical")
+        if self.runtime_state == "ready" and not self.resident_models:
+            raise ValueError("ready executor must have one resident model")
+        if self.runtime_state in {"unloaded", "loading", "failed"} and (
+            self.active_model is not None or self.resident_models
+        ):
+            raise ValueError(
+                f"{self.runtime_state} executor cannot retain a model"
+            )
+
+    @property
+    def artifact_ready(self) -> bool:
+        return (
+            self.verified_artifacts
+            and self.runtime_initialized
+            and self.device_available
+            and self.native_operator_available
+            and self.runtime_state != "failed"
+        )
+
+    @property
+    def inference_warm(self) -> bool:
+        return self.runtime_state == "ready" and bool(self.resident_models)
+
+    @property
+    def warm_model(self) -> str | None:
+        return self.active_model if self.inference_warm else None
 
 
 class GpuExecutionGateway(Protocol):

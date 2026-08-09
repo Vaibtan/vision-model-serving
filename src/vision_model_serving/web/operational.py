@@ -39,11 +39,7 @@ class ReadinessView(APIView):
     def get(self, _request: Request) -> Response:
         snapshot = read_operational_snapshot()
         return Response(
-            {
-                "status": snapshot.status,
-                "checks": snapshot.checks,
-                "reasons": list(snapshot.reasons),
-            },
+            snapshot.readiness_dict(),
             status=200 if snapshot.status == "ready" else 503,
         )
 
@@ -59,6 +55,11 @@ class ModelInventoryView(APIView):
                 "models": [dict(model) for model in snapshot.models],
                 "runtime": {
                     "state": executor["state"],
+                    "initialized": executor["runtime_initialized"],
+                    "artifact_ready": executor["artifact_ready"],
+                    "inference_warm": executor["inference_warm"],
+                    "warm_model": executor["warm_model"],
+                    "startup": executor["startup"],
                     "active_model": executor["active_model"],
                     "resident_models": list(executor["resident_models"]),
                     "device": executor["device"],
@@ -171,7 +172,21 @@ class _SnapshotCollector:
             value=float(self._queue["wait_accumulated_seconds"]),
         )
         for name, help_text, value in (
-            ("vms_executor_ready", "Executor readiness.", self._executor["ready"]),
+            (
+                "vms_executor_artifact_ready",
+                "Executor artifact readiness.",
+                self._executor["artifact_ready"],
+            ),
+            (
+                "vms_executor_runtime_initialized",
+                "Executor runtime controller initialization state.",
+                self._executor["runtime_initialized"],
+            ),
+            (
+                "vms_executor_inference_warm",
+                "Whether the active model is resident and ready.",
+                self._executor["inference_warm"],
+            ),
             (
                 "vms_executor_artifacts_verified",
                 "Artifact verification state.",
@@ -185,7 +200,7 @@ class _SnapshotCollector:
             (
                 "vms_executor_native_operator_available",
                 "Native detector operator availability.",
-                self._executor["native_operator"],
+                self._executor["native_operator_available"],
             ),
         ):
             yield GaugeMetricFamily(name, help_text, value=float(value))

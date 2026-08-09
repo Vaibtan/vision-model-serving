@@ -1,10 +1,11 @@
-"""Composition root for the local, offline CUDA prediction pipeline."""
+"""Private composition root for the persistent GPU executor."""
 
 from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
 from threading import RLock
+from time import perf_counter
 
 from vision_model_serving.artifacts import ArtifactRegistry
 from vision_model_serving.classifier import MmbcdClassifierAdapter
@@ -14,19 +15,17 @@ from vision_model_serving.detector import (
 )
 from vision_model_serving.dicom import DicomCanonicalizer
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
+from vision_model_serving.pipeline import PredictionPipeline
 from vision_model_serving.residency import (
     ModelBinding,
     ModelOutputs,
-    PersistentResidencyRuntime,
     SingleResidencyRuntime,
     TorchCudaLifecycle,
 )
 
-from .pipeline import PredictionPipeline
-
 
 @dataclass(frozen=True, slots=True)
-class LocalCudaPipelineConfig:
+class ExecutorPipelineConfig:
     project_root: Path
     artifact_root: Path
     tokenizer_root: Path
@@ -34,8 +33,6 @@ class LocalCudaPipelineConfig:
     mmbcd_root: Path
     dino_root: Path
     device: str = "cuda:0"
-    require_history_for_full: bool = True
-    retain_models: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -52,10 +49,13 @@ class LocalCudaPipelineConfig:
             object.__setattr__(self, name, value.expanduser().resolve())
         if not isinstance(self.device, str) or not self.device:
             raise ValueError("device must be a non-empty string")
-        if not isinstance(self.require_history_for_full, bool):
-            raise TypeError("require_history_for_full must be boolean")
-        if not isinstance(self.retain_models, bool):
-            raise TypeError("retain_models must be boolean")
+
+
+@dataclass(frozen=True, slots=True)
+class ExecutorComposition:
+    pipeline: PredictionPipeline
+    artifact_verification_ms: float
+    runtime_initialization_ms: float
 
 
 class _WarmupInputs:
@@ -99,16 +99,15 @@ class _InputAwareRuntime:
         return self._runtime.status()
 
     def close(self) -> None:
-        close = getattr(self._runtime, "close", None)
-        if callable(close):
-            close()
+        self._runtime.close()
 
 
-def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipeline:
-    """Verify local assets and compose the real adapters without network access."""
+def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorComposition:
+    """Verify local assets and compose the executor's fixed CUDA pipeline."""
 
-    if not isinstance(config, LocalCudaPipelineConfig):
-        raise TypeError("config must be a LocalCudaPipelineConfig")
+    if not isinstance(config, ExecutorPipelineConfig):
+        raise TypeError("config must be an ExecutorPipelineConfig")
+    verification_started = perf_counter()
     registry = ArtifactRegistry(
         config.project_root / "config" / "model-artifacts.json",
         artifact_root=config.artifact_root,
@@ -122,6 +121,8 @@ def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipe
     report = registry.verify_all()
     if not report.ready:
         raise report.errors[0]
+    artifact_verification_ms = (perf_counter() - verification_started) * 1_000.0
+    runtime_started = perf_counter()
     verified = {artifact.id: artifact for artifact in report.verified_artifacts}
     detector_artifact = verified[DETECTOR_MODEL_ID]
     classifier_artifact = verified[CLASSIFIER_MODEL_ID]
@@ -162,10 +163,7 @@ def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipe
             mammogram, rois, history = inputs
             return self._adapter.predict(mammogram, rois, history)
 
-    runtime_type = (
-        PersistentResidencyRuntime if config.retain_models else SingleResidencyRuntime
-    )
-    runtime = runtime_type(
+    runtime = SingleResidencyRuntime(
         bindings=(
             ModelBinding(
                 model_id=DETECTOR_MODEL_ID,
@@ -186,8 +184,12 @@ def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipe
         ),
         accelerator=TorchCudaLifecycle(device=config.device),
     )
-    return PredictionPipeline(
+    pipeline = PredictionPipeline(
         decoder=DicomCanonicalizer(),
         runtime=_InputAwareRuntime(runtime, warmup_inputs),
-        require_history_for_full=config.require_history_for_full,
+    )
+    return ExecutorComposition(
+        pipeline=pipeline,
+        artifact_verification_ms=artifact_verification_ms,
+        runtime_initialization_ms=(perf_counter() - runtime_started) * 1_000.0,
     )

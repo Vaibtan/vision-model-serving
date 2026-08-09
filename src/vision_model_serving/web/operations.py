@@ -30,9 +30,24 @@ class OperationalSnapshot:
     models: tuple[dict[str, object], ...]
     telemetry: dict[str, object]
 
+    def readiness_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": 2,
+            "status": self.status,
+            "readiness_scope": "artifact_ready",
+            "checks": dict(self.checks),
+            "reasons": list(self.reasons),
+            "runtime": {
+                "initialized": bool(self.executor["runtime_initialized"]),
+                "state": self.executor["state"],
+                "inference_warm": bool(self.executor["inference_warm"]),
+                "warm_model": self.executor["warm_model"],
+            },
+        }
+
     def as_dict(self) -> dict[str, object]:
         return {
-            "schema_version": 1,
+            "schema_version": 2,
             "captured_at": self.captured_at,
             "status": self.status,
             "checks": dict(self.checks),
@@ -69,12 +84,21 @@ def read_operational_snapshot() -> OperationalSnapshot:
     checks = {
         "redis": redis_ready,
         "rq_worker": worker_ready,
-        "executor": executor.ready if executor is not None else False,
+        "executor_artifact_ready": (
+            executor.artifact_ready if executor is not None else False
+        ),
         "verified_artifacts": (
             executor.verified_artifacts if executor is not None else False
         ),
-        "device": executor.device if executor is not None else False,
-        "native_operator": executor.native_operator if executor is not None else False,
+        "runtime_initialized": (
+            executor.runtime_initialized if executor is not None else False
+        ),
+        "device_available": (
+            executor.device_available if executor is not None else False
+        ),
+        "native_operator_available": (
+            executor.native_operator_available if executor is not None else False
+        ),
     }
     ready = all(checks.values())
     manifest = load_manifest(settings.BASE_DIR / "config" / "model-artifacts.json")
@@ -173,28 +197,49 @@ def _executor_payload(executor: object | None) -> dict[str, object]:
     if executor is None:
         return {
             "available": False,
-            "ready": False,
+            "artifact_ready": False,
+            "runtime_initialized": False,
+            "inference_warm": False,
+            "warm_model": None,
             "state": "unavailable",
             "active_model": None,
             "resident_models": (),
             "device": None,
             "device_available": False,
             "artifacts_verified": False,
-            "native_operator": False,
+            "native_operator_available": False,
+            "startup": None,
             "failure_code": None,
             "failure_present": False,
             "precision": "float32",
         }
     return {
         "available": True,
-        "ready": bool(getattr(executor, "ready")),
+        "artifact_ready": bool(getattr(executor, "artifact_ready")),
+        "runtime_initialized": bool(getattr(executor, "runtime_initialized")),
+        "inference_warm": bool(getattr(executor, "inference_warm")),
+        "warm_model": getattr(executor, "warm_model"),
         "state": str(getattr(executor, "runtime_state")),
         "active_model": getattr(executor, "active_model"),
         "resident_models": tuple(getattr(executor, "resident_models")),
         "device": str(getattr(executor, "device_name")),
-        "device_available": bool(getattr(executor, "device")),
+        "device_available": bool(getattr(executor, "device_available")),
         "artifacts_verified": bool(getattr(executor, "verified_artifacts")),
-        "native_operator": bool(getattr(executor, "native_operator")),
+        "native_operator_available": bool(
+            getattr(executor, "native_operator_available")
+        ),
+        "startup": {
+            "artifact_verification_seconds": (
+                getattr(executor, "startup").artifact_verification_ms / 1_000.0
+            ),
+            "runtime_initialization_seconds": (
+                getattr(executor, "startup").runtime_initialization_ms / 1_000.0
+            ),
+            "process_start_to_artifact_ready_seconds": (
+                getattr(executor, "startup").process_start_to_artifact_ready_ms
+                / 1_000.0
+            ),
+        },
         "failure_code": getattr(executor, "last_error"),
         "failure_present": getattr(executor, "last_error") is not None,
         "precision": "float32",

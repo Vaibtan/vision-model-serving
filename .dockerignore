@@ -7,10 +7,17 @@
 !config/**
 !patches/
 !patches/**
+!requirements/
+!requirements/tensorrt-l4.txt
 !scripts/
 !scripts/benchmark_api.py
+!scripts/smoke_api.py
+!scripts/validate_browser_workbench.py
 !scripts/validate_compose_api.py
 !scripts/l4_validation/
+!scripts/l4_validation/_common.py
+!scripts/l4_validation/17_evaluate_pytorch_optimizations.py
+!scripts/l4_validation/18_build_tensorrt_candidate.py
 !scripts/l4_validation/prepare_focalnet.py
 !src/
 !src/**

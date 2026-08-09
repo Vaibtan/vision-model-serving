@@ -137,7 +137,7 @@ def main() -> int:
             if operations.get("Cache-Control") != "no-store":
                 raise AssertionError("operations snapshot was not marked no-store")
             operations_body = operations.json()
-            if operations_body.get("schema_version") != 1:
+            if operations_body.get("schema_version") != 2:
                 raise AssertionError("operations snapshot schema is not versioned")
             if operations_body.get("status") != "not_ready":
                 raise AssertionError(
@@ -172,6 +172,19 @@ def main() -> int:
             readiness = client.get("/readyz")
             _assert_status(readiness.status_code, 503, readiness.content)
             readiness_body = readiness.json()
+            if readiness_body.get("schema_version") != 2:
+                raise AssertionError("readiness snapshot schema is not versioned")
+            if readiness_body.get("readiness_scope") != "artifact_ready":
+                raise AssertionError("readiness scope is ambiguous")
+            if readiness_body.get("runtime") != {
+                "initialized": False,
+                "state": "unavailable",
+                "inference_warm": False,
+                "warm_model": None,
+            }:
+                raise AssertionError(
+                    f"unexpected unavailable runtime state: {readiness_body!r}"
+                )
             if readiness_body.get("status") != "not_ready":
                 raise AssertionError(f"unexpected readiness body: {readiness_body!r}")
             if readiness_body.get("checks", {}).get("redis") is not True:

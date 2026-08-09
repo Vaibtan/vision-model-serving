@@ -71,79 +71,16 @@ class TorchMmbcdRuntime:
         model_factory: ClassifierModelFactory,
         device: str,
     ):
-        self.identity = _validate_artifact(artifact)
-        self._device = _validate_device(device)
-        os.environ["HF_HUB_OFFLINE"] = "1"
-        os.environ["TRANSFORMERS_OFFLINE"] = "1"
-        prior_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
-        workspace_config = os.environ.setdefault(
-            "CUBLAS_WORKSPACE_CONFIG",
-            ":4096:8",
+        loaded = _load_verified_mmbcd_model(
+            artifact,
+            model_factory=model_factory,
+            device=device,
         )
-        if workspace_config != ":4096:8":
-            raise ClassifierLoadError(
-                "classifier CUBLAS determinism configuration differs"
-            )
-        try:
-            import torch
-        except ImportError:
-            raise ClassifierLoadError(
-                "PyTorch is unavailable in the pinned classifier runtime"
-            ) from None
-        self._torch = torch
-        if (
-            self._device.startswith("cuda")
-            and torch.cuda.is_initialized()
-            and prior_workspace_config != ":4096:8"
-        ):
-            raise ClassifierLoadError(
-                "CUBLAS determinism was configured after CUDA initialization"
-            )
-        _configure_determinism(torch)
-
-        started = perf_counter()
-        try:
-            model = model_factory()
-        except ClassifierLoadError:
-            raise
-        except Exception as error:
-            raise ClassifierLoadError(
-                f"classifier construction failed ({type(error).__name__})"
-            ) from None
-
-        try:
-            with artifact.open_checkpoint() as stream:
-                raw_state = torch.load(
-                    stream,
-                    map_location="cpu",
-                    weights_only=True,
-                )
-        except ArtifactRegistryError:
-            raise
-        except Exception as error:
-            raise ClassifierLoadError(
-                f"restricted checkpoint loading failed ({type(error).__name__})"
-            ) from None
-        state = _canonical_state_dict(raw_state)
-        _verify_aliases(state, torch)
-        try:
-            load_result = model.load_state_dict(state, strict=True)
-        except Exception as error:
-            raise ClassifierLoadError(
-                f"strict classifier state load failed ({type(error).__name__})"
-            ) from None
-        if load_result.missing_keys or load_result.unexpected_keys:
-            raise ClassifierLoadError(
-                "strict classifier state load reported key differences"
-            )
-        try:
-            self._model = model.to(device=self._device, dtype=torch.float32)
-            self._model.eval()
-        except Exception as error:
-            raise ClassifierLoadError(
-                f"classifier device initialization failed ({type(error).__name__})"
-            ) from None
-        self.load_ms = (perf_counter() - started) * 1000.0
+        self.identity = loaded.identity
+        self._device = loaded.device
+        self._torch = loaded.torch
+        self._model = loaded.model
+        self.load_ms = loaded.load_ms
 
     def execute(
         self,
@@ -201,6 +138,94 @@ class TorchMmbcdRuntime:
     def _synchronize(self) -> None:
         if self._device.startswith("cuda"):
             self._torch.cuda.synchronize(self._device)
+
+
+@dataclass(frozen=True, slots=True)
+class _LoadedMmbcdModel:
+    identity: ClassifierArtifactIdentity
+    device: str
+    torch: object
+    model: object
+    load_ms: float
+
+
+def _load_verified_mmbcd_model(
+    artifact: ClassifierArtifact,
+    *,
+    model_factory: ClassifierModelFactory,
+    device: str,
+) -> _LoadedMmbcdModel:
+    """Build and strict-load the one model used by eager and AOT validation."""
+
+    identity = _validate_artifact(artifact)
+    validated_device = _validate_device(device)
+    os.environ["HF_HUB_OFFLINE"] = "1"
+    os.environ["TRANSFORMERS_OFFLINE"] = "1"
+    prior_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
+    workspace_config = os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    if workspace_config != ":4096:8":
+        raise ClassifierLoadError(
+            "classifier CUBLAS determinism configuration differs"
+        )
+    try:
+        import torch
+    except ImportError:
+        raise ClassifierLoadError(
+            "PyTorch is unavailable in the pinned classifier runtime"
+        ) from None
+    if (
+        validated_device.startswith("cuda")
+        and torch.cuda.is_initialized()
+        and prior_workspace_config != ":4096:8"
+    ):
+        raise ClassifierLoadError(
+            "CUBLAS determinism was configured after CUDA initialization"
+        )
+    _configure_determinism(torch)
+    started = perf_counter()
+    try:
+        model = model_factory()
+    except ClassifierLoadError:
+        raise
+    except Exception as error:
+        raise ClassifierLoadError(
+            f"classifier construction failed ({type(error).__name__})"
+        ) from None
+    try:
+        with artifact.open_checkpoint() as stream:
+            raw_state = torch.load(stream, map_location="cpu", weights_only=True)
+    except ArtifactRegistryError:
+        raise
+    except Exception as error:
+        raise ClassifierLoadError(
+            f"restricted checkpoint loading failed ({type(error).__name__})"
+        ) from None
+    state = _canonical_state_dict(raw_state)
+    _verify_aliases(state, torch)
+    try:
+        load_result = model.load_state_dict(state, strict=True)
+    except Exception as error:
+        raise ClassifierLoadError(
+            f"strict classifier state load failed ({type(error).__name__})"
+        ) from None
+    if load_result.missing_keys or load_result.unexpected_keys:
+        raise ClassifierLoadError(
+            "strict classifier state load reported key differences"
+        )
+    try:
+        model = model.to(device=validated_device, dtype=torch.float32)
+        model.eval()
+    except Exception as error:
+        raise ClassifierLoadError(
+            f"classifier device initialization failed ({type(error).__name__})"
+        ) from None
+    return _LoadedMmbcdModel(
+        identity=identity,
+        device=validated_device,
+        torch=torch,
+        model=model,
+        load_ms=(perf_counter() - started) * 1_000.0,
+    )
 
 
 @dataclass(frozen=True, slots=True)

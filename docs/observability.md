@@ -9,7 +9,10 @@ seconds and retains no server-side or browser-side history.
 The JSON snapshot is schema-versioned and returns `Cache-Control: no-store`.
 The same snapshot contract supplies `/readyz`, `/api/v1/models`, and the
 Redis/RQ/executor metrics described below, so those views share one observation
-of current state. Redis and executor probes have explicit timeouts.
+of current state. Redis and executor probes have explicit timeouts. Readiness
+declares `readiness_scope: artifact_ready`; cold `unloaded` is ready when the
+artifacts, controller, device, and native operator are verified.
+`inference_warm` and `warm_model` separately describe the sole resident model.
 
 The service emits Prometheus metrics and newline-delimited JSON events without
 placing request, prediction, patient, DICOM-instance, tokenizer, filename, or
@@ -54,7 +57,8 @@ existing Redis/RQ and executor-status contracts. It covers:
 - decode and total pipeline latency;
 - allocated, reserved, peak-allocated, and peak-reserved CUDA bytes;
 - classifier ROI counts, padding fallbacks, CUDA OOMs, and process RSS; and
-- executor readiness, artifact/operator/device checks, and model residency.
+- executor artifact readiness, controller initialization, model-specific
+  inference warmth, artifact/operator/device checks, and model residency.
 
 The console derives p50 and p95 estimates from Prometheus histogram buckets.
 Those values and counters are cumulative since process start; they are not a

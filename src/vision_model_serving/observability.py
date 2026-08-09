@@ -176,6 +176,7 @@ def record_prediction_success(result: PredictionResult) -> None:
         _LIFECYCLE.labels(model, event).inc()
         if runtime.switch_ms > 0:
             _LIFECYCLE.labels(model, "switch").inc()
+            _LIFECYCLE.labels(_other_model_stage(model), "unload").inc()
         if runtime.load_ms > 0:
             _MODEL_LOAD.labels(model).observe(runtime.load_ms / 1_000.0)
         _MODEL_INFERENCE.labels(model).observe(runtime.inference_ms / 1_000.0)
@@ -276,6 +277,14 @@ def _lifecycle_event(runtime: object) -> str:
     if float(getattr(runtime, "switch_ms", 0.0)) > 0:
         return "switch"
     return "load"
+
+
+def _other_model_stage(model: str) -> str:
+    if model == "detector":
+        return "classifier"
+    if model == "classifier":
+        return "detector"
+    raise ValueError("model stage is invalid")
 
 
 def _mode(value: PredictionMode | None) -> str:
