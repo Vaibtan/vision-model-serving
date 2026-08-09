@@ -215,10 +215,17 @@ export VMS_BENCHMARK_RESULTS="$PWD/benchmark-results"
 export VMS_RESULT_UID="$(id -u)"
 export VMS_RESULT_GID="$(id -g)"
 export VMS_BENCHMARK_RUNS=5
+export VMS_BENCHMARK_REVISION="$(git rev-parse HEAD)"
 docker compose --profile benchmark up --no-build --pull never \
   --abort-on-container-exit --exit-code-from benchmark
 docker compose --profile benchmark down --volumes --remove-orphans
 ```
+
+Run this from a clean executor lifecycle. The profile writes both
+`benchmark.json` and `benchmark.md`, verifies the exact detector/classifier
+hashes, and reports cold full, warm detection, warm full, serialized
+throughput, stage latency, peak reserved memory, runtime residency, and the
+recorded revision without retaining request identifiers or clinical text.
 
 Always remove the stack volumes after assessment work; they are tmpfs-backed
 but can contain bounded results until their TTL expires:

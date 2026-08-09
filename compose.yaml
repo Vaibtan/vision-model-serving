@@ -262,8 +262,12 @@ services:
       - /fixtures/input.dcm
       - --output
       - /results/benchmark.json
+      - --markdown-output
+      - /results/benchmark.md
       - --runs
       - ${VMS_BENCHMARK_RUNS:-5}
+      - --revision
+      - ${VMS_BENCHMARK_REVISION:-unrecorded}
       - --expected-detector-sha256
       - 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5
       - --expected-classifier-sha256

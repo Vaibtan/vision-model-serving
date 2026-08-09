@@ -20,7 +20,8 @@ robustness, and checkpoint redistribution rights are not established.
   tmpfs request/result storage;
 - a persistent serialized L4 executor with both models reused after first load;
 - liveness, fail-closed readiness, model inventory, OpenAPI, safe metrics/logs;
-- pinned non-root/read-only Docker images, smoke/benchmark/restart profiles; and
+- pinned non-root/read-only Docker images, smoke/restart profiles, and
+  JSON/Markdown cold-and-warm L4 benchmark reporting; and
 - an attributed, checksum-pinned public CBIS-DDSM fixture fetcher.
 
 ## Quick verification
