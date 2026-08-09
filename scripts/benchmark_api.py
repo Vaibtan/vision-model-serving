@@ -14,6 +14,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+GOLDEN_CLINICAL_HISTORY = "real public mammogram acceptance."
+
 
 def main() -> int:
     parser = argparse.ArgumentParser()
@@ -296,7 +298,7 @@ def _predict(
     boundary = "vms-real-infrastructure-boundary"
     fields = {"mode": mode}
     if mode == "full":
-        fields["clinical_history"] = "real public mammogram benchmark."
+        fields["clinical_history"] = GOLDEN_CLINICAL_HISTORY
     body = multipart_body(boundary, dicom, fields)
     request = urllib.request.Request(
         f"{base_url}/api/v1/predictions",
