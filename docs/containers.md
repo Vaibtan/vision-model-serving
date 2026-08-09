@@ -99,13 +99,17 @@ export VMS_BENCHMARK_RESULTS="$PWD/benchmark-results"
 export VMS_RESULT_UID="$(id -u)"
 export VMS_RESULT_GID="$(id -g)"
 export VMS_BENCHMARK_RUNS=5
+export VMS_BENCHMARK_REVISION="$(git rev-parse HEAD)"
 docker compose --profile benchmark up --build \
   --abort-on-container-exit --exit-code-from benchmark
 ```
 
-`benchmark.json` records the public input hash, exact detector/classifier
-hashes, one excluded warmup, and min/median/p95/max end-to-end latency. It does
-not record clinical text, DICOM identifiers, filenames, or prediction IDs.
+The profile requires a fresh unloaded executor. `benchmark.json` and
+`benchmark.md` record the cold full request, warm detection and full samples,
+serialized throughput, stage latency, peak reserved memory, readiness,
+residency, revision, artifact/input/output identity, and promotion gates. They
+do not record clinical text, DICOM identifiers, filenames, prediction IDs, or
+host paths.
 
 ## Destructive-restart validation profile
 

@@ -37,6 +37,7 @@ DATABASES = {"default": {"ENGINE": "django.db.backends.dummy"}}
 TEMPLATES = [
     {
         "BACKEND": "django.template.backends.django.DjangoTemplates",
+        "DIRS": [BASE_DIR / "src" / "vision_model_serving" / "web" / "templates"],
         "APP_DIRS": True,
         "OPTIONS": {},
     }
@@ -88,6 +89,9 @@ VMS_EXECUTOR_SOCKET = Path(
 ).resolve()
 VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS = float(
     os.environ.get("VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS", "0.5")
+)
+VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS = float(
+    os.environ.get("VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS", "0.5")
 )
 VMS_METRICS_ENABLED = _environment_bool("VMS_METRICS_ENABLED")
 _metrics_dir = os.environ.get("VMS_METRICS_DIR", "").strip()

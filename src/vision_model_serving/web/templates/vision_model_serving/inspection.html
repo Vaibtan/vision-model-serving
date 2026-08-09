@@ -1,0 +1,350 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Mammogram inference workbench</title>
+  <style>
+    :root {
+      --ink: #10283a;
+      --muted: #5a6e7b;
+      --paper: #f4f8fa;
+      --panel: #ffffff;
+      --line: #cbd8df;
+      --film: #071820;
+      --film-line: #294451;
+      --cobalt: #1d5fc7;
+      --cobalt-dark: #15488f;
+      --amber: #d98516;
+      --success: #18735a;
+      --danger: #a33d35;
+      --shadow: 0 18px 45px rgba(16, 40, 58, .09);
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--paper); color: var(--ink); font-family: Aptos, "Segoe UI", sans-serif; }
+    body { margin: 0; min-width: 320px; }
+    button, input, select, textarea { font: inherit; }
+    button, input, select, textarea, a { outline-offset: 3px; }
+    :focus-visible { outline: 3px solid rgba(29, 95, 199, .38); }
+    .masthead {
+      align-items: center; background: var(--panel); border-bottom: 1px solid var(--line);
+      display: flex; justify-content: space-between; padding: 18px clamp(20px, 4vw, 64px);
+    }
+    .brand { align-items: center; display: flex; gap: 14px; }
+    .brand-mark {
+      align-items: center; background: var(--film); color: #e9f6fb; display: grid;
+      font: 700 13px/1 "Cascadia Mono", monospace; height: 38px; letter-spacing: .08em;
+      place-items: center; width: 38px;
+    }
+    .brand h1 { font: 650 clamp(17px, 2vw, 22px)/1.05 Bahnschrift, "Arial Narrow", sans-serif; margin: 0; }
+    .brand p, .masthead-note { color: var(--muted); font-size: 12px; margin: 3px 0 0; }
+    .masthead-note { font-family: "Cascadia Mono", monospace; margin: 0; text-align: right; }
+    main { margin: 0 auto; max-width: 1600px; padding: clamp(20px, 3.5vw, 52px); }
+    .intro { align-items: end; display: flex; gap: 40px; justify-content: space-between; margin-bottom: 28px; }
+    .eyebrow { color: var(--cobalt); font: 700 11px/1 "Cascadia Mono", monospace; letter-spacing: .14em; text-transform: uppercase; }
+    .intro h2 { font: 650 clamp(30px, 5vw, 64px)/.94 Bahnschrift, "Arial Narrow", sans-serif; letter-spacing: -.035em; margin: 10px 0 0; max-width: 720px; }
+    .boundary { border-left: 3px solid var(--amber); color: var(--muted); font-size: 13px; line-height: 1.5; margin: 0; max-width: 390px; padding: 4px 0 4px 16px; }
+    .workbench { display: grid; gap: 22px; grid-template-columns: minmax(260px, 330px) minmax(0, 1fr); }
+    .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); }
+    .controls { align-self: start; padding: 24px; }
+    .panel-title { align-items: baseline; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; margin-bottom: 22px; padding-bottom: 14px; }
+    .panel-title h3 { font: 650 18px/1 Bahnschrift, "Arial Narrow", sans-serif; margin: 0; }
+    .panel-title span { color: var(--muted); font: 11px/1 "Cascadia Mono", monospace; }
+    .field { margin-bottom: 20px; }
+    .field label, .field legend { display: block; font-size: 12px; font-weight: 700; letter-spacing: .04em; margin-bottom: 8px; text-transform: uppercase; }
+    .field small { color: var(--muted); display: block; font-size: 11px; line-height: 1.45; margin-top: 7px; }
+    input[type="file"], input[type="number"], textarea {
+      background: #fbfdfe; border: 1px solid var(--line); border-radius: 0; color: var(--ink); padding: 11px; width: 100%;
+    }
+    input[type="file"] { font-size: 12px; }
+    textarea { min-height: 92px; resize: vertical; }
+    fieldset { border: 0; margin: 0 0 20px; padding: 0; }
+    .mode-grid { display: grid; gap: 8px; grid-template-columns: 1fr 1fr; }
+    .mode-grid label { border: 1px solid var(--line); cursor: pointer; padding: 12px; text-transform: none; }
+    .mode-grid label:has(input:checked) { background: #eaf2ff; border-color: var(--cobalt); color: var(--cobalt-dark); }
+    .mode-grid input { margin: 0 6px 0 0; }
+    .primary {
+      background: var(--cobalt); border: 0; color: white; cursor: pointer; font-weight: 700;
+      padding: 13px 18px; transition: background .15s ease, transform .15s ease; width: 100%;
+    }
+    .primary:hover { background: var(--cobalt-dark); transform: translateY(-1px); }
+    .primary:disabled { cursor: wait; opacity: .6; transform: none; }
+    .status-strip { border-top: 1px solid var(--line); margin-top: 22px; padding-top: 18px; }
+    .status-row { align-items: center; display: flex; gap: 9px; }
+    .status-dot { background: #91a1aa; border-radius: 50%; height: 9px; width: 9px; }
+    .status-dot[data-state="queued"], .status-dot[data-state="started"] { animation: pulse 1.2s ease-in-out infinite; background: var(--amber); }
+    .status-dot[data-state="succeeded"] { background: var(--success); }
+    .status-dot[data-state="failed"], .status-dot[data-state="expired"] { background: var(--danger); }
+    #prediction-status { font: 650 12px/1.3 "Cascadia Mono", monospace; }
+    #status-detail { color: var(--muted); font-size: 11px; line-height: 1.45; margin: 8px 0 0 18px; }
+    .stage { min-width: 0; }
+    .viewport-shell { background: var(--film); border-bottom: 1px solid var(--film-line); display: grid; grid-template-columns: 42px minmax(0, 1fr); min-height: 620px; }
+    .film-index { border-right: 1px solid var(--film-line); color: #6f909f; display: flex; flex-direction: column; font: 10px "Cascadia Mono", monospace; justify-content: space-between; padding: 16px 10px; text-align: center; }
+    #mammogram-viewport { align-items: center; display: flex; justify-content: center; min-height: 620px; overflow: hidden; padding: 18px; position: relative; }
+    #preview-image, #roi-overlay { display: none; height: calc(100% - 36px); max-height: 760px; max-width: calc(100% - 36px); object-fit: contain; position: absolute; width: auto; }
+    #roi-overlay { overflow: visible; pointer-events: none; }
+    .empty-viewport { color: #7895a2; max-width: 320px; text-align: center; }
+    .empty-viewport strong { color: #d7e8ef; display: block; font: 600 22px Bahnschrift, sans-serif; margin-bottom: 8px; }
+    .empty-viewport span { font-size: 12px; line-height: 1.5; }
+    .results { display: none; padding: 24px; }
+    .results.is-visible { display: block; }
+    .summary-grid { display: grid; gap: 12px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .datum { background: #f6f9fb; border-left: 2px solid var(--line); min-height: 86px; padding: 14px; }
+    .datum b { display: block; font: 650 20px/1.1 Bahnschrift, sans-serif; margin-top: 8px; overflow-wrap: anywhere; }
+    .datum span { color: var(--muted); font: 10px/1.2 "Cascadia Mono", monospace; letter-spacing: .06em; text-transform: uppercase; }
+    .section-heading { align-items: baseline; display: flex; justify-content: space-between; margin: 30px 0 12px; }
+    .section-heading h4 { font: 650 17px Bahnschrift, sans-serif; margin: 0; }
+    .section-heading span { color: var(--muted); font-size: 11px; }
+    .roi-grid { display: grid; gap: 10px; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+    .roi-card { background: var(--film); color: #d8e9ef; padding: 9px; }
+    .roi-card canvas { aspect-ratio: 3/2; background: #0c212b; display: block; height: auto; object-fit: contain; width: 100%; }
+    .roi-meta { align-items: center; display: flex; font: 10px "Cascadia Mono", monospace; justify-content: space-between; margin-top: 7px; }
+    .attention-track { background: #294451; height: 3px; margin-top: 7px; }
+    .attention-track i { background: var(--amber); display: block; height: 100%; }
+    .details-grid { display: grid; gap: 14px; grid-template-columns: 1fr 1fr; }
+    .detail-card { border: 1px solid var(--line); padding: 16px; }
+    .detail-card h5 { font: 650 14px Bahnschrift, sans-serif; margin: 0 0 12px; }
+    .key-values { display: grid; font: 11px/1.5 "Cascadia Mono", monospace; gap: 6px 12px; grid-template-columns: auto 1fr; margin: 0; }
+    .key-values dt { color: var(--muted); }
+    .key-values dd { margin: 0; overflow-wrap: anywhere; text-align: right; }
+    .warnings { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 0; padding-left: 18px; }
+    .actions { display: flex; flex-wrap: wrap; gap: 9px; margin-top: 18px; }
+    .secondary { background: white; border: 1px solid var(--line); color: var(--ink); cursor: pointer; font-size: 12px; padding: 9px 12px; }
+    .secondary:hover { border-color: var(--cobalt); color: var(--cobalt); }
+    .error { color: var(--danger); }
+    [hidden] { display: none !important; }
+    @keyframes pulse { 50% { box-shadow: 0 0 0 5px rgba(217, 133, 22, .18); } }
+    @media (max-width: 1050px) {
+      .intro { align-items: start; flex-direction: column; gap: 18px; }
+      .workbench { grid-template-columns: 1fr; }
+      .controls { display: grid; gap: 18px; grid-template-columns: 1fr 1fr; }
+      .controls .panel-title, .controls form, .controls .status-strip { margin: 0; }
+    }
+    @media (max-width: 720px) {
+      .masthead-note { display: none; }
+      .controls { display: block; }
+      .viewport-shell { min-height: 480px; }
+      #mammogram-viewport { min-height: 480px; }
+      .summary-grid, .roi-grid, .details-grid { grid-template-columns: 1fr 1fr; }
+    }
+    @media (prefers-reduced-motion: reduce) { *, *::before, *::after { animation: none !important; scroll-behavior: auto !important; transition: none !important; } }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <div class="brand"><div class="brand-mark" aria-hidden="true">VMS</div><div><h1>Inference workbench</h1><p>FocalNet-DINO → MMBCD</p></div></div>
+    <p class="masthead-note">single view / serialized GPU owner<br>offline pinned artifacts</p>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="page-title">
+      <div><span class="eyebrow">Pipeline inspection</span><h2 id="page-title">Read the evidence,<br>not a diagnosis.</h2></div>
+      <p class="boundary"><strong>Research use only.</strong> Class meaning, decision thresholds, calibration, and clinical validity are not established. Attention values are inspection data, not explanations.</p>
+    </section>
+    <div class="workbench">
+      <aside class="panel controls">
+        <div class="panel-title"><h3>New run</h3><span>DICOM · ≤64 MiB</span></div>
+        <form id="inspection-form" enctype="multipart/form-data" novalidate>
+          {% csrf_token %}
+          <div class="field"><label for="dicom">Mammogram DICOM</label><input id="dicom" name="dicom" type="file" accept=".dcm,application/dicom" required><small>Single-frame MONOCHROME1/2. The preview contains pixels only and is not retained.</small></div>
+          <fieldset class="field"><legend>Pipeline depth</legend><div class="mode-grid"><label><input type="radio" name="mode" value="detection">Detection</label><label><input type="radio" name="mode" value="full" checked>Full pipeline</label></div></fieldset>
+          <div class="field" id="history-field"><label for="clinical-history">Clinical history</label><textarea id="clinical-history" name="clinical_history" maxlength="4000" placeholder="Required for the full multimodal path"></textarea><small>Sent for inference, never rendered back or included in results.</small></div>
+          <div class="field"><label for="threshold">Display score threshold</label><input id="threshold" name="detector_score_threshold" type="number" min="0" max="1" step="0.01" placeholder="Model default"><small>Filters displayed candidates only; the classifier still receives the deterministic eight ROIs.</small></div>
+          <button class="primary" id="run-button" type="submit">Run inference</button>
+        </form>
+        <div class="status-strip" aria-live="polite"><div class="status-row"><i class="status-dot" id="status-dot"></i><span id="prediction-status">Waiting for a DICOM</span></div><p id="status-detail">The service keeps no browser-side job history.</p></div>
+      </aside>
+      <section class="panel stage" aria-label="Mammogram and inference evidence">
+        <div class="viewport-shell">
+          <div class="film-index" aria-hidden="true"><span>0</span><span>256</span><span>512</span><span>768</span><span>1024</span></div>
+          <div id="mammogram-viewport">
+            <div class="empty-viewport" id="viewport-empty"><strong>No image loaded</strong><span>Select a supported DICOM to create an ephemeral canonical lightbox preview.</span></div>
+            <img id="preview-image" alt="Canonical mammogram preview">
+            <svg id="roi-overlay" role="img" aria-label="Detector regions over the canonical mammogram"></svg>
+          </div>
+        </div>
+        <div class="results" id="results-panel">
+          <div class="summary-grid" id="summary-grid"></div>
+          <div class="section-heading"><h4>Classifier regions</h4><span>canonical crops · attention is non-causal</span></div>
+          <div class="roi-grid" id="roi-grid"></div>
+          <div class="section-heading"><h4>Execution evidence</h4><span>bounded, sanitized metadata</span></div>
+          <div class="details-grid"><article class="detail-card"><h5>Stage timings</h5><dl class="key-values" id="timing-values"></dl></article><article class="detail-card"><h5>Runtime and provenance</h5><dl class="key-values" id="runtime-values"></dl></article><article class="detail-card"><h5>Warnings and boundaries</h5><ul class="warnings" id="warning-list"></ul></article><article class="detail-card"><h5>Export this inspection</h5><p class="warnings">Exports contain the canonical mammogram and/or sanitized model output. Handle them as sensitive derived data.</p><div class="actions"><button class="secondary" id="download-json" type="button">Download JSON</button><button class="secondary" id="download-overlay" type="button">Download overlay PNG</button></div></article></div>
+        </div>
+      </section>
+    </div>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+      const $ = (selector) => document.querySelector(selector);
+      const form = $("#inspection-form");
+      const fileInput = $("#dicom");
+      const history = $("#clinical-history");
+      const historyField = $("#history-field");
+      const runButton = $("#run-button");
+      const statusText = $("#prediction-status");
+      const statusDetail = $("#status-detail");
+      const statusDot = $("#status-dot");
+      const preview = $("#preview-image");
+      const overlay = $("#roi-overlay");
+      const emptyViewport = $("#viewport-empty");
+      const resultsPanel = $("#results-panel");
+      let previewUrl = null;
+      let lastResult = null;
+
+      const csrfToken = () => form.querySelector("[name=csrfmiddlewaretoken]").value;
+      const setStatus = (state, detail) => {
+        statusDot.dataset.state = state;
+        statusText.textContent = state === "idle" ? "Waiting for a DICOM" : state.replaceAll("_", " ");
+        statusDetail.textContent = detail;
+        statusDetail.classList.toggle("error", state === "failed" || state === "expired");
+      };
+      const apiError = async (response) => {
+        let detail = `Request failed with HTTP ${response.status}.`;
+        try { const body = await response.json(); detail = body.error?.message || detail; } catch (_) {}
+        throw new Error(detail);
+      };
+      const showPreview = async () => {
+        if (!fileInput.files.length) return;
+        setStatus("previewing", "Canonicalizing pixels without retaining the upload.");
+        const data = new FormData();
+        data.append("dicom", fileInput.files[0]);
+        const response = await fetch("/api/v1/dicom-preview", { method: "POST", body: data, headers: { "X-CSRFToken": csrfToken() }, credentials: "same-origin" });
+        if (!response.ok) return apiError(response);
+        if (previewUrl) URL.revokeObjectURL(previewUrl);
+        previewUrl = URL.createObjectURL(await response.blob());
+        await new Promise((resolve, reject) => { preview.onload = resolve; preview.onerror = reject; preview.src = previewUrl; });
+        emptyViewport.hidden = true;
+        preview.style.display = "block";
+        overlay.style.display = "block";
+        setStatus("ready", "Preview ready. Run the selected inference path when the service is available.");
+      };
+      const selectedMode = () => form.querySelector("[name=mode]:checked").value;
+      form.querySelectorAll("[name=mode]").forEach((input) => input.addEventListener("change", () => {
+        const full = selectedMode() === "full";
+        history.required = full;
+        historyField.hidden = !full;
+      }));
+      fileInput.addEventListener("change", () => showPreview().catch((error) => setStatus("failed", error.message)));
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!form.reportValidity()) return;
+        if (selectedMode() === "full" && !history.value.trim()) { history.setCustomValidity("Clinical history is required for the full pipeline."); history.reportValidity(); return; }
+        history.setCustomValidity("");
+        runButton.disabled = true;
+        resultsPanel.classList.remove("is-visible");
+        overlay.replaceChildren();
+        try {
+          const data = new FormData(form);
+          data.delete("csrfmiddlewaretoken");
+          if (!data.get("detector_score_threshold")) data.delete("detector_score_threshold");
+          const response = await fetch("/api/v1/predictions", { method: "POST", body: data, headers: { "Prefer": "respond-async", "Idempotency-Key": crypto.randomUUID(), "X-CSRFToken": csrfToken() }, credentials: "same-origin" });
+          if (!response.ok) await apiError(response);
+          const handle = await response.json();
+          setStatus(handle.state, "Prediction accepted. This page polls the public status resource.");
+          await pollPrediction(handle.prediction_id);
+        } catch (error) { setStatus("failed", error.message); runButton.disabled = false; }
+      });
+      const pollPrediction = async (predictionId) => {
+        for (;;) {
+          const response = await fetch(`/api/v1/predictions/${encodeURIComponent(predictionId)}`, { credentials: "same-origin" });
+          if (!response.ok) await apiError(response);
+          const status = await response.json();
+          setStatus(status.state, status.state === "queued" ? "Waiting for the serialized GPU owner." : status.state === "started" ? "The GPU executor is processing this image." : "Reading the completed result.");
+          if (status.state === "succeeded") break;
+          if (["failed", "expired"].includes(status.state)) throw new Error(status.failure?.message || `Prediction ${status.state}.`);
+          await new Promise((resolve) => setTimeout(resolve, 350));
+        }
+        const resultResponse = await fetch(`/api/v1/predictions/${encodeURIComponent(predictionId)}/result`, { credentials: "same-origin" });
+        if (!resultResponse.ok) await apiError(resultResponse);
+        lastResult = (await resultResponse.json()).result;
+        const runtimeResponse = await fetch("/api/v1/models", { credentials: "same-origin" });
+        const runtime = runtimeResponse.ok ? (await runtimeResponse.json()).runtime : null;
+        renderResult(lastResult, runtime);
+        setStatus("succeeded", "Inference completed. Review model evidence and stated limitations below.");
+        runButton.disabled = false;
+      };
+      const renderResult = (result, runtime) => {
+        const rois = result.detector.classifier_rois;
+        const weights = result.classification?.attention?.roi_weights || [];
+        const probabilities = result.classification?.probabilities || [];
+        const summary = [
+          ["Mode", result.mode],
+          ["Total time", `${result.timings.total_ms.toFixed(1)} ms`],
+          ["Regions", `${rois.length} classifier ROIs`],
+          ["Raw class index", result.classification ? `${result.classification.predicted_class_index} · semantics unverified` : "not run"],
+        ];
+        $("#summary-grid").replaceChildren(...summary.map(([label, value]) => {
+          const card = document.createElement("div"); card.className = "datum";
+          const caption = document.createElement("span"); caption.textContent = label;
+          const strong = document.createElement("b"); strong.textContent = value;
+          card.append(caption, strong); return card;
+        }));
+        drawOverlay(rois, weights, result.geometry.canonical_width, result.geometry.canonical_height);
+        renderRois(rois, weights);
+        fillDefinitionList($("#timing-values"), [
+          ["DICOM decode", formatMs(result.timings.decode_ms)],
+          ["Detector", formatMs(result.timings.detector.runtime.inference_ms)],
+          ["Detector reused", result.timings.detector.runtime.reused ? "yes" : "no"],
+          ["Classifier", result.timings.classifier ? formatMs(result.timings.classifier.runtime.inference_ms) : "not run"],
+          ["Classifier reused", result.timings.classifier ? (result.timings.classifier.runtime.reused ? "yes" : "no") : "not run"],
+          ["Peak GPU reserved", formatBytes(Math.max(result.timings.detector.memory.peak_reserved_bytes, result.timings.classifier?.memory?.peak_reserved_bytes || 0))],
+        ]);
+        fillDefinitionList($("#runtime-values"), [
+          ["Executor", runtime?.ready ? "ready" : "unavailable"],
+          ["Active model", runtime?.active_model || "idle"],
+          ["Resident", runtime?.resident_models?.join(", ") || "not reported"],
+          ["Precision", result.provenance.precision || "not reported"],
+          ["Detector", `${result.provenance.detector.id} · ${shortHash(result.provenance.detector.sha256)}`],
+          ["Classifier", result.provenance.classifier ? `${result.provenance.classifier.id} · ${shortHash(result.provenance.classifier.sha256)}` : "not run"],
+        ]);
+        const warningList = $("#warning-list"); warningList.replaceChildren();
+        result.warnings.forEach((warning) => { const item = document.createElement("li"); item.textContent = `${warning.code}: ${warning.detail}`; warningList.append(item); });
+        if (!result.warnings.length) { const item = document.createElement("li"); item.textContent = result.disclaimer; warningList.append(item); }
+        resultsPanel.classList.add("is-visible");
+      };
+      const drawOverlay = (rois, weights, width, height) => {
+        overlay.setAttribute("viewBox", `0 0 ${width} ${height}`); overlay.replaceChildren();
+        rois.forEach((roi, index) => {
+          const [x0, y0, x1, y1] = roi.canonical_xyxy;
+          const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+          const rect = document.createElementNS(group.namespaceURI, "rect");
+          rect.setAttribute("x", x0); rect.setAttribute("y", y0); rect.setAttribute("width", Math.max(1, x1 - x0)); rect.setAttribute("height", Math.max(1, y1 - y0)); rect.setAttribute("fill", "none"); rect.setAttribute("stroke", "#f4ad3e"); rect.setAttribute("stroke-width", "3");
+          const label = document.createElementNS(group.namespaceURI, "text");
+          label.setAttribute("x", x0 + 4); label.setAttribute("y", Math.max(16, y0 - 6)); label.setAttribute("fill", "#f8c777"); label.setAttribute("font-size", "15"); label.setAttribute("font-family", "monospace"); label.textContent = `R${index + 1}${weights[index] == null ? "" : ` · ${(weights[index] * 100).toFixed(1)}%`}`;
+          group.append(rect, label); overlay.append(group);
+        });
+      };
+      const renderRois = (rois, weights) => {
+        const grid = $("#roi-grid"); grid.replaceChildren();
+        rois.forEach((roi, index) => {
+          const card = document.createElement("article"); card.className = "roi-card";
+          const canvas = document.createElement("canvas"); canvas.width = 240; canvas.height = 160;
+          const [x0, y0, x1, y1] = roi.canonical_xyxy;
+          canvas.getContext("2d").drawImage(preview, x0, y0, Math.max(1, x1 - x0), Math.max(1, y1 - y0), 0, 0, canvas.width, canvas.height);
+          const meta = document.createElement("div"); meta.className = "roi-meta";
+          const rank = document.createElement("span"); rank.textContent = `R${index + 1} · score ${roi.score.toFixed(3)}`;
+          const attention = document.createElement("span"); attention.textContent = weights[index] == null ? "—" : `${(weights[index] * 100).toFixed(1)}% attn`;
+          meta.append(rank, attention);
+          const track = document.createElement("div"); track.className = "attention-track"; const fill = document.createElement("i"); fill.style.width = `${Math.min(100, (weights[index] || 0) * 100)}%`; track.append(fill);
+          card.append(canvas, meta, track); grid.append(card);
+        });
+      };
+      const fillDefinitionList = (list, entries) => { list.replaceChildren(); entries.forEach(([key, value]) => { const dt = document.createElement("dt"); dt.textContent = key; const dd = document.createElement("dd"); dd.textContent = value; list.append(dt, dd); }); };
+      const formatMs = (value) => `${Number(value).toFixed(1)} ms`;
+      const formatBytes = (value) => `${(Number(value) / 1024 / 1024).toFixed(0)} MiB`;
+      const shortHash = (value) => `${value.slice(0, 10)}…${value.slice(-6)}`;
+      const downloadBlob = (blob, filename) => { const url = URL.createObjectURL(blob); const link = document.createElement("a"); link.href = url; link.download = filename; link.click(); URL.revokeObjectURL(url); };
+      $("#download-json").addEventListener("click", () => { if (lastResult) downloadBlob(new Blob([JSON.stringify(lastResult, null, 2)], { type: "application/json" }), "prediction-result.json"); });
+      $("#download-overlay").addEventListener("click", () => {
+        if (!lastResult) return;
+        const canvas = document.createElement("canvas"); canvas.width = lastResult.geometry.canonical_width; canvas.height = lastResult.geometry.canonical_height;
+        const context = canvas.getContext("2d"); context.drawImage(preview, 0, 0, canvas.width, canvas.height); context.strokeStyle = "#f4ad3e"; context.lineWidth = 3; context.font = "15px monospace"; context.fillStyle = "#f8c777";
+        lastResult.detector.classifier_rois.forEach((roi, index) => { const [x0, y0, x1, y1] = roi.canonical_xyxy; context.strokeRect(x0, y0, x1 - x0, y1 - y0); context.fillText(`R${index + 1}`, x0 + 4, Math.max(16, y0 - 6)); });
+        canvas.toBlob((blob) => blob && downloadBlob(blob, "prediction-overlay.png"), "image/png");
+      });
+      history.required = true;
+    })();
+  </script>
+</body>
+</html>

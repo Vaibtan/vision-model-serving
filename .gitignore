@@ -13,3 +13,5 @@ vision-model-serving-l4-fp32-*.tar.gz.sha256
 /artifacts/
 fixtures/
 validation-evidence/
+/benchmark-results/
+/validation-results/

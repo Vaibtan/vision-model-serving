@@ -10,23 +10,20 @@ from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
-    REGISTRY,
     CollectorRegistry,
     generate_latest,
-    multiprocess,
 )
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
-from redis import Redis
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from rq import Queue, Worker
-
-from vision_model_serving.artifacts.manifest import load_manifest
-from vision_model_serving.execution import GatewayObservations, GpuExecutorStatus
 
 from .errors import public_error
-from .runtime import executor_client, prediction_gateway
+from .operations import (
+    OperationalSnapshot,
+    instrumented_metrics,
+    read_operational_snapshot,
+)
 
 
 class LivenessView(APIView):
@@ -38,85 +35,43 @@ class LivenessView(APIView):
 class ReadinessView(APIView):
     @extend_schema(responses={200: OpenApiTypes.OBJECT, 503: OpenApiTypes.OBJECT})
     def get(self, _request: Request) -> Response:
-        redis_ready = False
-        worker_ready = False
-        try:
-            redis = Redis.from_url(settings.VMS_REDIS_URL)
-            redis_ready = bool(redis.ping())
-            queue = Queue(settings.VMS_QUEUE_NAME, connection=redis)
-            worker_ready = bool(Worker.all(queue=queue))
-        except Exception:  # noqa: BLE001 - readiness is a sanitized process seam
-            redis_ready = False
-            worker_ready = False
-        executor = _executor_status()
-        checks = {
-            "redis": redis_ready,
-            "rq_worker": worker_ready,
-            "executor": executor.ready if executor is not None else False,
-            "verified_artifacts": (
-                executor.verified_artifacts if executor is not None else False
-            ),
-            "device": executor.device if executor is not None else False,
-            "native_operator": (
-                executor.native_operator if executor is not None else False
-            ),
-        }
-        ready = all(checks.values())
-        reasons = [
-            f"{name}_unavailable" for name, passed in checks.items() if not passed
-        ]
+        snapshot = read_operational_snapshot()
         return Response(
             {
-                "status": "ready" if ready else "not_ready",
-                "checks": checks,
-                "reasons": reasons,
+                "status": snapshot.status,
+                "checks": snapshot.checks,
+                "reasons": list(snapshot.reasons),
             },
-            status=200 if ready else 503,
+            status=200 if snapshot.status == "ready" else 503,
         )
 
 
 class ModelInventoryView(APIView):
     @extend_schema(responses={200: OpenApiTypes.OBJECT})
     def get(self, _request: Request) -> Response:
-        manifest = load_manifest(settings.BASE_DIR / "config" / "model-artifacts.json")
-        runtime = {
-            "state": "unavailable",
-            "active_model": None,
-            "resident_models": [],
-            "device": None,
-            "last_error": None,
-        }
-        executor = _executor_status()
-        if executor is not None:
-            runtime = {
-                "state": executor.runtime_state,
-                "active_model": executor.active_model,
-                "resident_models": list(executor.resident_models),
-                "device": executor.device_name,
-                "last_error": executor.last_error,
-            }
+        snapshot = read_operational_snapshot()
+        executor = snapshot.executor
         return Response(
             {
-                "manifest_id": manifest.manifest_id,
-                "models": [
-                    {
-                        "id": artifact.id,
-                        "role": artifact.role,
-                        "sha256": artifact.sha256,
-                        "strict_load_verified": artifact.strict_load_verified,
-                        "semantics_status": artifact.semantics_status,
-                        "class_names": (
-                            list(artifact.class_names)
-                            if artifact.class_names is not None
-                            else None
-                        ),
-                        "decision_threshold": artifact.decision_threshold,
-                    }
-                    for artifact in manifest.artifacts
-                ],
-                "runtime": runtime,
+                "manifest_id": snapshot.manifest_id,
+                "models": [dict(model) for model in snapshot.models],
+                "runtime": {
+                    "state": executor["state"],
+                    "active_model": executor["active_model"],
+                    "resident_models": list(executor["resident_models"]),
+                    "device": executor["device"],
+                    "last_error": executor["failure_code"],
+                },
             }
         )
+
+
+class OperationsSnapshotView(APIView):
+    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    def get(self, _request: Request) -> Response:
+        response = Response(read_operational_snapshot().as_dict())
+        response["Cache-Control"] = "no-store"
+        return response
 
 
 class MetricsIntegrationView(APIView):
@@ -143,9 +98,10 @@ class MetricsIntegrationView(APIView):
                 403,
             )
         try:
-            observations = prediction_gateway().observations()
-            executor = executor_client().status()
-            payload = _metrics_payload(observations, executor)
+            snapshot = read_operational_snapshot()
+            if not snapshot.queue["available"] or not snapshot.executor["available"]:
+                raise RuntimeError("operational snapshot is incomplete")
+            payload = _metrics_payload(snapshot)
         except Exception:  # noqa: BLE001 - metrics are an internal process seam
             return public_error(
                 request,
@@ -154,13 +110,6 @@ class MetricsIntegrationView(APIView):
                 503,
             )
         return HttpResponse(payload, content_type=CONTENT_TYPE_LATEST)
-
-
-def _executor_status() -> GpuExecutorStatus | None:
-    try:
-        return executor_client().status()
-    except Exception:  # noqa: BLE001 - operational diagnostics are sanitized
-        return None
 
 
 def _metrics_request_is_trusted(request: Request) -> bool:
@@ -175,43 +124,28 @@ def _metrics_request_is_trusted(request: Request) -> bool:
     return any(address in network for network in networks)
 
 
-def _metrics_payload(
-    observations: GatewayObservations,
-    executor: GpuExecutorStatus,
-) -> bytes:
-    if settings.VMS_METRICS_DIR is None:
-        instrumented = generate_latest(REGISTRY)
-    else:
-        registry = CollectorRegistry()
-        multiprocess.MultiProcessCollector(
-            registry,
-            path=str(settings.VMS_METRICS_DIR),
-        )
-        instrumented = generate_latest(registry)
-    snapshot = CollectorRegistry()
-    snapshot.register(_SnapshotCollector(observations, executor))
-    return instrumented + generate_latest(snapshot)
+def _metrics_payload(operations: OperationalSnapshot) -> bytes:
+    instrumented = instrumented_metrics()
+    registry = CollectorRegistry()
+    registry.register(_SnapshotCollector(operations))
+    return instrumented + generate_latest(registry)
 
 
 class _SnapshotCollector:
-    def __init__(
-        self,
-        observations: GatewayObservations,
-        executor: GpuExecutorStatus,
-    ):
-        self._observations = observations
-        self._executor = executor
+    def __init__(self, snapshot: OperationalSnapshot):
+        self._queue = snapshot.queue
+        self._executor = snapshot.executor
 
     def collect(self):
         for name, help_text, value in (
-            ("vms_queue_active_jobs", "Reserved prediction jobs.", "active_jobs"),
-            ("vms_queue_queued_jobs", "Queued prediction jobs.", "queued_jobs"),
-            ("vms_queue_running_jobs", "Running prediction jobs.", "running_jobs"),
+            ("vms_queue_active_jobs", "Reserved prediction jobs.", "active"),
+            ("vms_queue_queued_jobs", "Queued prediction jobs.", "queued"),
+            ("vms_queue_running_jobs", "Running prediction jobs.", "running"),
         ):
             yield GaugeMetricFamily(
                 name,
                 help_text,
-                value=float(getattr(self._observations, value)),
+                value=float(self._queue[value]),
             )
         for name, help_text, value in (
             ("vms_queue_admitted", "Admitted prediction jobs.", "admitted_total"),
@@ -227,29 +161,29 @@ class _SnapshotCollector:
             yield CounterMetricFamily(
                 name,
                 help_text,
-                value=float(getattr(self._observations, value)),
+                value=float(self._queue[value]),
             )
         yield CounterMetricFamily(
             "vms_queue_wait_accumulated_seconds",
             "Cumulative queue wait time.",
-            value=float(self._observations.queue_wait_ms_total) / 1_000.0,
+            value=float(self._queue["wait_accumulated_seconds"]),
         )
         for name, help_text, value in (
-            ("vms_executor_ready", "Executor readiness.", self._executor.ready),
+            ("vms_executor_ready", "Executor readiness.", self._executor["ready"]),
             (
                 "vms_executor_artifacts_verified",
                 "Artifact verification state.",
-                self._executor.verified_artifacts,
+                self._executor["artifacts_verified"],
             ),
             (
                 "vms_executor_device_available",
                 "Configured CUDA device availability.",
-                self._executor.device,
+                self._executor["device_available"],
             ),
             (
                 "vms_executor_native_operator_available",
                 "Native detector operator availability.",
-                self._executor.native_operator,
+                self._executor["native_operator"],
             ),
         ):
             yield GaugeMetricFamily(name, help_text, value=float(value))
@@ -258,7 +192,7 @@ class _SnapshotCollector:
             "Model residency by bounded model identity.",
             labels=("model",),
         )
-        resident_models = set(self._executor.resident_models)
+        resident_models = set(self._executor["resident_models"])
         for model in ("focalnet-dino-detector", "mmbcd-classifier"):
             residents.add_metric((model,), float(model in resident_models))
         yield residents

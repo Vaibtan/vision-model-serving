@@ -110,6 +110,12 @@ hashes. The longer two-lifecycle gate is documented in
 
 ## 5. Operate the API
 
+Open `http://127.0.0.1:8000/` for the server-rendered inspection workbench. It
+submits through the same versioned prediction API shown below and displays the
+canonical mammogram, ROI overlays/crops, non-causal attention weights, timings,
+runtime residency, warnings, and downloadable sanitized JSON/PNG. The preview
+is returned with `Cache-Control: no-store`; the browser keeps no job history.
+
 Start only the long-running services:
 
 ```bash
@@ -209,10 +215,17 @@ export VMS_BENCHMARK_RESULTS="$PWD/benchmark-results"
 export VMS_RESULT_UID="$(id -u)"
 export VMS_RESULT_GID="$(id -g)"
 export VMS_BENCHMARK_RUNS=5
+export VMS_BENCHMARK_REVISION="$(git rev-parse HEAD)"
 docker compose --profile benchmark up --no-build --pull never \
   --abort-on-container-exit --exit-code-from benchmark
 docker compose --profile benchmark down --volumes --remove-orphans
 ```
+
+Run this from a clean executor lifecycle. The profile writes both
+`benchmark.json` and `benchmark.md`, verifies the exact detector/classifier
+hashes, and reports cold full, warm detection, warm full, serialized
+throughput, stage latency, peak reserved memory, runtime residency, and the
+recorded revision without retaining request identifiers or clinical text.
 
 Always remove the stack volumes after assessment work; they are tmpfs-backed
 but can contain bounded results until their TTL expires:

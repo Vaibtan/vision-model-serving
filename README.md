@@ -14,11 +14,14 @@ robustness, and checkpoint redistribution rights are not established.
 - strict, checksum-pinned offline detector and classifier adapters;
 - deterministic top-300, strict `IoU > 0.1` NMS, and exactly eight MMBCD ROIs;
 - detection-only and full multipart prediction endpoints with polling/results;
+- a server-rendered upload/inspection workbench with an ephemeral mammogram
+  preview, ROI overlay/gallery, timings, warnings, and sanitized exports;
 - Redis Queue admission, idempotency, TTLs, sanitized failures, and private
   tmpfs request/result storage;
 - a persistent serialized L4 executor with both models reused after first load;
 - liveness, fail-closed readiness, model inventory, OpenAPI, safe metrics/logs;
-- pinned non-root/read-only Docker images, smoke/benchmark/restart profiles; and
+- pinned non-root/read-only Docker images, smoke/restart profiles, and
+  JSON/Markdown cold-and-warm L4 benchmark reporting; and
 - an attributed, checksum-pinned public CBIS-DDSM fixture fetcher.
 
 ## Quick verification
@@ -41,9 +44,13 @@ claims require the separate Redis/DICOM or L4/Compose gates; see
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/predictions` | Submit multipart DICOM, mode, and full-mode history |
+| `GET` | `/` | Open the local DICOM and ROI inspection workbench |
+| `POST` | `/api/v1/dicom-preview` | Render an ephemeral metadata-free canonical PNG |
 | `GET` | `/api/v1/predictions/{id}` | Poll bounded job status |
 | `GET` | `/api/v1/predictions/{id}/result` | Retrieve a completed typed result |
 | `GET` | `/api/v1/models` | Manifest and sanitized executor inventory |
+| `GET` | `/monitoring` | Privacy-safe live inference operations console |
+| `GET` | `/api/v1/operations` | Versioned bounded operational snapshot |
 | `GET` | `/livez` | Web-process liveness only |
 | `GET` | `/readyz` | Redis, RQ, executor, artifacts, device, operator readiness |
 | `GET` | `/api/schema/`, `/api/docs/` | OpenAPI schema and browser view |
@@ -72,7 +79,7 @@ tradeoff and rollback path are explicit in
 - [DICOM contract and supported transfer syntaxes](docs/dicom-canonicalization.md)
 - [Detector adapter](docs/detector-adapter.md) and [classifier adapter](docs/classifier-adapter.md)
 - [RQ/executor gateway and failure semantics](docs/gpu-execution-gateway.md)
-- [Privacy-safe metrics and structured logs](docs/observability.md)
+- [Privacy-safe monitoring, metrics, and structured logs](docs/observability.md)
 - [Detailed L4 upstream reproduction](docs/validation/lightning-l4-fp32-reproduction.md)
 
 The source requirements are in [ASSIGNMENT.md](ASSIGNMENT.md) and the
