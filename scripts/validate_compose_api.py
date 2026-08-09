@@ -7,16 +7,20 @@ import argparse
 import hashlib
 import json
 import math
-import time
-import urllib.request
 from io import BytesIO
 from pathlib import Path
 
-from benchmark_api import multipart_body, request_json
 from pydicom import dcmread
 from redis import Redis
 
 from vision_model_serving.dicom import DicomCanonicalizer
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
+from vision_model_serving.pipeline.contracts import PredictionMode
+from vision_model_serving.validation.packaged_http import (
+    PACKAGED_ACCEPTANCE_HISTORY,
+    PackagedPredictionClient,
+)
+from vision_model_serving.validation.reporting import write_json_atomic
 
 DICOM_SHA256 = "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"
 CANONICAL_ARRAY_SHA256 = (
@@ -29,18 +33,17 @@ CLASSIFIER_OUTPUT_SHA256 = (
     "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3"
 )
 DETECTOR = {
-    "id": "focalnet-dino-detector",
+    "id": DETECTOR_MODEL_ID,
     "sha256": "67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4",
     "repository_revision": "23901e021dc6ec8f66bad47983f45a25574452cc",
 }
 CLASSIFIER = {
-    "id": "mmbcd-classifier",
+    "id": CLASSIFIER_MODEL_ID,
     "sha256": "2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4",
     "repository_revision": "14ac5e099c79253b01e0885d2ebefa6f86cfd8f0",
 }
 TOKENIZER_REVISION = "e2da8e2f811d1448a5b465c236feacd80ffbac7b"
 MANIFEST_ID = "vision-model-serving-l4-fp32-20260807"
-HISTORY = "real public mammogram acceptance."
 DISCLAIMER = "Research use only; not a medical diagnosis."
 EXPECTED_WARNINGS = {"secondary_capture_storage", "aspect_ratio_distorted"}
 CLASSIFIER_WARNINGS = {
@@ -71,26 +74,24 @@ def main() -> int:
     )
     if canonical_array_sha256 != CANONICAL_ARRAY_SHA256:
         raise AssertionError("canonical DICOM pixels differ from the pinned fixture")
-    base_url = args.base_url.rstrip("/")
-    readiness = request_json(urllib.request.Request(f"{base_url}/readyz"), timeout=10.0)
+    client = PackagedPredictionClient(
+        args.base_url,
+        timeout_seconds=args.timeout_seconds,
+    )
+    readiness = client.readiness()
     if readiness.get("status") != "ready" or not all(
         readiness.get("checks", {}).values()
     ):
         raise AssertionError(f"packaged API is not ready: {readiness!r}")
 
-    initial = _inventory(base_url)
+    initial = _inventory(client.model_inventory())
     if initial["runtime"]["state"] != "unloaded":
         raise AssertionError(f"executor did not start cold: {initial['runtime']!r}")
     cycles = []
     for cycle in range(1, args.cycles + 1):
-        detection = _predict(
-            base_url,
-            dicom,
-            mode="detection",
-            timeout_seconds=args.timeout_seconds,
-        )
+        detection = client.predict(dicom, mode=PredictionMode.DETECTION)
         _validate_result(detection, mode="detection")
-        after_detection = _inventory(base_url)["runtime"]
+        after_detection = _inventory(client.model_inventory())["runtime"]
         _validate_runtime(
             after_detection,
             active=DETECTOR["id"],
@@ -99,14 +100,9 @@ def main() -> int:
             ),
         )
 
-        full = _predict(
-            base_url,
-            dicom,
-            mode="full",
-            timeout_seconds=args.timeout_seconds,
-        )
+        full = client.predict(dicom, mode=PredictionMode.FULL)
         _validate_result(full, mode="full")
-        after_full = _inventory(base_url)["runtime"]
+        after_full = _inventory(client.model_inventory())["runtime"]
         _validate_runtime(
             after_full,
             active=CLASSIFIER["id"],
@@ -156,57 +152,12 @@ def main() -> int:
         ):
             raise AssertionError("restart changed model identity or API behavior")
         record["restart_baseline_matched"] = True
-    _write_json(output, record)
+    write_json_atomic(output, record)
     print(json.dumps(record, indent=2, sort_keys=True))
     return 0
 
 
-def _predict(
-    base_url: str,
-    dicom: bytes,
-    *,
-    mode: str,
-    timeout_seconds: float,
-) -> dict:
-    boundary = f"vms-validation-{mode}"
-    fields = {"mode": mode}
-    if mode == "full":
-        fields["clinical_history"] = HISTORY
-    request = urllib.request.Request(
-        f"{base_url}/api/v1/predictions",
-        data=multipart_body(boundary, dicom, fields),
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Prefer": "respond-async",
-        },
-        method="POST",
-    )
-    submitted = request_json(request, timeout=min(timeout_seconds, 30.0))
-    prediction_id = submitted["prediction_id"]
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        status = request_json(
-            urllib.request.Request(f"{base_url}/api/v1/predictions/{prediction_id}"),
-            timeout=min(timeout_seconds, 10.0),
-        )
-        if status["state"] == "succeeded":
-            response = request_json(
-                urllib.request.Request(
-                    f"{base_url}/api/v1/predictions/{prediction_id}/result"
-                ),
-                timeout=min(timeout_seconds, 10.0),
-            )
-            return response["result"]
-        if status["state"] in {"failed", "expired"}:
-            raise RuntimeError(f"prediction ended in state {status['state']}")
-        time.sleep(0.1)
-    raise TimeoutError("prediction did not finish before the validation deadline")
-
-
-def _inventory(base_url: str) -> dict:
-    inventory = request_json(
-        urllib.request.Request(f"{base_url}/api/v1/models"), timeout=10.0
-    )
+def _inventory(inventory: dict) -> dict:
     if inventory.get("manifest_id") != MANIFEST_ID:
         raise AssertionError("API exposed an unexpected artifact manifest")
     expected = {
@@ -317,7 +268,7 @@ def _assert_private_content_absent(
     if not redis.ping():
         raise AssertionError("real Redis did not answer ping")
     dataset = dcmread(BytesIO(dicom), stop_before_pixels=True)
-    private_values = [dicom[128:256], HISTORY.encode()]
+    private_values = [dicom[128:256], PACKAGED_ACCEPTANCE_HISTORY.encode()]
     private_values.extend(
         str(value).encode()
         for value in (
@@ -391,15 +342,6 @@ def _assert_finite(value: object) -> None:
 
 def _sha256(value: bytes) -> str:
     return hashlib.sha256(value).hexdigest()
-
-
-def _write_json(path: Path, value: dict) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8"
-    )
-    temporary.replace(path)
 
 
 if __name__ == "__main__":

@@ -11,6 +11,8 @@ import tempfile
 from io import BytesIO, StringIO
 from pathlib import Path
 
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
+
 EXPECTED_DICOM_SHA256 = (
     "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"
 )
@@ -151,7 +153,7 @@ def main() -> int:
             if any(queue.get(name) != 0 for name in ("active", "queued", "running")):
                 raise AssertionError(f"fresh operations queue is not empty: {queue!r}")
             model_ids = [model["id"] for model in operations_body.get("models", [])]
-            if model_ids != ["focalnet-dino-detector", "mmbcd-classifier"]:
+            if model_ids != [DETECTOR_MODEL_ID, CLASSIFIER_MODEL_ID]:
                 raise AssertionError("operations snapshot omitted pinned model identity")
             serialized_operations = json.dumps(operations_body, sort_keys=True)
             for private_value in (
@@ -183,8 +185,8 @@ def main() -> int:
             _assert_status(models.status_code, 200, models.content)
             model_body = models.json()
             if [item["id"] for item in model_body["models"]] != [
-                "focalnet-dino-detector",
-                "mmbcd-classifier",
+                DETECTOR_MODEL_ID,
+                CLASSIFIER_MODEL_ID,
             ]:
                 raise AssertionError(f"unexpected model inventory: {model_body!r}")
             if any(

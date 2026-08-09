@@ -5,10 +5,15 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 import subprocess
 from pathlib import Path
+import sys
 from typing import Any
+
+PROJECT_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from vision_model_serving.validation.reporting import write_json_atomic  # noqa: E402
 
 
 STUDIO_ROOT = Path("/teamspace/studios/this_studio")
@@ -126,16 +131,6 @@ def verify_git_commit(repository: Path, expected: str) -> str:
 
 def load_json(path: Path) -> dict[str, Any]:
     return json.loads(require_file(path).read_text(encoding="utf-8"))
-
-
-def write_json_atomic(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_suffix(path.suffix + ".tmp")
-    temporary.write_text(
-        json.dumps(payload, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
-    os.replace(temporary, path)
 
 
 def strip_module_prefix(state_dict: dict[str, Any]) -> dict[str, Any]:

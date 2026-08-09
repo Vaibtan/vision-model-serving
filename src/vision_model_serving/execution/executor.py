@@ -275,7 +275,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         build_local_cuda_pipeline,
     )
 
-    from .rq_worker import PredictionJobWorker
+    from .job_processor import StoredPredictionProcessor
 
     configure_structured_logging(args.logging_level)
     pipeline = build_local_cuda_pipeline(
@@ -287,16 +287,15 @@ def main(argv: Sequence[str] | None = None) -> int:
             mmbcd_root=args.mmbcd_root,
             dino_root=args.dino_root,
             device=args.device,
-            require_history_for_full=not args.allow_empty_history,
             retain_models=True,
         )
     )
-    worker = PredictionJobWorker(
+    processor = StoredPredictionProcessor(
         job_root=args.job_root,
         pipeline=pipeline,
         result_ttl_seconds=args.result_ttl_seconds,
     )
-    executor = PersistentGpuExecutor(worker, device_name=args.device)
+    executor = PersistentGpuExecutor(processor, device_name=args.device)
     server = GpuExecutorServer(args.socket_path, executor)
 
     def stop(_signum: int, _frame: object) -> None:
@@ -338,7 +337,6 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument("--mmbcd-root", type=Path, required=True)
     parser.add_argument("--dino-root", type=Path, required=True)
     parser.add_argument("--device", default="cuda:0")
-    parser.add_argument("--allow-empty-history", action="store_true")
     parser.add_argument("--logging-level", default="INFO")
     return parser
 

@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 
 from prometheus_client import Counter, Gauge, Histogram
 
+from vision_model_serving.model_ids import MODEL_STAGE_BY_ID
 from vision_model_serving.pipeline.contracts import PredictionMode, PredictionResult
 
 _HTTP_REQUESTS = Counter(
@@ -251,10 +252,7 @@ def record_prediction_failure(
 def record_executor_cleanup(resident_models: tuple[str, ...]) -> None:
     cleaned = 0
     for model_id in resident_models:
-        model = {
-            "focalnet-dino-detector": "detector",
-            "mmbcd-classifier": "classifier",
-        }.get(model_id)
+        model = MODEL_STAGE_BY_ID.get(model_id)
         if model is not None:
             _LIFECYCLE.labels(model, "unload").inc()
             _LIFECYCLE.labels(model, "cleanup").inc()

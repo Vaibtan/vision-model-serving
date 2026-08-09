@@ -15,6 +15,8 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID
+
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -45,7 +47,7 @@ class ClassifierArtifactIdentity:
     repository_revision: str
 
     def __post_init__(self) -> None:
-        if self.id != "mmbcd-classifier":
+        if self.id != CLASSIFIER_MODEL_ID:
             raise ValueError("artifact identity is not MMBCD")
         if _SHA256.fullmatch(self.sha256) is None:
             raise ValueError("artifact SHA-256 is invalid")

@@ -19,6 +19,8 @@ from time import perf_counter
 from typing import Any, BinaryIO, ContextManager, Iterator, Protocol
 
 import numpy as np
+
+from vision_model_serving.model_ids import DETECTOR_MODEL_ID
 from numpy.typing import NDArray
 
 from vision_model_serving.artifacts import ArtifactRegistryError, load_manifest
@@ -329,7 +331,7 @@ class FocalNetDinoAdapter:
 
 def _validate_artifact(artifact: DetectorArtifact) -> DetectorArtifactIdentity:
     if (
-        getattr(artifact, "id", None) != "focalnet-dino-detector"
+        getattr(artifact, "id", None) != DETECTOR_MODEL_ID
         or getattr(artifact, "role", None) != "detector"
     ):
         raise DetectorLoadError("artifact is not the manifest-owned detector")

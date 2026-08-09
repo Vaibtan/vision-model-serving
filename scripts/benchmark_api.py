@@ -9,12 +9,13 @@ import hashlib
 import json
 import statistics
 import time
-import urllib.error
-import urllib.request
 from pathlib import Path
 from typing import Any
 
-GOLDEN_CLINICAL_HISTORY = "real public mammogram acceptance."
+from vision_model_serving.model_ids import MODEL_IDS
+from vision_model_serving.pipeline.contracts import PredictionMode
+from vision_model_serving.validation.packaged_http import PackagedPredictionClient
+from vision_model_serving.validation.reporting import write_json_atomic
 
 
 def main() -> int:
@@ -32,17 +33,17 @@ def main() -> int:
     if args.runs <= 0:
         parser.error("--runs must be positive")
 
-    base_url = args.base_url.rstrip("/")
     dicom = args.dicom.read_bytes()
-    readiness = request_json(
-        urllib.request.Request(f"{base_url}/readyz"),
-        timeout=min(10.0, args.timeout_seconds),
+    client = PackagedPredictionClient(
+        args.base_url,
+        timeout_seconds=args.timeout_seconds,
     )
+    readiness = client.readiness()
     if readiness.get("status") != "ready" or not all(
         readiness.get("checks", {}).values()
     ):
         raise RuntimeError("service readiness did not pass every packaged check")
-    before = _inventory(base_url, args.timeout_seconds)
+    before = _inventory(client.model_inventory())
     if before["runtime"]["state"] != "unloaded" or before["runtime"][
         "resident_models"
     ]:
@@ -51,10 +52,9 @@ def main() -> int:
         )
 
     cold_full = _run_sample(
-        base_url,
+        client,
         dicom,
-        mode="full",
-        timeout_seconds=args.timeout_seconds,
+        mode=PredictionMode.FULL,
         expected_detector_sha256=args.expected_detector_sha256,
         expected_classifier_sha256=args.expected_classifier_sha256,
     )
@@ -66,10 +66,9 @@ def main() -> int:
 
     warm_detection = [
         _run_sample(
-            base_url,
+            client,
             dicom,
-            mode="detection",
-            timeout_seconds=args.timeout_seconds,
+            mode=PredictionMode.DETECTION,
             expected_detector_sha256=args.expected_detector_sha256,
             expected_classifier_sha256=args.expected_classifier_sha256,
         )
@@ -77,10 +76,9 @@ def main() -> int:
     ]
     warm_full = [
         _run_sample(
-            base_url,
+            client,
             dicom,
-            mode="full",
-            timeout_seconds=args.timeout_seconds,
+            mode=PredictionMode.FULL,
             expected_detector_sha256=args.expected_detector_sha256,
             expected_classifier_sha256=args.expected_classifier_sha256,
         )
@@ -95,11 +93,8 @@ def main() -> int:
     ):
         raise RuntimeError("warm benchmark unexpectedly reloaded a model")
 
-    after = _inventory(base_url, args.timeout_seconds)
-    expected_residents = {
-        "focalnet-dino-detector",
-        "mmbcd-classifier",
-    }
+    after = _inventory(client.model_inventory())
+    expected_residents = set(MODEL_IDS)
     if set(after["runtime"]["resident_models"]) != expected_residents:
         raise RuntimeError("final executor inventory is not dual resident")
 
@@ -150,7 +145,7 @@ def main() -> int:
             "calibration, robustness, or clinical performance."
         ),
     }
-    _write_json(args.output, record)
+    write_json_atomic(args.output, record)
     if args.markdown_output is not None:
         args.markdown_output.parent.mkdir(parents=True, exist_ok=True)
         args.markdown_output.write_text(
@@ -162,27 +157,21 @@ def main() -> int:
 
 
 def _run_sample(
-    base_url: str,
+    client: PackagedPredictionClient,
     dicom: bytes,
     *,
-    mode: str,
-    timeout_seconds: float,
+    mode: PredictionMode,
     expected_detector_sha256: str,
     expected_classifier_sha256: str,
 ) -> dict[str, Any]:
     started = time.monotonic()
-    result = _predict(
-        base_url,
-        dicom,
-        mode=mode,
-        timeout_seconds=timeout_seconds,
-    )
+    result = client.predict(dicom, mode=mode)
     wall_seconds = time.monotonic() - started
     detector = result["detector"]
     classification = result["classification"]
     if detector["prediction_sha256"] != expected_detector_sha256:
         raise RuntimeError("detector output differs from the pinned golden")
-    if mode == "full":
+    if mode is PredictionMode.FULL:
         if (
             classification is None
             or classification["prediction_sha256"]
@@ -201,7 +190,7 @@ def _run_sample(
             classifier_timings["memory"]["peak_reserved_bytes"],
         )
     return {
-        "mode": mode,
+        "mode": mode.value,
         "wall_seconds": wall_seconds,
         "pipeline_total_seconds": timings["total_ms"] / 1000.0,
         "http_queue_overhead_seconds": max(
@@ -267,11 +256,7 @@ def _optional_median(values: object) -> float | None:
     return statistics.median(present) if present else None
 
 
-def _inventory(base_url: str, timeout_seconds: float) -> dict[str, Any]:
-    payload = request_json(
-        urllib.request.Request(f"{base_url}/api/v1/models"),
-        timeout=min(10.0, timeout_seconds),
-    )
+def _inventory(payload: dict[str, Any]) -> dict[str, Any]:
     return {
         "manifest_id": payload["manifest_id"],
         "models": [
@@ -286,89 +271,6 @@ def _inventory(base_url: str, timeout_seconds: float) -> dict[str, Any]:
         ],
         "runtime": payload["runtime"],
     }
-
-
-def _predict(
-    base_url: str,
-    dicom: bytes,
-    *,
-    mode: str,
-    timeout_seconds: float,
-) -> dict[str, Any]:
-    boundary = "vms-real-infrastructure-boundary"
-    fields = {"mode": mode}
-    if mode == "full":
-        fields["clinical_history"] = GOLDEN_CLINICAL_HISTORY
-    body = multipart_body(boundary, dicom, fields)
-    request = urllib.request.Request(
-        f"{base_url}/api/v1/predictions",
-        data=body,
-        headers={
-            "Content-Type": f"multipart/form-data; boundary={boundary}",
-            "Prefer": "respond-async",
-        },
-        method="POST",
-    )
-    submitted = request_json(request, timeout=min(30.0, timeout_seconds))
-    prediction_id = submitted["prediction_id"]
-    deadline = time.monotonic() + timeout_seconds
-    while time.monotonic() < deadline:
-        status = request_json(
-            urllib.request.Request(f"{base_url}/api/v1/predictions/{prediction_id}"),
-            timeout=min(10.0, timeout_seconds),
-        )
-        if status["state"] == "succeeded":
-            return request_json(
-                urllib.request.Request(
-                    f"{base_url}/api/v1/predictions/{prediction_id}/result"
-                ),
-                timeout=min(10.0, timeout_seconds),
-            )["result"]
-        if status["state"] in {"failed", "expired"}:
-            raise RuntimeError(f"prediction ended in state {status['state']}")
-        time.sleep(0.1)
-    raise TimeoutError("prediction did not finish before the benchmark deadline")
-
-
-def request_json(request: urllib.request.Request, *, timeout: float) -> dict[str, Any]:
-    try:
-        with urllib.request.urlopen(request, timeout=timeout) as response:
-            return json.load(response)
-    except urllib.error.HTTPError as error:
-        message = error.read(4096).decode("utf-8", errors="replace")
-        raise RuntimeError(f"HTTP {error.code}: {message}") from error
-
-
-def multipart_body(boundary: str, dicom: bytes, fields: dict[str, str]) -> bytes:
-    chunks: list[bytes] = []
-    for name, value in fields.items():
-        chunks.extend(
-            (
-                f"--{boundary}\r\n".encode(),
-                f'Content-Disposition: form-data; name="{name}"\r\n\r\n'.encode(),
-                value.encode(),
-                b"\r\n",
-            )
-        )
-    chunks.extend(
-        (
-            f"--{boundary}\r\n".encode(),
-            b'Content-Disposition: form-data; name="dicom"; filename="input.dcm"\r\n',
-            b"Content-Type: application/dicom\r\n\r\n",
-            dicom,
-            b"\r\n",
-            f"--{boundary}--\r\n".encode(),
-        )
-    )
-    return b"".join(chunks)
-
-
-def _write_json(path: Path, record: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        json.dumps(record, indent=2, sort_keys=True) + "\n",
-        encoding="utf-8",
-    )
 
 
 def _markdown_report(record: dict[str, Any]) -> str:

@@ -1,157 +1,52 @@
-"""RQ task entry point for one isolated GPU prediction."""
+"""RQ task entry point that forwards opaque identifiers to the GPU executor."""
 
 from __future__ import annotations
 
-from collections.abc import Callable
-from dataclasses import replace
 from pathlib import Path
 from time import time
-from typing import Protocol
 
-from vision_model_serving.observability import (
-    record_prediction_failure,
-    record_prediction_success,
-    record_queue_wait,
-)
-from vision_model_serving.pipeline.contracts import (
-    CaseInput,
-    PredictionMode,
-    PredictionResult,
-)
+from vision_model_serving.observability import record_queue_wait
 
 from .contracts import PredictionId
-from .storage import EphemeralJobStore, JobResultNotFound
+from .executor import GpuExecutorClient
 
 
-class _Pipeline(Protocol):
-    def infer(self, case: CaseInput, mode: PredictionMode) -> PredictionResult: ...
+_executor_socket_path: Path | None = None
+_executor_timeout_seconds: float | None = None
+_executor_client: GpuExecutorClient | None = None
 
 
-class PredictionWorkerError(RuntimeError):
-    pass
-
-
-class PredictionJobWorker:
-    """Execute one stored request without exposing its payload to Redis."""
-
-    def __init__(
-        self,
-        *,
-        job_root: Path,
-        pipeline: _Pipeline,
-        result_ttl_seconds: int,
-        clock: Callable[[], float] = time,
-    ):
-        if result_ttl_seconds < 1:
-            raise ValueError("result TTL must be positive")
-        self._store = EphemeralJobStore(job_root, clock=clock)
-        self._store.cleanup_expired()
-        self._pipeline = pipeline
-        self._result_ttl_seconds = result_ttl_seconds
-
-    def execute(self, prediction_id: PredictionId, locator: str) -> None:
-        mode: PredictionMode | None = None
-        try:
-            try:
-                self._store.load_result(locator)
-                return
-            except JobResultNotFound:
-                pass
-            request = self._store.load_request(prediction_id, locator)
-            mode = request.mode
-            result = self._pipeline.infer(request.case, request.mode)
-            result = _apply_detector_display_threshold(
-                result,
-                request.detector_score_threshold,
-            )
-            self._store.store_result(
-                locator,
-                result,
-                ttl_seconds=self._result_ttl_seconds,
-            )
-            try:
-                record_prediction_success(result)
-            except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
-                pass
-        except Exception as error:  # noqa: BLE001 - never persist private pipeline errors
-            try:
-                record_prediction_failure(mode, error)
-            except Exception:  # noqa: BLE001, S110 - preserve the prediction seam
-                pass
-            raise PredictionWorkerError("prediction execution failed") from None
-        finally:
-            self._store.purge_request(locator)
-
-    def status(self) -> object:
-        status = getattr(self._pipeline, "status", None)
-        if not callable(status):
-            raise PredictionWorkerError("prediction runtime status is unavailable")
-        return status()
-
-
-_worker_factory: Callable[[], PredictionJobWorker] | None = None
-_worker: PredictionJobWorker | None = None
-
-
-def configure_prediction_worker(
-    worker_factory: Callable[[], PredictionJobWorker],
-) -> None:
-    """Configure the factory in the RQ parent before it forks a job process."""
-
-    if not callable(worker_factory):
-        raise TypeError("worker factory must be callable")
-    global _worker_factory, _worker
-    _worker_factory = worker_factory
-    _worker = None
-
-
-def build_prediction_worker_factory(
-    *,
-    pipeline_factory: Callable[[], _Pipeline],
-    job_root: Path,
-    result_ttl_seconds: int,
-    clock: Callable[[], float] = time,
-) -> Callable[[], PredictionJobWorker]:
-    """Delay pipeline and CUDA construction until a job child executes."""
-
-    def build() -> PredictionJobWorker:
-        return PredictionJobWorker(
-            job_root=job_root,
-            pipeline=pipeline_factory(),
-            result_ttl_seconds=result_ttl_seconds,
-            clock=clock,
-        )
-
-    return build
-
-
-def build_executor_client_factory(
+def _configure_executor_client(
     *,
     socket_path: Path,
     timeout_seconds: float,
-) -> Callable[[], object]:
-    """Build only the lightweight executor client inside each RQ work-horse."""
-
-    def build() -> object:
-        from .executor import GpuExecutorClient
-
-        return GpuExecutorClient(socket_path, timeout_seconds=timeout_seconds)
-
-    return build
+) -> None:
+    if not isinstance(socket_path, Path):
+        raise TypeError("executor socket path must be a pathlib.Path")
+    if timeout_seconds <= 0:
+        raise ValueError("executor timeout must be positive")
+    global _executor_socket_path, _executor_timeout_seconds, _executor_client
+    _executor_socket_path = socket_path
+    _executor_timeout_seconds = float(timeout_seconds)
+    _executor_client = None
 
 
 def create_prediction_rq_worker(
     *,
     redis_client: object,
     queue_name: str,
-    worker_factory: Callable[[], PredictionJobWorker],
+    executor_socket_path: Path,
+    executor_timeout_seconds: float,
 ) -> object:
-    """Create the production one-job-at-a-time RQ worker."""
+    """Create the production RQ dispatcher for one private GPU executor."""
 
     from rq import Queue, Worker
     from rq.serializers import JSONSerializer
 
-    configure_prediction_worker(worker_factory)
+    _configure_executor_client(
+        socket_path=executor_socket_path,
+        timeout_seconds=executor_timeout_seconds,
+    )
     queue = Queue(
         queue_name,
         connection=redis_client,
@@ -176,16 +71,16 @@ def create_prediction_rq_worker(
 
 
 def execute_prediction_job(prediction_id: str, locator: str) -> None:
-    """RQ task receiving only the opaque prediction and storage identifiers."""
+    """Forward only opaque prediction and storage identifiers over the socket."""
 
     from rq import get_current_job
 
     job = get_current_job()
-    if job is None or _worker_factory is None:
-        raise PredictionWorkerError("prediction worker is not configured")
+    if job is None or _executor_socket_path is None or _executor_timeout_seconds is None:
+        raise RuntimeError("prediction executor client is not configured")
     key_prefix = str(job.meta.get("key_prefix", ""))
     if not key_prefix:
-        raise PredictionWorkerError("prediction worker is not configured")
+        raise RuntimeError("prediction executor client is not configured")
     redis = job.connection
     metrics_key = f"{key_prefix}:metrics"
     active_key = f"{key_prefix}:active"
@@ -199,11 +94,14 @@ def execute_prediction_job(prediction_id: str, locator: str) -> None:
             record_queue_wait(wait_ms / 1_000.0)
         except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
             pass
-    global _worker
-    if _worker is None:
-        _worker = _worker_factory()
+    global _executor_client
+    if _executor_client is None:
+        _executor_client = GpuExecutorClient(
+            _executor_socket_path,
+            timeout_seconds=_executor_timeout_seconds,
+        )
     try:
-        _worker.execute(PredictionId(prediction_id), locator)
+        _executor_client.execute(PredictionId(prediction_id), locator)
     except Exception:
         redis.hincrby(metrics_key, "failed_total", 1)
         raise
@@ -211,27 +109,3 @@ def execute_prediction_job(prediction_id: str, locator: str) -> None:
         redis.hincrby(metrics_key, "succeeded_total", 1)
     finally:
         redis.zrem(active_key, prediction_id)
-
-
-def _apply_detector_display_threshold(
-    result: PredictionResult,
-    threshold: float | None,
-) -> PredictionResult:
-    """Filter display detections after inference without changing classifier ROIs."""
-
-    if threshold is None:
-        return result
-    detector = replace(
-        result.detector,
-        top_candidates=tuple(
-            detection
-            for detection in result.detector.top_candidates
-            if detection.score >= threshold
-        ),
-        post_nms=tuple(
-            detection
-            for detection in result.detector.post_nms
-            if detection.score >= threshold
-        ),
-    )
-    return replace(result, detector=detector)

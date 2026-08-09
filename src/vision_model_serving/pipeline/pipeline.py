@@ -10,6 +10,7 @@ import numpy as np
 from vision_model_serving.classifier import MmbcdResult
 from vision_model_serving.detector import DetectorProposal, DetectorResult
 from vision_model_serving.dicom import CanonicalMammogram
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
 from vision_model_serving.residency import ModelOutputs
 
 from .contracts import (
@@ -37,10 +38,6 @@ from .contracts import (
     RuntimeExecutionSummary,
     TokenizerProvenance,
 )
-
-
-DETECTOR_MODEL_ID = "focalnet-dino-detector"
-CLASSIFIER_MODEL_ID = "mmbcd-classifier"
 
 
 class PredictionPipelineError(RuntimeError):

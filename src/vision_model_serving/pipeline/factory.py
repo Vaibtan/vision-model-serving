@@ -13,6 +13,7 @@ from vision_model_serving.detector import (
     probe_focalnet_native_operator,
 )
 from vision_model_serving.dicom import DicomCanonicalizer
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
 from vision_model_serving.residency import (
     ModelBinding,
     ModelOutputs,
@@ -21,7 +22,7 @@ from vision_model_serving.residency import (
     TorchCudaLifecycle,
 )
 
-from .pipeline import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID, PredictionPipeline
+from .pipeline import PredictionPipeline
 
 
 @dataclass(frozen=True, slots=True)

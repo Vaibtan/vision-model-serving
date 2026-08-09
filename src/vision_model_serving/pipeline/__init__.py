@@ -26,8 +26,6 @@ from .contracts import (
     TokenizerProvenance,
 )
 from .pipeline import (
-    CLASSIFIER_MODEL_ID,
-    DETECTOR_MODEL_ID,
     PredictionContractError,
     PredictionInputError,
     PredictionPipeline,
@@ -49,13 +47,11 @@ def __getattr__(name: str) -> object:
 __all__ = [
     "ArtifactProvenance",
     "AttentionInspection",
-    "CLASSIFIER_MODEL_ID",
     "CaseInput",
     "ClassificationPrediction",
     "ClassifierAdapterTimings",
     "ClassifierInputSummary",
     "ClassifierStageTimings",
-    "DETECTOR_MODEL_ID",
     "Detection",
     "DetectorAdapterTimings",
     "DetectorInputSummary",

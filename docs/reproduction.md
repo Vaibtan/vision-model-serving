@@ -17,7 +17,7 @@ Clone and synchronize the CPU development environment:
 ```bash
 git clone https://github.com/Vaibtan/vision-model-serving.git
 cd vision-model-serving
-git switch agent/django-api
+git switch main
 uv sync --frozen --extra gateway --extra web
 uv lock --check
 export PYTHONPATH="$PWD/src"
@@ -25,8 +25,8 @@ uv run python -m unittest discover -s tests
 uv run python manage.py check
 ```
 
-The current implementation lives on `agent/django-api` until it is merged.
-Use a reviewed commit rather than a moving branch for an assessed deployment.
+The assessed implementation is on `main`. Use a reviewed commit rather than a
+moving branch for an assessed deployment.
 
 ## 2. Fetch the attributed public fixture
 

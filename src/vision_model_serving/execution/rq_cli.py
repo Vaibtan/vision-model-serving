@@ -6,7 +6,7 @@ import argparse
 from collections.abc import Sequence
 from pathlib import Path
 
-from .rq_worker import build_executor_client_factory, create_prediction_rq_worker
+from .rq_worker import create_prediction_rq_worker
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -32,10 +32,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     worker = create_prediction_rq_worker(
         redis_client=redis_client,
         queue_name=args.queue_name,
-        worker_factory=build_executor_client_factory(
-            socket_path=args.executor_socket,
-            timeout_seconds=args.executor_timeout_seconds,
-        ),
+        executor_socket_path=args.executor_socket,
+        executor_timeout_seconds=args.executor_timeout_seconds,
     )
     worker.work(
         burst=args.burst,

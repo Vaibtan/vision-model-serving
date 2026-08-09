@@ -76,4 +76,4 @@ COPY --chown=10001:10001 config_cfg.py ./config_cfg.py
 COPY --chown=10001:10001 patches ./patches
 COPY --chown=10001:10001 src ./src
 USER 10001:10001
-CMD ["python", "-m", "vision_model_serving.execution.executor_cli", "--socket-path", "/run/vms/executor.sock", "--job-root", "/var/lib/vms/jobs", "--result-ttl-seconds", "900", "--project-root", "/app", "--artifact-root", "/models", "--tokenizer-root", "/assets/tokenizer", "--focalnet-root", "/opt/focalnet", "--mmbcd-root", "/sources/MMBCD", "--dino-root", "/sources/dino"]
+CMD ["python", "-m", "vision_model_serving.execution.executor", "--socket-path", "/run/vms/executor.sock", "--job-root", "/var/lib/vms/jobs", "--result-ttl-seconds", "900", "--project-root", "/app", "--artifact-root", "/models", "--tokenizer-root", "/assets/tokenizer", "--focalnet-root", "/opt/focalnet", "--mmbcd-root", "/sources/MMBCD", "--dino-root", "/sources/dino"]

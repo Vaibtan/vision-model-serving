@@ -49,6 +49,7 @@ def main() -> None:
     from vision_model_serving.classifier import MmbcdClassifierAdapter
     from vision_model_serving.detector import FocalNetDinoAdapter
     from vision_model_serving.dicom import DicomCanonicalizer
+    from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
     from vision_model_serving.residency import (
         ModelBinding,
         RuntimeState,
@@ -74,8 +75,8 @@ def main() -> None:
         tokenizer_root=tokenizer_root,
         repository_root=project_root,
     )
-    detector_artifact = registry.resolve("focalnet-dino-detector")
-    classifier_artifact = registry.resolve("mmbcd-classifier")
+    detector_artifact = registry.resolve(DETECTOR_MODEL_ID)
+    classifier_artifact = registry.resolve(CLASSIFIER_MODEL_ID)
     classifier_inputs: list[tuple[object, object, str]] = []
 
     class DetectorResident:
@@ -118,7 +119,7 @@ def main() -> None:
     runtime = SingleResidencyRuntime(
         bindings=(
             ModelBinding(
-                model_id="focalnet-dino-detector",
+                model_id=DETECTOR_MODEL_ID,
                 load=DetectorResident,
                 failure_token=lambda: (
                     f"{detector_artifact.sha256}:"
@@ -126,7 +127,7 @@ def main() -> None:
                 ),
             ),
             ModelBinding(
-                model_id="mmbcd-classifier",
+                model_id=CLASSIFIER_MODEL_ID,
                 load=ClassifierResident,
                 failure_token=lambda: (
                     f"{classifier_artifact.sha256}:"
@@ -139,7 +140,7 @@ def main() -> None:
 
     records: list[dict[str, object]] = []
     for cycle in range(1, args.cycles + 1):
-        detector_output = runtime.execute("focalnet-dino-detector", canonical)
+        detector_output = runtime.execute(DETECTOR_MODEL_ID, canonical)
         detector_result = detector_output.value
         detector_hash = detector_result.proposals.prediction_sha256
         if detector_hash != DETECTOR_PREDICTION_SHA256:
@@ -151,7 +152,7 @@ def main() -> None:
             "",
         )
         classifier_inputs.append(classifier_input)
-        classifier_output = runtime.execute("mmbcd-classifier", classifier_input)
+        classifier_output = runtime.execute(CLASSIFIER_MODEL_ID, classifier_input)
         classifier_result = classifier_output.value
         if classifier_result.prediction_sha256 != MMBCD_PREDICTION_SHA256:
             raise RuntimeError("classifier prediction hash differs from L4 reference")
@@ -172,7 +173,7 @@ def main() -> None:
     expected_loads = args.cycles * 2
     if status.state is not RuntimeState.READY:
         raise RuntimeError("single-residency runtime is not ready after live cycles")
-    if status.active_model != "mmbcd-classifier":
+    if status.active_model != CLASSIFIER_MODEL_ID:
         raise RuntimeError("unexpected final resident model")
     if status.active_inferences != 0 or status.last_error is not None:
         raise RuntimeError("single-residency runtime has unfinished or failed work")

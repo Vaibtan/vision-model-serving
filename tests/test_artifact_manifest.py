@@ -19,6 +19,7 @@ from vision_model_serving.artifacts import (  # noqa: E402
     ManifestValidationError,
     load_manifest,
 )
+from vision_model_serving.model_ids import MODEL_IDS  # noqa: E402
 
 
 SHA_A = "a" * 64
@@ -259,7 +260,7 @@ class ArtifactManifestTests(unittest.TestCase):
 
         self.assertEqual(
             manifest.pipeline_stages,
-            ("focalnet-dino-detector", "mmbcd-classifier"),
+            MODEL_IDS,
         )
         self.assertEqual(
             manifest.revisions,

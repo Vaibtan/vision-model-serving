@@ -7,11 +7,8 @@ from functools import lru_cache
 from django.conf import settings
 from redis import Redis
 
-from vision_model_serving.execution import (
-    GpuExecutorClient,
-    RqExecutionConfig,
-    RqGpuExecutionGateway,
-)
+from vision_model_serving.execution import RqExecutionConfig, RqGpuExecutionGateway
+from vision_model_serving.execution.executor import GpuExecutorClient
 
 
 @lru_cache(maxsize=1)

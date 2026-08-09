@@ -1,4 +1,4 @@
-"""Golden-evidence verification and numeric comparison interfaces."""
+"""Golden-evidence verification and packaged-validation interfaces."""
 
 from .golden import (
     BoxComparison,

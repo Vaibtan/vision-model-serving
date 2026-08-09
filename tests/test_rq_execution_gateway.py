@@ -5,6 +5,7 @@ import re
 import subprocess
 import sys
 import unittest
+from unittest.mock import patch
 from io import BytesIO
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -26,7 +27,6 @@ from vision_model_serving.execution import (
     PredictionFailed,
     PredictionId,
     PredictionJobState,
-    PredictionJobWorker,
     PredictionNotFound,
     PredictionRequest,
     QueueSaturated,
@@ -34,10 +34,9 @@ from vision_model_serving.execution import (
     ResultNotReady,
     RqExecutionConfig,
     RqGpuExecutionGateway,
-    build_prediction_worker_factory,
-    configure_prediction_worker,
-    create_prediction_rq_worker,
 )
+from vision_model_serving.execution.job_processor import StoredPredictionProcessor
+from vision_model_serving.execution.rq_worker import create_prediction_rq_worker
 from vision_model_serving.pipeline import CaseInput, PredictionMode
 
 
@@ -226,6 +225,11 @@ class RqGatewayTests(unittest.TestCase):
         pipeline = PipelineStub(expected)
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            processor = StoredPredictionProcessor(
+                job_root=root,
+                pipeline=pipeline,
+                result_ttl_seconds=60,
+            )
             gateway = RqGpuExecutionGateway(
                 redis_client=redis,
                 job_root=root,
@@ -237,32 +241,35 @@ class RqGatewayTests(unittest.TestCase):
                     status_ttl_seconds=90,
                 ),
             )
-            configure_prediction_worker(
-                lambda: PredictionJobWorker(
-                    job_root=root,
-                    pipeline=pipeline,
-                    result_ttl_seconds=60,
+            with patch(
+                "vision_model_serving.execution.rq_worker.GpuExecutorClient",
+                return_value=processor,
+            ):
+                create_prediction_rq_worker(
+                    redis_client=redis,
+                    queue_name="gpu-inference",
+                    executor_socket_path=root / "executor.sock",
+                    executor_timeout_seconds=60,
                 )
-            )
-            handle = gateway.submit(request(idempotency_key="completed-upload"))
+                handle = gateway.submit(request(idempotency_key="completed-upload"))
 
-            with self.assertRaises(ResultNotReady):
-                gateway.result(handle.prediction_id)
-            queue = Queue(
-                "gpu-inference",
-                connection=redis,
-                serializer=JSONSerializer,
-            )
-            worker = WindowsSimpleWorker(
-                [queue],
-                connection=redis,
-                serializer=JSONSerializer,
-            )
-            worker.work(burst=True, logging_level="WARNING")
+                with self.assertRaises(ResultNotReady):
+                    gateway.result(handle.prediction_id)
+                queue = Queue(
+                    "gpu-inference",
+                    connection=redis,
+                    serializer=JSONSerializer,
+                )
+                worker = WindowsSimpleWorker(
+                    [queue],
+                    connection=redis,
+                    serializer=JSONSerializer,
+                )
+                worker.work(burst=True, logging_level="WARNING")
 
-            status = gateway.status(handle.prediction_id)
-            result = gateway.result(handle.prediction_id)
-            replay = gateway.submit(request(idempotency_key="completed-upload"))
+                status = gateway.status(handle.prediction_id)
+                result = gateway.result(handle.prediction_id)
+                replay = gateway.submit(request(idempotency_key="completed-upload"))
 
         self.assertEqual(status.state, PredictionJobState.SUCCEEDED)
         self.assertEqual(result, expected)
@@ -277,6 +284,11 @@ class RqGatewayTests(unittest.TestCase):
         redis = fakeredis.FakeRedis()
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            processor = StoredPredictionProcessor(
+                job_root=root,
+                pipeline=FailingPipelineStub(),
+                result_ttl_seconds=60,
+            )
             gateway = RqGpuExecutionGateway(
                 redis_client=redis,
                 job_root=root,
@@ -288,34 +300,37 @@ class RqGatewayTests(unittest.TestCase):
                     status_ttl_seconds=90,
                 ),
             )
-            configure_prediction_worker(
-                lambda: PredictionJobWorker(
-                    job_root=root,
-                    pipeline=FailingPipelineStub(),
-                    result_ttl_seconds=60,
+            with patch(
+                "vision_model_serving.execution.rq_worker.GpuExecutorClient",
+                return_value=processor,
+            ):
+                create_prediction_rq_worker(
+                    redis_client=redis,
+                    queue_name="gpu-inference",
+                    executor_socket_path=root / "executor.sock",
+                    executor_timeout_seconds=60,
                 )
-            )
-            handle = gateway.submit(request())
-            queue = Queue(
-                "gpu-inference",
-                connection=redis,
-                serializer=JSONSerializer,
-            )
-            WindowsSimpleWorker(
-                [queue],
-                connection=redis,
-                serializer=JSONSerializer,
-            ).work(burst=True, logging_level="CRITICAL")
+                handle = gateway.submit(request())
+                queue = Queue(
+                    "gpu-inference",
+                    connection=redis,
+                    serializer=JSONSerializer,
+                )
+                WindowsSimpleWorker(
+                    [queue],
+                    connection=redis,
+                    serializer=JSONSerializer,
+                ).work(burst=True, logging_level="CRITICAL")
 
-            status = gateway.status(handle.prediction_id)
-            job = Job.fetch(
-                str(handle.prediction_id),
-                connection=redis,
-                serializer=JSONSerializer,
-            )
-            with self.assertRaises(PredictionFailed) as raised:
-                gateway.result(handle.prediction_id)
-            observations = gateway.observations()
+                status = gateway.status(handle.prediction_id)
+                job = Job.fetch(
+                    str(handle.prediction_id),
+                    connection=redis,
+                    serializer=JSONSerializer,
+                )
+                with self.assertRaises(PredictionFailed) as raised:
+                    gateway.result(handle.prediction_id)
+                observations = gateway.observations()
 
         self.assertEqual(status.state, PredictionJobState.FAILED)
         self.assertEqual(status.failure.code, "prediction_execution_failed")
@@ -330,6 +345,12 @@ class RqGatewayTests(unittest.TestCase):
         clock = FakeClock(time())
         with TemporaryDirectory() as directory:
             root = Path(directory)
+            processor = StoredPredictionProcessor(
+                job_root=root,
+                pipeline=PipelineStub(prediction_result()),
+                result_ttl_seconds=5,
+                clock=clock,
+            )
             gateway = RqGpuExecutionGateway(
                 redis_client=redis,
                 job_root=root,
@@ -342,31 +363,35 @@ class RqGatewayTests(unittest.TestCase):
                 ),
                 clock=clock,
             )
-            configure_prediction_worker(
-                lambda: PredictionJobWorker(
-                    job_root=root,
-                    pipeline=PipelineStub(prediction_result()),
-                    result_ttl_seconds=5,
-                    clock=clock,
+            with patch(
+                "vision_model_serving.execution.rq_worker.GpuExecutorClient",
+                return_value=processor,
+            ):
+                create_prediction_rq_worker(
+                    redis_client=redis,
+                    queue_name="gpu-inference",
+                    executor_socket_path=root / "executor.sock",
+                    executor_timeout_seconds=60,
                 )
-            )
-            first = gateway.submit(request(idempotency_key="expiring-upload"))
-            queue = Queue(
-                "gpu-inference",
-                connection=redis,
-                serializer=JSONSerializer,
-            )
-            WindowsSimpleWorker(
-                [queue],
-                connection=redis,
-                serializer=JSONSerializer,
-            ).work(burst=True, logging_level="WARNING")
-            clock.advance(6)
+                first = gateway.submit(request(idempotency_key="expiring-upload"))
+                queue = Queue(
+                    "gpu-inference",
+                    connection=redis,
+                    serializer=JSONSerializer,
+                )
+                WindowsSimpleWorker(
+                    [queue],
+                    connection=redis,
+                    serializer=JSONSerializer,
+                ).work(burst=True, logging_level="WARNING")
+                clock.advance(6)
 
-            status = gateway.status(first.prediction_id)
-            with self.assertRaises(ResultExpired) as raised:
-                gateway.result(first.prediction_id)
-            replacement = gateway.submit(request(idempotency_key="expiring-upload"))
+                status = gateway.status(first.prediction_id)
+                with self.assertRaises(ResultExpired) as raised:
+                    gateway.result(first.prediction_id)
+                replacement = gateway.submit(
+                    request(idempotency_key="expiring-upload")
+                )
 
         self.assertEqual(status.state, PredictionJobState.EXPIRED)
         self.assertEqual(
@@ -374,28 +399,21 @@ class RqGatewayTests(unittest.TestCase):
         )
         self.assertNotEqual(replacement.prediction_id, first.prediction_id)
 
-    def test_production_rq_worker_keeps_pipeline_construction_lazy(self) -> None:
+    def test_standard_rq_worker_configures_only_the_executor_socket(self) -> None:
         redis = fakeredis.FakeRedis()
-        pipelines: list[object] = []
-
-        def build_pipeline() -> PipelineStub:
-            pipeline = PipelineStub(prediction_result())
-            pipelines.append(pipeline)
-            return pipeline
 
         with TemporaryDirectory() as directory:
-            worker_factory = build_prediction_worker_factory(
-                pipeline_factory=build_pipeline,
-                job_root=Path(directory),
-                result_ttl_seconds=60,
-            )
-            worker = create_prediction_rq_worker(
-                redis_client=redis,
-                queue_name="gpu-inference",
-                worker_factory=worker_factory,
-            )
+            with patch(
+                "vision_model_serving.execution.rq_worker.GpuExecutorClient"
+            ) as executor_client:
+                worker = create_prediction_rq_worker(
+                    redis_client=redis,
+                    queue_name="gpu-inference",
+                    executor_socket_path=Path(directory) / "executor.sock",
+                    executor_timeout_seconds=60,
+                )
 
-        self.assertEqual(pipelines, [])
+        executor_client.assert_not_called()
         self.assertEqual([queue.name for queue in worker.queues], ["gpu-inference"])
         self.assertIs(worker.serializer, JSONSerializer)
 
@@ -430,7 +448,7 @@ class RqGatewayTests(unittest.TestCase):
         self.assertNotIn("redis", str(status_error.exception).lower())
         self.assertEqual(staged_directories, staged_before_failure)
 
-    def test_web_import_cannot_initialize_cuda_or_import_pipeline_factory(self) -> None:
+    def test_rq_worker_import_cannot_initialize_cuda_or_import_the_processor(self) -> None:
         environment = os.environ.copy()
         environment["PYTHONPATH"] = str(REPOSITORY_ROOT / "src")
         completed = subprocess.run(
@@ -439,9 +457,10 @@ class RqGatewayTests(unittest.TestCase):
                 "-c",
                 (
                     "import sys; "
-                    "from vision_model_serving.execution import RqGpuExecutionGateway; "
+                    "import vision_model_serving.execution.rq_worker; "
                     "assert 'torch' not in sys.modules; "
-                    "assert 'vision_model_serving.pipeline.factory' not in sys.modules"
+                    "assert 'vision_model_serving.pipeline.factory' not in sys.modules; "
+                    "assert 'vision_model_serving.execution.job_processor' not in sys.modules"
                 ),
             ],
             cwd=REPOSITORY_ROOT,

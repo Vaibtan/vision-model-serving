@@ -10,23 +10,22 @@ result = pipeline.infer(case, mode)
 The module decodes the caller-owned stream, executes the detector through the
 accelerator lifecycle runtime, and optionally executes MMBCD. That runtime can
 strictly switch residents; the deployed executor enables its accepted
-two-resident retention policy. HTTP workers, the reference CLI, and tests
-consume the same interface; none reimplement model ordering, ROI selection, or
+two-resident retention policy. The persistent executor and tests consume the
+same interface; neither reimplements model ordering, ROI selection, or
 result shaping.
 
 ## Input and mode contract
 
 `CaseInput` contains a readable binary DICOM stream and optional clinical
 history. The caller owns the stream. The pipeline neither closes nor persists
-it; the CLI uses a `with` block and the later request gateway must delete its
-temporary upload in a `finally` path.
+it; the stored-request processor removes the temporary upload in a `finally`
+path.
 
 `PredictionMode.DETECTION` runs DICOM canonicalization and FocalNet-DINO only.
 `PredictionMode.FULL` runs detector then MMBCD with the detector's exact eight
-classifier ROIs. Full mode requires non-blank clinical history by default. The
-composition root may explicitly disable that provisional requirement for the
-archived empty-history golden fixture; this does not change the label-free
-`Indication:` prompt contract.
+classifier ROIs. The packaged full-serving path always requires non-blank
+clinical history; this does not change the label-free `Indication:` prompt
+contract.
 
 ## Result contract
 
@@ -57,32 +56,6 @@ PyTorch tensors, or NumPy arrays.
 Decoder failures, artifact/runtime failures, and adapter failures preserve
 their existing stable typed errors. Pipeline-owned validation and adapter
 contract failures use `PredictionInputError` and `PredictionContractError`.
-
-## Local reference CLI
-
-The CLI verifies the external checkpoints and local source/tokenizer trees,
-constructs the real CUDA adapters, and calls `PredictionPipeline.infer`:
-
-```bash
-export PYTHONPATH="$PWD/src"
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
-export HF_HUB_OFFLINE=1
-export TRANSFORMERS_OFFLINE=1
-
-uv run python -m vision_model_serving.pipeline /path/to/case.dcm \
-  --mode full \
-  --clinical-history-file /path/to/history.txt \
-  --artifact-root /models \
-  --tokenizer-root /assets/roberta-base-tokenizer-e2da8e2f811d1448a5b465c236feacd80ffbac7b \
-  --focalnet-root /src/FocalNet-DINO \
-  --mmbcd-root /src/MMBCD \
-  --dino-root /src/dino \
-  --output prediction.json
-```
-
-Supplying history via a file avoids placing clinical text in the process list
-or shell history. The output is intentional caller-owned data; no preview or
-temporary request file is created by this command.
 
 ## Validation
 

@@ -17,20 +17,33 @@ filesystem values in metric labels. Labels are limited to repository-owned
 enums: HTTP route/method/outcome, prediction mode, model stage, lifecycle event,
 CUDA memory kind, and process role.
 
-Metrics are disabled by default. Enable them only on a trusted internal network:
+The Prometheus `/metrics` export is disabled by default. Its toggle does not
+disable the bounded telemetry that feeds `/api/v1/operations` and
+`/monitoring`; those private operational views remain available without an
+external scrape endpoint.
+
+For Compose, enable the export only on a trusted internal network:
 
 ```text
 VMS_METRICS_ENABLED=true
+```
+
+Compose already shares its private metrics directory and sets
+`PROMETHEUS_MULTIPROC_DIR` before Django, RQ, or the executor imports
+instrumentation. For a custom deployment, set both directory variables to the
+same pre-created shared directory:
+
+```text
 VMS_METRICS_ALLOWED_NETWORKS=127.0.0.0/8,::1/128
 VMS_METRICS_DIR=/run/vision-model-serving/metrics
 PROMETHEUS_MULTIPROC_DIR=/run/vision-model-serving/metrics
 ```
 
-`VMS_METRICS_DIR` and `PROMETHEUS_MULTIPROC_DIR` must name the same directory.
-Create and empty it before starting Django, RQ, or the persistent executor; all
-three processes must share it. Never clean it while those processes are alive.
-The endpoint returns `503` when disabled or when Redis/executor observations are
-unavailable, and `403` outside `VMS_METRICS_ALLOWED_NETWORKS`.
+For a custom deployment, create and empty that shared directory before starting
+Django, RQ, or the persistent executor. Never clean it while those processes
+are alive. The endpoint returns `503` when disabled or when Redis/executor
+observations are unavailable, and `403` outside
+`VMS_METRICS_ALLOWED_NETWORKS`.
 
 `GET /metrics` combines process-safe instrumentation with snapshots from the
 existing Redis/RQ and executor-status contracts. It covers:

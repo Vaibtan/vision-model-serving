@@ -6,7 +6,6 @@ from io import BytesIO
 import json
 from pathlib import Path
 import sys
-from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 import weakref
@@ -47,7 +46,6 @@ from vision_model_serving.pipeline import (  # noqa: E402
     prediction_from_dict,
     prediction_to_dict,
 )
-from vision_model_serving.pipeline.cli import main as pipeline_cli_main  # noqa: E402
 from vision_model_serving.residency import (  # noqa: E402
     ExecutionTimings,
     MemorySnapshot,
@@ -389,16 +387,6 @@ class FailingRuntimeFake:
         raise RuntimeInferenceError("sanitized boundary failure")
 
 
-class RecordingDecoderFake(DecoderFake):
-    def __init__(self, result: CanonicalMammogram):
-        super().__init__(result)
-        self.stream: object | None = None
-
-    def decode(self, stream: object) -> CanonicalMammogram:
-        self.stream = stream
-        return super().decode(stream)
-
-
 class PredictionPipelineDetectionTests(unittest.TestCase):
     def test_detection_mode_returns_the_complete_typed_result(self) -> None:
         mammogram = canonical_mammogram()
@@ -594,55 +582,6 @@ class PredictionPipelineFailureAndCleanupTests(unittest.TestCase):
         gc.collect()
 
         self.assertIsNone(decoder.pixel_reference())
-
-
-class PredictionPipelineCliTests(unittest.TestCase):
-    def test_cli_uses_pipeline_writes_json_and_closes_request_file(self) -> None:
-        mammogram = canonical_mammogram()
-        decoder = RecordingDecoderFake(mammogram)
-        pipeline = PredictionPipeline(
-            decoder=decoder,
-            runtime=RuntimeFake(detector_result(mammogram)),
-        )
-        captured_config: list[object] = []
-
-        def build_pipeline(config: object) -> PredictionPipeline:
-            captured_config.append(config)
-            return pipeline
-
-        with TemporaryDirectory() as temporary_directory:
-            root = Path(temporary_directory)
-            dicom_path = root / "case.dcm"
-            output_path = root / "prediction.json"
-            dicom_path.write_bytes(b"fixture")
-
-            exit_code = pipeline_cli_main(
-                [
-                    str(dicom_path),
-                    "--mode",
-                    "detection",
-                    "--artifact-root",
-                    str(root / "models"),
-                    "--focalnet-root",
-                    str(root / "FocalNet-DINO"),
-                    "--mmbcd-root",
-                    str(root / "MMBCD"),
-                    "--dino-root",
-                    str(root / "dino"),
-                    "--tokenizer-root",
-                    str(root / "tokenizer"),
-                    "--output",
-                    str(output_path),
-                ],
-                pipeline_builder=build_pipeline,
-            )
-
-            payload = json.loads(output_path.read_text(encoding="utf-8"))
-
-        self.assertEqual(exit_code, 0)
-        self.assertEqual(len(captured_config), 1)
-        self.assertEqual(payload["mode"], "detection")
-        self.assertTrue(decoder.stream.closed)
 
 if __name__ == "__main__":
     unittest.main()

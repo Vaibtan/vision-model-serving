@@ -104,8 +104,8 @@ operator. `/api/v1/models` exposes manifest identity and sanitized runtime
 state without paths. `/api/v1/operations` is the shared bounded snapshot behind
 readiness, model inventory, the `/monitoring` console, and the queue/executor
 portion of Prometheus export, preventing those surfaces from disagreeing about
-live state. `/metrics` is disabled by default and, when enabled, is restricted
-to configured trusted networks.
+live state. The `/metrics` export is disabled by default and, when enabled, is
+restricted to configured trusted networks.
 
 Structured logs and metrics use bounded repository-owned labels. They exclude
 request/prediction IDs from executor events, clinical history, filenames,

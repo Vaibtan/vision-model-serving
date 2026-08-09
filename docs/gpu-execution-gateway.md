@@ -38,8 +38,8 @@ separate.
 DICOM bytes and clinical history are written beneath a random per-job locator
 in the ephemeral jobs directory. Redis contains opaque identifiers, request
 fingerprints, TTLs, and lifecycle metadata, but no private request or result
-payloads. The worker writes the prediction result atomically to the same
-private directory and removes the request files.
+payloads. The persistent executor writes the prediction result atomically to
+the same private directory and removes the request files.
 
 RQ retains only job status for the configured status TTL. The task returns no
 prediction value to Redis. Expired and corrupt job directories are removed at
@@ -83,7 +83,7 @@ Use the repository's uv environment:
 ```powershell
 uv sync --extra gateway --extra web
 $env:VMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
-$env:VMS_TEST_DICOM_PATH = "C:\fixtures\cbis-ddsm-1-1.dcm"
+$env:VMS_TEST_DICOM_PATH = "$PWD\fixtures\cbis-ddsm\1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547\1-1.dcm"
 uv run --extra gateway --extra web python tests/real_infra/test_django_api.py
 ```
 
@@ -99,7 +99,7 @@ Set `PYTHONPATH` because this repository is not packaged as an installed wheel:
 ```bash
 export PYTHONPATH="$PWD/src"
 
-uv run --extra gateway python -m vision_model_serving.execution.executor_cli \
+uv run --extra gateway python -m vision_model_serving.execution.executor \
   --socket-path /run/vision-model-serving/executor.sock \
   --job-root /var/lib/vision-model-serving/jobs \
   --result-ttl-seconds 900 \

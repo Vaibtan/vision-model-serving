@@ -48,16 +48,29 @@ environments before Docker sends the build context.
 ## CPU-only acceptance
 
 Set `VMS_DICOM_PATH` to the checksum-pinned public CBIS-DDSM file, then run the
-real Redis/Django acceptance profile. It has no CUDA device or weight mount.
+real Redis/Django acceptance profile. The Compose profiles reject an unset path
+instead of guessing a fixture location. This profile has no CUDA device or
+weight mount.
 
 ```powershell
-$env:VMS_DICOM_PATH = "C:\fixtures\cbis-ddsm-1-1.dcm"
+$env:VMS_DICOM_PATH = "$PWD\fixtures\cbis-ddsm\1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547\1-1.dcm"
 docker compose --profile test up --build --abort-on-container-exit --exit-code-from test
 docker compose --profile test down
 ```
 
 The test must report Redis 7.4, the expected DICOM hash, real 200/202 API paths,
 the bounded error contract, opaque RQ arguments, and private-payload absence.
+
+## Metrics export
+
+Compose always shares the private multiprocess metrics directory so the built-in
+operations snapshot can report bounded telemetry. The externally scrapeable
+`/metrics` endpoint is off by default. Enable it only when the host network and
+`VMS_METRICS_ALLOWED_NETWORKS` are trusted:
+
+```bash
+export VMS_METRICS_ENABLED=true
+```
 
 ## L4 smoke profile
 

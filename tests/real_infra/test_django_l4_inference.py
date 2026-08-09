@@ -9,6 +9,9 @@ from io import BytesIO
 from pathlib import Path
 from time import monotonic, sleep
 
+from vision_model_serving.model_ids import DETECTOR_MODEL_ID, MODEL_IDS
+from vision_model_serving.validation.packaged_http import PACKAGED_ACCEPTANCE_HISTORY
+
 EXPECTED_DICOM_SHA256 = (
     "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"
 )
@@ -18,9 +21,6 @@ EXPECTED_DETECTOR_SHA256 = (
 EXPECTED_CLASSIFIER_SHA256 = (
     "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3"
 )
-CLINICAL_HISTORY = "real public mammogram acceptance."
-
-
 def main() -> int:
     redis_url = _required_environment("VMS_TEST_REDIS_URL")
     job_root = Path(_required_environment("VMS_TEST_JOB_ROOT")).resolve()
@@ -84,7 +84,7 @@ def main() -> int:
         {
             "dicom": _upload(dicom),
             "mode": "full",
-            "clinical_history": CLINICAL_HISTORY,
+            "clinical_history": PACKAGED_ACCEPTANCE_HISTORY,
             "detector_score_threshold": "1.0",
         },
         HTTP_PREFER="respond-async",
@@ -108,10 +108,7 @@ def main() -> int:
     after = client.get("/api/v1/models")
     _assert_status(after.status_code, 200, after.content)
     runtime = after.json()["runtime"]
-    if set(runtime["resident_models"]) != {
-        "focalnet-dino-detector",
-        "mmbcd-classifier",
-    }:
+    if set(runtime["resident_models"]) != set(MODEL_IDS):
         raise AssertionError(f"models are not dual-resident: {runtime!r}")
 
     warm_started = monotonic()
@@ -148,9 +145,8 @@ def main() -> int:
         raise AssertionError(f"operations queue state is invalid: {queue!r}")
     executor = operations["executor"]
     if (
-        executor["active_model"] != "focalnet-dino-detector"
-        or set(executor["resident_models"])
-        != {"focalnet-dino-detector", "mmbcd-classifier"}
+        executor["active_model"] != DETECTOR_MODEL_ID
+        or set(executor["resident_models"]) != set(MODEL_IDS)
         or executor["device"] != "cuda:0"
         or executor["precision"] != "float32"
     ):
@@ -188,7 +184,7 @@ def main() -> int:
     serialized_operations = json.dumps(operations, sort_keys=True)
     for private_value in (
         prediction_id,
-        CLINICAL_HISTORY,
+        PACKAGED_ACCEPTANCE_HISTORY,
         "public-mammogram.dcm",
         str(job_root),
         *dicom_identifiers,
@@ -197,7 +193,10 @@ def main() -> int:
             raise AssertionError("private request content leaked into operations")
 
     broker = b"".join(redis.dump(key) or b"" for key in redis.scan_iter("*"))
-    if dicom[128:256] in broker or CLINICAL_HISTORY.encode("utf-8") in broker:
+    if (
+        dicom[128:256] in broker
+        or PACKAGED_ACCEPTANCE_HISTORY.encode("utf-8") in broker
+    ):
         raise AssertionError("private request content leaked into Redis")
 
     metrics = client.get("/metrics", REMOTE_ADDR="127.0.0.1")
@@ -208,7 +207,7 @@ def main() -> int:
         'vms_predictions_total{mode="detection",outcome="succeeded"} 1.0',
         'vms_model_lifecycle_total{event="load",model="detector"} 1.0',
         'vms_cuda_memory_bytes{kind="allocated",model="detector"}',
-        'vms_executor_model_resident{model="focalnet-dino-detector"} 1.0',
+        f'vms_executor_model_resident{{model="{DETECTOR_MODEL_ID}"}} 1.0',
         "vms_queue_succeeded_total 2.0",
     ):
         if sample not in metrics_text:
@@ -226,7 +225,7 @@ def main() -> int:
     for private_value in (
         prediction_id,
         request_id,
-        CLINICAL_HISTORY,
+        PACKAGED_ACCEPTANCE_HISTORY,
         "public-mammogram.dcm",
         str(job_root),
         *dicom_identifiers,

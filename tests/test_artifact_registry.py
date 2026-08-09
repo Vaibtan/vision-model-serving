@@ -23,6 +23,10 @@ from vision_model_serving.artifacts import (  # noqa: E402
     CheckpointSummary,
     RegistryConfigurationError,
 )
+from vision_model_serving.model_ids import (  # noqa: E402
+    CLASSIFIER_MODEL_ID,
+    DETECTOR_MODEL_ID,
+)
 
 
 class DescriptorInspector:
@@ -265,14 +269,14 @@ class ArtifactRegistryTests(unittest.TestCase):
     def test_resolve_returns_only_manifest_owned_model_ids(self) -> None:
         registry = self.fixture.registry()
 
-        detector = registry.resolve("focalnet-dino-detector")
+        detector = registry.resolve(DETECTOR_MODEL_ID)
 
         self.assertEqual(detector.role, "detector")
         with self.assertRaises(ArtifactNotFoundError):
             registry.resolve("user-uploaded-checkpoint")
 
     def test_missing_and_corrupt_artifacts_have_redacted_typed_errors(self) -> None:
-        model_id = "focalnet-dino-detector"
+        model_id = DETECTOR_MODEL_ID
         path = self.fixture.artifact_paths[model_id]
         expected_hash = self.fixture._artifact_spec(model_id)["sha256"]
         path.unlink()
@@ -294,7 +298,7 @@ class ArtifactRegistryTests(unittest.TestCase):
         self.assertNotIn(str(expected_hash), str(corrupt.exception))
 
     def test_wrong_checkpoint_shape_fails_after_identity_verification(self) -> None:
-        model_id = "mmbcd-classifier"
+        model_id = CLASSIFIER_MODEL_ID
         descriptor = copy.deepcopy(self.fixture.descriptors[model_id])
         descriptor["tensor_shapes"] = {"model_fc2.weight": [3, 2]}
         self.fixture.rewrite_descriptor(
@@ -307,7 +311,7 @@ class ArtifactRegistryTests(unittest.TestCase):
             self.fixture.registry().resolve(model_id)
 
     def test_same_size_wrong_hash_fails_before_checkpoint_inspection(self) -> None:
-        model_id = "focalnet-dino-detector"
+        model_id = DETECTOR_MODEL_ID
         path = self.fixture.artifact_paths[model_id]
         content = bytearray(path.read_bytes())
         content[-2] = ord("0") if content[-2] != ord("0") else ord("1")
@@ -317,7 +321,7 @@ class ArtifactRegistryTests(unittest.TestCase):
             self.fixture.registry().resolve(model_id)
 
     def test_wrong_required_key_count_fails_after_identity_verification(self) -> None:
-        model_id = "focalnet-dino-detector"
+        model_id = DETECTOR_MODEL_ID
         descriptor = copy.deepcopy(self.fixture.descriptors[model_id])
         descriptor["group_counts"] = {
             **descriptor["group_counts"],
@@ -356,7 +360,7 @@ class ArtifactRegistryTests(unittest.TestCase):
         self.assertEqual(report.native_operator.code, "native_operator_unavailable")
 
     def test_cached_verification_detects_a_changed_file(self) -> None:
-        model_id = "focalnet-dino-detector"
+        model_id = DETECTOR_MODEL_ID
         registry = self.fixture.registry()
         registry.resolve(model_id)
         path = self.fixture.artifact_paths[model_id]
@@ -373,7 +377,7 @@ class ArtifactRegistryTests(unittest.TestCase):
             registry.resolve(model_id)
 
     def test_verified_stream_detects_replacement_before_model_load(self) -> None:
-        model_id = "focalnet-dino-detector"
+        model_id = DETECTOR_MODEL_ID
         artifact = self.fixture.registry().resolve(model_id)
         path = self.fixture.artifact_paths[model_id]
         content = bytearray(path.read_bytes())

@@ -18,6 +18,8 @@ from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+from vision_model_serving.model_ids import MODEL_IDS
+
 from .errors import public_error
 from .operations import (
     OperationalSnapshot,
@@ -193,6 +195,6 @@ class _SnapshotCollector:
             labels=("model",),
         )
         resident_models = set(self._executor["resident_models"])
-        for model in ("focalnet-dino-detector", "mmbcd-classifier"):
+        for model in MODEL_IDS:
             residents.add_metric((model,), float(model in resident_models))
         yield residents

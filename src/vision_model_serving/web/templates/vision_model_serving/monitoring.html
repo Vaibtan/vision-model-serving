@@ -143,8 +143,8 @@
         signal("rq", data.checks.rq_worker ? "ok" : "fail", data.checks.rq_worker ? "listening" : "absent");
         signal("executor", data.checks.executor ? "ok" : "fail", data.executor.available ? data.executor.state : "unavailable");
         const residents = new Set(data.executor.resident_models);
-        signal("detector", residents.has("focalnet-dino-detector") ? "ok" : "cold", residents.has("focalnet-dino-detector") ? "resident" : "cold");
-        signal("classifier", residents.has("mmbcd-classifier") ? "ok" : "cold", residents.has("mmbcd-classifier") ? "resident" : "cold");
+        const modelsByRole = Object.fromEntries(data.models.map((model) => [model.role, model]));
+        ["detector", "classifier"].forEach((role) => { const model = modelsByRole[role]; const resident = model && residents.has(model.id); signal(role, resident ? "ok" : "cold", resident ? "resident" : "cold"); });
         setText("#queue-active", data.queue.active); setText("#queue-queued", data.queue.queued); setText("#queue-running", data.queue.running);
         const occupancy = data.queue.capacity ? Math.min(100, data.queue.active / data.queue.capacity * 100) : 0; $("#queue-capacity-bar").style.width = `${occupancy}%`;
         setText("#queue-caption", `${data.queue.active} of ${data.queue.capacity} reserved slots · ${data.queue.admitted_total} admitted · ${data.queue.rejected_total} rejected`);

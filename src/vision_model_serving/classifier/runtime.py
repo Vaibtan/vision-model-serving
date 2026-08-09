@@ -16,6 +16,8 @@ from typing import Any, BinaryIO, ContextManager, Protocol
 import numpy as np
 from numpy.typing import NDArray
 
+from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID
+
 from vision_model_serving.artifacts import ArtifactRegistryError
 from vision_model_serving.compatibility.environment import load_environment_spec
 
@@ -377,7 +379,7 @@ def _validate_artifact(
     artifact: ClassifierArtifact,
 ) -> ClassifierArtifactIdentity:
     if (
-        getattr(artifact, "id", None) != "mmbcd-classifier"
+        getattr(artifact, "id", None) != CLASSIFIER_MODEL_ID
         or getattr(artifact, "role", None) != "classifier"
     ):
         raise ClassifierLoadError("artifact is not the manifest-owned classifier")

@@ -12,12 +12,19 @@ x-hardened: &hardened
     - no-new-privileges:true
   init: true
 
+x-public-dicom-mount: &public-dicom-mount
+  type: bind
+  source: ${VMS_DICOM_PATH:?set VMS_DICOM_PATH to the checksum-pinned public DICOM file}
+  target: /fixtures/input.dcm
+  read_only: true
+
 x-app-environment: &app-environment
   PYTHONPATH: /app/src
   VMS_EXECUTOR_SOCKET: /run/vms/executor.sock
   VMS_JOB_ROOT: /var/lib/vms/jobs
+  PROMETHEUS_MULTIPROC_DIR: /run/vms/metrics
   VMS_METRICS_DIR: /run/vms/metrics
-  VMS_METRICS_ENABLED: "true"
+  VMS_METRICS_ENABLED: "${VMS_METRICS_ENABLED:-false}"
   VMS_QUEUE_CAPACITY: "1"
   VMS_QUEUE_NAME: gpu-inference
   VMS_REDIS_URL: redis://redis:6379/0
@@ -204,10 +211,7 @@ services:
       redis:
         condition: service_healthy
     volumes:
-      - type: bind
-        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
-        target: /fixtures/input.dcm
-        read_only: true
+      - *public-dicom-mount
     tmpfs:
       - /tmp:size=256m,mode=0700,uid=10001,gid=10001
 
@@ -239,10 +243,7 @@ services:
       web:
         condition: service_healthy
     volumes:
-      - type: bind
-        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
-        target: /fixtures/input.dcm
-        read_only: true
+      - *public-dicom-mount
     tmpfs:
       - /tmp:size=256m,mode=0700,uid=10001,gid=10001
 
@@ -279,10 +280,7 @@ services:
       web:
         condition: service_healthy
     volumes:
-      - type: bind
-        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
-        target: /fixtures/input.dcm
-        read_only: true
+      - *public-dicom-mount
       - type: bind
         source: ${VMS_BENCHMARK_RESULTS:-./benchmark-results}
         target: /results
@@ -321,10 +319,7 @@ services:
         condition: service_healthy
     volumes:
       - jobs:/var/lib/vms/jobs:ro
-      - type: bind
-        source: ${VMS_DICOM_PATH:-./fixtures/cbis-ddsm-1-1.dcm}
-        target: /fixtures/input.dcm
-        read_only: true
+      - *public-dicom-mount
       - type: bind
         source: ${VMS_VALIDATION_RESULTS:-./validation-results}
         target: /results
