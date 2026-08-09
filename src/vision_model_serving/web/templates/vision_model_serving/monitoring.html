@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Inference operations</title>
+  <style>
+    :root {
+      --ink: #10283a; --muted: #607681; --paper: #f2f7f9; --panel: #fff;
+      --line: #cbd8df; --film: #071820; --film-soft: #102a35; --cyan: #48bed0;
+      --blue: #1d5fc7; --green: #18735a; --amber: #d98516; --red: #a33d35;
+      --shadow: 0 18px 48px rgba(16, 40, 58, .08);
+    }
+    * { box-sizing: border-box; }
+    html { background: var(--paper); color: var(--ink); font-family: Aptos, "Segoe UI", sans-serif; }
+    body { margin: 0; min-width: 320px; }
+    button, a { font: inherit; outline-offset: 3px; }
+    :focus-visible { outline: 3px solid rgba(29, 95, 199, .38); }
+    .masthead { align-items: center; background: var(--panel); border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; padding: 17px clamp(20px, 4vw, 64px); }
+    .brand { align-items: center; color: inherit; display: flex; gap: 13px; text-decoration: none; }
+    .brand-mark { background: var(--film); color: #e9f6fb; display: grid; font: 700 12px "Cascadia Mono", monospace; height: 38px; letter-spacing: .08em; place-items: center; width: 38px; }
+    .brand strong { display: block; font: 650 19px/1 Bahnschrift, "Arial Narrow", sans-serif; }
+    .brand small { color: var(--muted); font-size: 11px; }
+    nav { display: flex; gap: 18px; }
+    nav a { color: var(--muted); font-size: 12px; text-decoration: none; }
+    nav a:hover { color: var(--blue); }
+    main { margin: 0 auto; max-width: 1600px; padding: clamp(24px, 4vw, 58px); }
+    .intro { align-items: end; display: flex; gap: 32px; justify-content: space-between; margin-bottom: 28px; }
+    .eyebrow { color: var(--blue); font: 700 11px "Cascadia Mono", monospace; letter-spacing: .15em; text-transform: uppercase; }
+    h1 { font: 650 clamp(38px, 6vw, 72px)/.92 Bahnschrift, "Arial Narrow", sans-serif; letter-spacing: -.04em; margin: 9px 0 0; }
+    .state-block { align-items: flex-end; display: flex; flex-direction: column; gap: 9px; }
+    .status { align-items: center; border: 1px solid currentColor; color: var(--muted); display: flex; font: 700 12px "Cascadia Mono", monospace; gap: 9px; padding: 10px 13px; text-transform: uppercase; }
+    .status::before { background: currentColor; border-radius: 50%; content: ""; height: 8px; width: 8px; }
+    .status[data-state="ready"] { color: var(--green); }
+    .status[data-state="not_ready"], .status[data-state="unreachable"] { color: var(--red); }
+    .snapshot-time { color: var(--muted); font: 10px "Cascadia Mono", monospace; margin: 0; }
+    .refresh { background: transparent; border: 0; color: var(--blue); cursor: pointer; font-size: 11px; padding: 0; }
+    .signal-shell { background: var(--film); box-shadow: var(--shadow); color: #deedf2; margin-bottom: 22px; padding: 22px; }
+    .signal-heading { align-items: baseline; display: flex; justify-content: space-between; margin-bottom: 19px; }
+    .signal-heading h2 { font: 650 17px Bahnschrift, sans-serif; margin: 0; }
+    .signal-heading span { color: #80a0ad; font: 10px "Cascadia Mono", monospace; }
+    .signal-rail { display: grid; grid-template-columns: repeat(6, 1fr); }
+    .signal { min-width: 0; position: relative; text-align: center; }
+    .signal:not(:last-child)::after { background: #294551; content: ""; height: 2px; left: calc(50% + 15px); position: absolute; right: calc(-50% + 15px); top: 8px; }
+    .signal-dot { background: #718791; border: 4px solid var(--film); border-radius: 50%; box-shadow: 0 0 0 1px #718791; display: block; height: 16px; margin: 0 auto 12px; position: relative; width: 16px; z-index: 1; }
+    .signal[data-state="ok"] .signal-dot { background: var(--cyan); box-shadow: 0 0 0 1px var(--cyan), 0 0 18px rgba(72, 190, 208, .45); }
+    .signal[data-state="cold"] .signal-dot { background: var(--amber); box-shadow: 0 0 0 1px var(--amber); }
+    .signal[data-state="fail"] .signal-dot { background: var(--red); box-shadow: 0 0 0 1px var(--red); }
+    .signal b { display: block; font: 650 12px Bahnschrift, sans-serif; overflow-wrap: anywhere; }
+    .signal small { color: #7594a0; display: block; font: 9px/1.4 "Cascadia Mono", monospace; margin-top: 4px; text-transform: uppercase; }
+    .grid { display: grid; gap: 22px; grid-template-columns: repeat(12, 1fr); }
+    .panel { background: var(--panel); border: 1px solid var(--line); box-shadow: var(--shadow); min-width: 0; padding: 22px; }
+    .panel h2 { font: 650 17px Bahnschrift, sans-serif; margin: 0; }
+    .panel-head { align-items: baseline; border-bottom: 1px solid var(--line); display: flex; justify-content: space-between; margin-bottom: 19px; padding-bottom: 13px; }
+    .panel-head span { color: var(--muted); font: 9px "Cascadia Mono", monospace; text-transform: uppercase; }
+    #queue-panel, #latency-panel { grid-column: span 6; }
+    .traffic-panel, .memory-panel { grid-column: span 4; }
+    .runtime-panel { grid-column: span 4; }
+    .metric-row { display: grid; gap: 10px; grid-template-columns: repeat(3, 1fr); }
+    .metric { background: #f5f9fa; border-left: 2px solid var(--line); padding: 13px; }
+    .metric span { color: var(--muted); display: block; font: 9px "Cascadia Mono", monospace; letter-spacing: .05em; text-transform: uppercase; }
+    .metric b { display: block; font: 650 22px Bahnschrift, sans-serif; margin-top: 7px; overflow-wrap: anywhere; }
+    .capacity { background: #e4ecef; height: 7px; margin: 20px 0 8px; overflow: hidden; }
+    .capacity i { background: var(--blue); display: block; height: 100%; transition: width .2s ease; width: 0; }
+    .caption { color: var(--muted); font-size: 10px; line-height: 1.5; margin: 0; }
+    .table { display: grid; font: 11px "Cascadia Mono", monospace; grid-template-columns: minmax(120px, 1.5fr) repeat(3, 1fr); }
+    .table span { border-bottom: 1px solid #e3eaed; padding: 8px 5px; text-align: right; }
+    .table span:nth-child(4n + 1) { color: var(--muted); text-align: left; }
+    .table .th { color: var(--muted); font-size: 9px; text-transform: uppercase; }
+    .stack { display: grid; gap: 9px; }
+    .datum { align-items: baseline; border-bottom: 1px solid #e3eaed; display: flex; gap: 16px; justify-content: space-between; padding-bottom: 8px; }
+    .datum span { color: var(--muted); font-size: 11px; }
+    .datum b { font: 650 13px "Cascadia Mono", monospace; overflow-wrap: anywhere; text-align: right; }
+    .model-list { display: grid; gap: 9px; margin-top: 18px; }
+    .model { background: #f5f9fa; padding: 11px; }
+    .model b { display: block; font: 650 11px "Cascadia Mono", monospace; overflow-wrap: anywhere; }
+    .model span { color: var(--muted); font-size: 10px; }
+    .boundary { border-left: 3px solid var(--amber); color: var(--muted); font-size: 11px; line-height: 1.55; margin: 24px 0 0; padding: 3px 0 3px 13px; }
+    .sr-update { height: 1px; overflow: hidden; position: absolute; width: 1px; clip: rect(0 0 0 0); }
+    @media (max-width: 1050px) { .traffic-panel, .memory-panel, .runtime-panel { grid-column: span 6; } .runtime-panel { grid-column: span 12; } }
+    @media (max-width: 720px) { nav { display: none; } .intro { align-items: flex-start; flex-direction: column; } .state-block { align-items: flex-start; } .signal-rail { gap: 20px 0; grid-template-columns: repeat(3, 1fr); } .signal:nth-child(3)::after { display: none; } #queue-panel, #latency-panel, .traffic-panel, .memory-panel, .runtime-panel { grid-column: span 12; } .table { font-size: 10px; grid-template-columns: minmax(100px, 1.35fr) repeat(3, 1fr); } }
+    @media (max-width: 430px) { .metric-row { grid-template-columns: 1fr; } .signal-rail { grid-template-columns: repeat(2, 1fr); } .signal:nth-child(3)::after { display: block; } .signal:nth-child(even)::after { display: none; } }
+    @media (prefers-reduced-motion: reduce) { * { transition: none !important; } }
+  </style>
+</head>
+<body>
+  <header class="masthead">
+    <a class="brand" href="/"><span class="brand-mark" aria-hidden="true">VMS</span><span><strong>Inference operations</strong><small>FocalNet-DINO → MMBCD</small></span></a>
+    <nav aria-label="Application links"><a href="/">Inference workbench</a><a href="/api/docs/">OpenAPI</a></nav>
+  </header>
+  <main>
+    <section class="intro" aria-labelledby="page-title">
+      <div><span class="eyebrow">Live service state</span><h1 id="page-title">Follow the<br>inference path.</h1></div>
+      <div class="state-block"><div class="status" id="operations-status" data-state="loading">Loading snapshot</div><p class="snapshot-time" id="snapshot-time">Waiting for the service</p><button class="refresh" id="refresh" type="button">Refresh now</button></div>
+    </section>
+
+    <section class="signal-shell" aria-labelledby="signal-title">
+      <div class="signal-heading"><h2 id="signal-title">Live signal rail</h2><span>web → broker → serialized GPU owner</span></div>
+      <div class="signal-rail" id="signal-rail">
+        <div class="signal" data-signal="web"><i class="signal-dot"></i><b>Django</b><small>online</small></div>
+        <div class="signal" data-signal="redis"><i class="signal-dot"></i><b>Redis</b><small>checking</small></div>
+        <div class="signal" data-signal="rq"><i class="signal-dot"></i><b>RQ worker</b><small>checking</small></div>
+        <div class="signal" data-signal="executor"><i class="signal-dot"></i><b>GPU executor</b><small>checking</small></div>
+        <div class="signal" data-signal="detector"><i class="signal-dot"></i><b>Detector</b><small>checking</small></div>
+        <div class="signal" data-signal="classifier"><i class="signal-dot"></i><b>Classifier</b><small>checking</small></div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="panel" id="queue-panel"><div class="panel-head"><h2>Queue pressure</h2><span>real Redis / RQ state</span></div><div class="metric-row"><div class="metric"><span>Active</span><b id="queue-active">—</b></div><div class="metric"><span>Queued</span><b id="queue-queued">—</b></div><div class="metric"><span>Running</span><b id="queue-running">—</b></div></div><div class="capacity"><i id="queue-capacity-bar"></i></div><p class="caption" id="queue-caption">Reading serialized GPU capacity.</p></section>
+      <section class="panel" id="latency-panel"><div class="panel-head"><h2>Latency</h2><span>cumulative histogram estimates</span></div><div class="table" id="latency-table"></div><p class="caption">p50 and p95 are interpolated from Prometheus buckets since process start; they are not a durable time series.</p></section>
+      <section class="panel traffic-panel"><div class="panel-head"><h2>Outcomes</h2><span>process lifetime</span></div><div class="stack" id="traffic-values"></div></section>
+      <section class="panel memory-panel"><div class="panel-head"><h2>Memory</h2><span>latest observed bytes</span></div><div class="stack" id="memory-values"></div></section>
+      <section class="panel runtime-panel"><div class="panel-head"><h2>Runtime & artifacts</h2><span>bounded identity only</span></div><div class="stack" id="runtime-values"></div><div class="model-list" id="model-list"></div></section>
+    </div>
+    <p class="boundary"><strong>Operational telemetry only.</strong> This page excludes images, clinical history, prediction values, request identifiers, filenames, and filesystem paths. It is not a clinical audit log or evidence of model accuracy, calibration, or medical fitness.</p>
+    <p class="sr-update" id="live-update" aria-live="polite"></p>
+  </main>
+  <script>
+    (() => {
+      "use strict";
+      const $ = (selector) => document.querySelector(selector);
+      const setText = (selector, value) => { $(selector).textContent = String(value); };
+      const formatDuration = (value) => value == null ? "—" : value < 1 ? `${(value * 1000).toFixed(0)} ms` : `${value.toFixed(2)} s`;
+      const formatBytes = (value) => value ? `${(value / 1024 / 1024).toFixed(0)} MiB` : "—";
+      const signal = (name, state, detail) => { const node = document.querySelector(`[data-signal="${name}"]`); node.dataset.state = state; node.querySelector("small").textContent = detail; };
+      const rows = (container, values) => {
+        const nodes = values.map(([label, value]) => { const row = document.createElement("div"); row.className = "datum"; const caption = document.createElement("span"); caption.textContent = label; const strong = document.createElement("b"); strong.textContent = value; row.append(caption, strong); return row; });
+        container.replaceChildren(...nodes);
+      };
+      const renderLatency = (latency) => {
+        const values = [["Stage", "Count", "p50", "p95"], ["Pipeline", latency.pipeline_total], ["Queue wait", latency.queue_wait], ["DICOM decode", latency.dicom_decode], ["Detector", latency.detector_inference], ["Classifier", latency.classifier_inference]];
+        const cells = [];
+        values.forEach(([label, metric], index) => { const row = index ? [label, metric.count, formatDuration(metric.p50), formatDuration(metric.p95)] : values[0]; row.forEach((value) => { const cell = document.createElement("span"); if (!index) cell.className = "th"; cell.textContent = value; cells.push(cell); }); });
+        $("#latency-table").replaceChildren(...cells);
+      };
+      const render = (data) => {
+        const status = $("#operations-status"); status.dataset.state = data.status; status.textContent = data.status === "ready" ? "Ready for inference" : "Attention required";
+        setText("#snapshot-time", `Captured ${new Date(data.captured_at).toLocaleTimeString()} · refreshes every 5 s`);
+        signal("web", "ok", "online");
+        signal("redis", data.checks.redis ? "ok" : "fail", data.checks.redis ? "connected" : "unavailable");
+        signal("rq", data.checks.rq_worker ? "ok" : "fail", data.checks.rq_worker ? "listening" : "absent");
+        signal("executor", data.checks.executor ? "ok" : "fail", data.executor.available ? data.executor.state : "unavailable");
+        const residents = new Set(data.executor.resident_models);
+        signal("detector", residents.has("focalnet-dino-detector") ? "ok" : "cold", residents.has("focalnet-dino-detector") ? "resident" : "cold");
+        signal("classifier", residents.has("mmbcd-classifier") ? "ok" : "cold", residents.has("mmbcd-classifier") ? "resident" : "cold");
+        setText("#queue-active", data.queue.active); setText("#queue-queued", data.queue.queued); setText("#queue-running", data.queue.running);
+        const occupancy = data.queue.capacity ? Math.min(100, data.queue.active / data.queue.capacity * 100) : 0; $("#queue-capacity-bar").style.width = `${occupancy}%`;
+        setText("#queue-caption", `${data.queue.active} of ${data.queue.capacity} reserved slots · ${data.queue.admitted_total} admitted · ${data.queue.rejected_total} rejected`);
+        renderLatency(data.telemetry.latency_seconds);
+        const traffic = data.telemetry.traffic; rows($("#traffic-values"), [["HTTP success / client / server", `${traffic.http.success} / ${traffic.http.client_error} / ${traffic.http.server_error}`], ["Detection succeeded / failed", `${traffic.predictions.detection.succeeded} / ${traffic.predictions.detection.failed}`], ["Full pipeline succeeded / failed", `${traffic.predictions.full.succeeded} / ${traffic.predictions.full.failed}`], ["CUDA OOM / ROI fallback", `${data.telemetry.events.cuda_oom_total} / ${data.telemetry.events.roi_fallbacks_total}`]]);
+        const memory = data.telemetry.memory_bytes; rows($("#memory-values"), [["Detector allocated / reserved", `${formatBytes(memory.cuda.detector.allocated)} / ${formatBytes(memory.cuda.detector.reserved)}`], ["Classifier allocated / reserved", `${formatBytes(memory.cuda.classifier.allocated)} / ${formatBytes(memory.cuda.classifier.reserved)}`], ["Web / worker RSS", `${formatBytes(memory.process_rss.web)} / ${formatBytes(memory.process_rss.worker)}`], ["Executor RSS", formatBytes(memory.process_rss.executor)]]);
+        rows($("#runtime-values"), [["Executor state", data.executor.state], ["Device", data.executor.device || "unavailable"], ["Active model", data.executor.active_model || "idle"], ["Precision", data.executor.precision], ["Artifact verification", data.executor.artifacts_verified ? "verified" : "not verified"], ["Runtime failure", data.executor.failure_present ? "present" : "none"]]);
+        const models = data.models.map((model) => { const node = document.createElement("div"); node.className = "model"; const name = document.createElement("b"); name.textContent = model.id; const detail = document.createElement("span"); detail.textContent = `${model.role} · sha256 ${model.sha256.slice(0, 12)}… · ${model.strict_load_verified ? "strict load verified" : "unverified"}`; node.append(name, detail); return node; }); $("#model-list").replaceChildren(...models);
+        $("#live-update").textContent = `Operations snapshot updated. Service is ${data.status.replace("_", " ")}.`;
+      };
+      const refresh = async () => {
+        const controller = new AbortController(); const timeout = setTimeout(() => controller.abort(), 3500);
+        try { const response = await fetch("/api/v1/operations", { cache: "no-store", credentials: "same-origin", signal: controller.signal }); if (!response.ok) throw new Error(`HTTP ${response.status}`); render(await response.json()); }
+        catch (_) { const status = $("#operations-status"); status.dataset.state = "unreachable"; status.textContent = "Snapshot unreachable"; setText("#snapshot-time", "The last rendered values may be stale"); signal("web", "fail", "snapshot failed"); $("#live-update").textContent = "Operations snapshot is unreachable."; }
+        finally { clearTimeout(timeout); }
+      };
+      $("#refresh").addEventListener("click", refresh); refresh(); setInterval(() => { if (!document.hidden) refresh(); }, 5000);
+    })();
+  </script>
+</body>
+</html>

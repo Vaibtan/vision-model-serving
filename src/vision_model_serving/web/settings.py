@@ -90,6 +90,9 @@ VMS_EXECUTOR_SOCKET = Path(
 VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS = float(
     os.environ.get("VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS", "0.5")
 )
+VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS = float(
+    os.environ.get("VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS", "0.5")
+)
 VMS_METRICS_ENABLED = _environment_bool("VMS_METRICS_ENABLED")
 _metrics_dir = os.environ.get("VMS_METRICS_DIR", "").strip()
 VMS_METRICS_DIR = Path(_metrics_dir).resolve() if _metrics_dir else None

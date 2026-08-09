@@ -12,15 +12,18 @@ from .api import (
     PredictionStatusView,
 )
 from .inspection import InspectionWorkbenchView
+from .monitoring import MonitoringConsoleView
 from .operational import (
     LivenessView,
     MetricsIntegrationView,
     ModelInventoryView,
+    OperationsSnapshotView,
     ReadinessView,
 )
 
 urlpatterns = [
     path("", InspectionWorkbenchView.as_view(), name="inspection-workbench"),
+    path("monitoring", MonitoringConsoleView.as_view(), name="monitoring-console"),
     path(
         "api/v1/dicom-preview",
         DicomPreviewView.as_view(),
@@ -42,6 +45,11 @@ urlpatterns = [
         name="prediction-result",
     ),
     path("api/v1/models", ModelInventoryView.as_view(), name="model-inventory"),
+    path(
+        "api/v1/operations",
+        OperationsSnapshotView.as_view(),
+        name="operations-snapshot",
+    ),
     path("livez", LivenessView.as_view(), name="liveness"),
     path("readyz", ReadinessView.as_view(), name="readiness"),
     path("metrics", MetricsIntegrationView.as_view(), name="metrics"),

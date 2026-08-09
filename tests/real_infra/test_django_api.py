@@ -113,6 +113,55 @@ def main() -> int:
             if any(value.encode() in preview.content for value in dicom_identifiers):
                 raise AssertionError("DICOM preview retained a source identifier")
 
+            monitoring = client.get("/monitoring")
+            _assert_status(monitoring.status_code, 200, monitoring.content)
+            if monitoring.get("Cache-Control") != "no-store":
+                raise AssertionError("monitoring console was not marked no-store")
+            for required_surface in (
+                b'id="signal-rail"',
+                b'id="operations-status"',
+                b'id="queue-panel"',
+                b'id="latency-panel"',
+                b'aria-live="polite"',
+                b"Operational telemetry only",
+            ):
+                if required_surface not in monitoring.content:
+                    raise AssertionError(
+                        f"monitoring console omitted {required_surface!r}"
+                    )
+
+            operations = client.get("/api/v1/operations")
+            _assert_status(operations.status_code, 200, operations.content)
+            if operations.get("Cache-Control") != "no-store":
+                raise AssertionError("operations snapshot was not marked no-store")
+            operations_body = operations.json()
+            if operations_body.get("schema_version") != 1:
+                raise AssertionError("operations snapshot schema is not versioned")
+            if operations_body.get("status") != "not_ready":
+                raise AssertionError(
+                    f"unexpected degraded operations state: {operations_body!r}"
+                )
+            if operations_body.get("checks", {}).get("redis") is not True:
+                raise AssertionError("operations snapshot did not verify real Redis")
+            if operations_body.get("checks", {}).get("rq_worker") is not False:
+                raise AssertionError("operations snapshot claimed an absent RQ worker")
+            queue = operations_body.get("queue", {})
+            if queue.get("available") is not True or queue.get("capacity") != 2:
+                raise AssertionError(f"operations queue state is invalid: {queue!r}")
+            if any(queue.get(name) != 0 for name in ("active", "queued", "running")):
+                raise AssertionError(f"fresh operations queue is not empty: {queue!r}")
+            model_ids = [model["id"] for model in operations_body.get("models", [])]
+            if model_ids != ["focalnet-dino-detector", "mmbcd-classifier"]:
+                raise AssertionError("operations snapshot omitted pinned model identity")
+            serialized_operations = json.dumps(operations_body, sort_keys=True)
+            for private_value in (
+                "public-mammogram.dcm",
+                str(job_root),
+                *dicom_identifiers,
+            ):
+                if private_value in serialized_operations:
+                    raise AssertionError("private data leaked into operations snapshot")
+
             liveness = client.get("/livez")
             _assert_status(liveness.status_code, 200, liveness.content)
             if liveness.json() != {"status": "alive"}:
@@ -149,6 +198,8 @@ def main() -> int:
                 raise AssertionError("OpenAPI schema omitted the prediction interface")
             if b"/api/v1/dicom-preview" not in schema.content:
                 raise AssertionError("OpenAPI schema omitted the preview interface")
+            if b"/api/v1/operations" not in schema.content:
+                raise AssertionError("OpenAPI schema omitted the operations interface")
             schema_json_response = client.get("/api/schema/?format=json")
             _assert_status(
                 schema_json_response.status_code,

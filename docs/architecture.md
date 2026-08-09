@@ -30,7 +30,7 @@ Unix socket are reachable only on the internal Compose network/shared tmpfs.
 | `pipeline` | Detector-then-optional-classifier ordering and typed serializable result | Queueing, HTTP, or device ownership |
 | `residency` | Serialized accelerator lifecycle, reuse/retention, memory/timing observations | Redis job state or API schemas |
 | `execution` | Private job storage, capacity/idempotency, RQ state, socket protocol, persistent executor | HTTP parsing or medical interpretation |
-| `web` | Multipart validation, inspection UI/preview, submission/poll/result endpoints, readiness/inventory/OpenAPI | CUDA import, model objects, or checkpoint paths |
+| `web` | Multipart validation, inspection/operations UIs, submission/poll/result endpoints, one bounded operational snapshot, readiness/inventory/OpenAPI | CUDA import, model objects, or checkpoint paths |
 | `observability` | Bounded Prometheus labels and structured safe events | Clinical audit logs or request payload logging |
 
 These are deep interfaces: callers exchange immutable host-side contracts,
@@ -101,8 +101,11 @@ The complete mapping from failures to HTTP behavior is in
 `/livez` proves only the web process. `/readyz` requires Redis, an RQ worker,
 the executor, verified artifacts, an L4 device, and the functional native
 operator. `/api/v1/models` exposes manifest identity and sanitized runtime
-state without paths. `/metrics` is disabled by default and, when enabled, is
-restricted to configured trusted networks.
+state without paths. `/api/v1/operations` is the shared bounded snapshot behind
+readiness, model inventory, the `/monitoring` console, and the queue/executor
+portion of Prometheus export, preventing those surfaces from disagreeing about
+live state. `/metrics` is disabled by default and, when enabled, is restricted
+to configured trusted networks.
 
 Structured logs and metrics use bounded repository-owned labels. They exclude
 request/prediction IDs from executor events, clinical history, filenames,

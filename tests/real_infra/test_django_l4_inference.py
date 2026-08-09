@@ -128,6 +128,74 @@ def main() -> int:
     if detection_result["detector"]["prediction_sha256"] != EXPECTED_DETECTOR_SHA256:
         raise AssertionError("warm HTTP detector result differs from the L4 golden")
 
+    monitoring = client.get("/monitoring")
+    _assert_status(monitoring.status_code, 200, monitoring.content)
+    operations_response = client.get("/api/v1/operations")
+    _assert_status(
+        operations_response.status_code,
+        200,
+        operations_response.content,
+    )
+    operations = operations_response.json()
+    if operations.get("schema_version") != 1 or operations.get("status") != "ready":
+        raise AssertionError(f"operations snapshot is not ready: {operations!r}")
+    if not all(operations.get("checks", {}).values()):
+        raise AssertionError(f"operations checks are incomplete: {operations!r}")
+    queue = operations["queue"]
+    if queue["succeeded_total"] != 2 or any(
+        queue[name] != 0 for name in ("active", "queued", "running")
+    ):
+        raise AssertionError(f"operations queue state is invalid: {queue!r}")
+    executor = operations["executor"]
+    if (
+        executor["active_model"] != "focalnet-dino-detector"
+        or set(executor["resident_models"])
+        != {"focalnet-dino-detector", "mmbcd-classifier"}
+        or executor["device"] != "cuda:0"
+        or executor["precision"] != "float32"
+    ):
+        raise AssertionError(f"operations executor state is invalid: {executor!r}")
+    telemetry = operations["telemetry"]
+    predictions = telemetry["traffic"]["predictions"]
+    if (
+        predictions["full"]["succeeded"] < 1
+        or predictions["detection"]["succeeded"] < 1
+    ):
+        raise AssertionError("operations snapshot omitted completed predictions")
+    pipeline_latency = telemetry["latency_seconds"]["pipeline_total"]
+    if (
+        pipeline_latency["count"] < 2
+        or not pipeline_latency["p50"]
+        or not pipeline_latency["p95"]
+    ):
+        raise AssertionError(
+            f"operations latency is incomplete: {pipeline_latency!r}"
+        )
+    cuda = telemetry["memory_bytes"]["cuda"]
+    if any(
+        cuda[model][kind] <= 0
+        for model in ("detector", "classifier")
+        for kind in ("allocated", "reserved")
+    ):
+        raise AssertionError(f"operations CUDA state is incomplete: {cuda!r}")
+    lifecycle = telemetry["events"]["lifecycle"]
+    if (
+        lifecycle["detector"]["load"] < 1
+        or lifecycle["detector"]["reuse"] < 1
+        or lifecycle["classifier"]["load"] < 1
+    ):
+        raise AssertionError(f"operations lifecycle is incomplete: {lifecycle!r}")
+    serialized_operations = json.dumps(operations, sort_keys=True)
+    for private_value in (
+        prediction_id,
+        CLINICAL_HISTORY,
+        "public-mammogram.dcm",
+        str(job_root),
+        *dicom_identifiers,
+    ):
+        if private_value in serialized_operations:
+            raise AssertionError("private request content leaked into operations")
+
     broker = b"".join(redis.dump(key) or b"" for key in redis.scan_iter("*"))
     if dicom[128:256] in broker or CLINICAL_HISTORY.encode("utf-8") in broker:
         raise AssertionError("private request content leaked into Redis")
@@ -223,6 +291,7 @@ def main() -> int:
                 "dual_resident_models": sorted(runtime["resident_models"]),
                 "readiness": readiness.status_code,
                 "redis": redis.info("server")["redis_version"],
+                "operations": operations["status"],
                 "structured_prediction_events": len(prediction_events),
                 "structured_queue_events": len(queue_events),
                 "warm_sync_http_seconds": warm_elapsed,
