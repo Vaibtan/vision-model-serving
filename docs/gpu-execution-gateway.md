@@ -7,22 +7,31 @@ not know about.
 
 The queue choice is recorded in
 [ADR 0001](adr/0001-use-rq-for-gpu-job-execution.md).
+The persistent CUDA-owner topology is recorded in
+[ADR 0002](adr/0002-use-a-persistent-gpu-executor.md).
 
 ## Execution contract
 
 - One standard RQ worker consumes `gpu-inference` one job at a time.
-- The worker parent configures a lazy pipeline factory but never initializes
-  CUDA. RQ forks an isolated work-horse that constructs the pipeline and runs
-  one prediction.
+- The worker parent and its isolated work-horses never construct the pipeline
+  or initialize CUDA. A work-horse sends the two opaque job tokens over an
+  owner-only Unix socket and waits for a generic success or failure response.
+- One long-lived executor owns CUDA and the pipeline. Artifact verification
+  plus pinned runtime, device, and native-operator verification complete before
+  the socket becomes ready; detector and classifier remain resident after
+  their first successful loads.
+- The same socket exposes a bounded, sanitized status operation used by Django
+  readiness and model inventory. It reports no paths, artifact filenames,
+  prediction identifiers, or failure details.
 - Automatic retry is disabled. An unexpected work-horse exit is terminal for
   that job; the next job receives a clean child process.
 - The queue and worker use RQ's JSON serializer.
 - The only job arguments are the opaque prediction ID and storage locator.
 
-The default forked worker deliberately trades process-startup overhead for
-clean CUDA failure isolation. That overhead must be measured on the L4 before
-claiming API latency; the ADR explains why `SimpleWorker` is not the production
-default.
+RQ retains clean work-horse failure isolation without forcing CUDA or model
+construction into every job process. The executor is deliberately not an RQ
+`SimpleWorker`: its narrow interface keeps queue lifecycle and GPU ownership
+separate.
 
 ## Privacy and storage
 
@@ -54,25 +63,71 @@ replaced by a new submission.
 | --- | --- |
 | Queue full | Reject before creating another RQ job. |
 | Redis or enqueue unavailable | Delete the staged payload and return `prediction_gateway_unavailable`. |
-| Pipeline failure | RQ records one terminal failed job with a sanitized public error and no retry. |
-| Work-horse termination | RQ records failure; the gateway maps an abandoned execution to `prediction_worker_lost`. |
-| Synchronous timeout | Return a healthy pollable handle without cancelling the job. |
+| Pipeline failure | RQ records one terminal failed job; result retrieval returns sanitized HTTP 500 and no retry. |
+| Work-horse termination | RQ records failure and result retrieval returns sanitized HTTP 503. |
+| Executor unavailable or failed runtime | The current RQ job fails once and result retrieval returns sanitized HTTP 503. |
+| RQ execution timeout | RQ records terminal failure and result retrieval returns sanitized HTTP 504. |
+| Bounded synchronous wait elapsed | Return a healthy pollable handle without cancelling the job. |
 | Result TTL elapsed | Return `prediction_result_expired` while short-lived RQ status remains available. |
 
 `observations()` reports active, queued, and running counts plus admission,
 rejection, success, failure, worker-loss, and accumulated queue-wait metrics.
 It exposes no prediction identifiers or private payload data.
+Prometheus multiprocess setup, bounded labels, and the JSON event contract are
+documented in [`observability.md`](observability.md).
 
-## Local validation
+## Real-infrastructure validation
 
 Use the repository's uv environment:
 
 ```powershell
-uv sync --extra gateway
-uv run --extra gateway python -m unittest tests.test_rq_execution_gateway -v
-uv run --extra gateway python -m unittest discover -s tests -v
+uv sync --extra gateway --extra web
+$env:VMS_TEST_REDIS_URL = "redis://127.0.0.1:6379/15"
+$env:VMS_TEST_DICOM_PATH = "C:\fixtures\cbis-ddsm-1-1.dcm"
+uv run --extra gateway --extra web python tests/real_infra/test_django_api.py
 ```
 
-These tests require no GPU. The production RQ worker's process-startup and
-end-to-end inference latency still require the separate NVIDIA L4 validation
-gate.
+This gate requires real Redis but no GPU. The separate
+`tests/real_infra/test_django_l4_inference.py` gate requires the real executor,
+RQ worker, model artifacts, and NVIDIA L4.
+
+## Production processes
+
+The processes share the same private socket directory and ephemeral job root.
+Set `PYTHONPATH` because this repository is not packaged as an installed wheel:
+
+```bash
+export PYTHONPATH="$PWD/src"
+
+uv run --extra gateway python -m vision_model_serving.execution.executor_cli \
+  --socket-path /run/vision-model-serving/executor.sock \
+  --job-root /var/lib/vision-model-serving/jobs \
+  --result-ttl-seconds 900 \
+  --artifact-root /models \
+  --tokenizer-root /assets/roberta-tokenizer \
+  --focalnet-root /sources/FocalNet-DINO \
+  --mmbcd-root /sources/MMBCD \
+  --dino-root /sources/dino
+
+uv run --extra gateway python -m vision_model_serving.execution.rq_cli \
+  --redis-url redis://127.0.0.1:6379/0 \
+  --queue-name gpu-inference \
+  --executor-socket /run/vision-model-serving/executor.sock \
+  --executor-timeout-seconds 180
+```
+
+Start the RQ worker only after the executor socket exists. Django readiness
+uses the socket's status operation rather than file existence. The executor
+timeout must not exceed the RQ job timeout, and the result TTL must match the
+gateway configuration.
+
+## L4 acceptance evidence
+
+A real Redis 7.4 container, standard forked RQ 2.10 worker, Unix-socket
+executor, real FP32 artifacts, and the public DICOM fixture completed two
+sequential full predictions. The first request took 25.871 seconds; the warm
+request took 1.211 seconds with both models reused and no reload. Both exact
+golden hashes and classifier logits matched, and dual residency used 2,334 MiB
+of the L4. See
+[`persistent-rq-executor-l4-20260808.json`](validation/persistent-rq-executor-l4-20260808.json)
+for the evidence and its stated boundary.

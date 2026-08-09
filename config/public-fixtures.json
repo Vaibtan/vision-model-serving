@@ -1,0 +1,40 @@
+{
+  "schema_version": 1,
+  "fixtures": [
+    {
+      "id": "cbis-ddsm-l4-reference",
+      "collection": "CBIS-DDSM",
+      "series_instance_uid": "1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547",
+      "relative_directory": "cbis-ddsm/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547",
+      "download": {
+        "url": "https://nbia.cancerimagingarchive.net/nbia-api/services/v4/getImage?NewFileNames=Yes&SeriesInstanceUID=1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547",
+        "archive_format": "zip",
+        "max_download_bytes": 67108864,
+        "max_members": 4,
+        "max_uncompressed_bytes": 54525952
+      },
+      "dicom": {
+        "member_basename": "1-1.dcm",
+        "size_bytes": 50511948,
+        "sha256": "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c",
+        "sop_class_uid": "1.2.840.10008.5.1.4.1.1.7",
+        "secondary_capture": true,
+        "canonical_preprocessed_array_sha256": "97fa0f80a696ce7f822c1681a8c3f7c072da9262b2bd91239c9f1637eaf68552"
+      },
+      "license": {
+        "member_basename": "LICENSE",
+        "size_bytes": 2788,
+        "sha256": "77585fc0bd3e537c198f8f761607302ad3ac90261b2bb199aa13ba2073460d67",
+        "spdx_expression": "CC-BY-3.0",
+        "url": "https://creativecommons.org/licenses/by/3.0/"
+      },
+      "attribution": {
+        "collection_url": "https://www.cancerimagingarchive.net/collection/cbis-ddsm/",
+        "data_citation": "Sawyer-Lee, R., Gimenez, F., Hoogi, A., & Rubin, D. (2016). Curated Breast Imaging Subset of Digital Database for Screening Mammography (CBIS-DDSM) [Data set]. The Cancer Imaging Archive.",
+        "doi": "https://doi.org/10.7937/K9/TCIA.2016.7O02S9CY",
+        "usage_policy_url": "https://www.cancerimagingarchive.net/data-usage-policies-and-restrictions/"
+      },
+      "validation_boundary": "One Secondary Capture object proves compatibility with this serving path only; it does not establish accuracy, calibration, robustness, or clinical utility."
+    }
+  ]
+}

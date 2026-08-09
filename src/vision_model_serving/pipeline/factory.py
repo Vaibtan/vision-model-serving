@@ -8,11 +8,15 @@ from threading import RLock
 
 from vision_model_serving.artifacts import ArtifactRegistry
 from vision_model_serving.classifier import MmbcdClassifierAdapter
-from vision_model_serving.detector import FocalNetDinoAdapter
+from vision_model_serving.detector import (
+    FocalNetDinoAdapter,
+    probe_focalnet_native_operator,
+)
 from vision_model_serving.dicom import DicomCanonicalizer
 from vision_model_serving.residency import (
     ModelBinding,
     ModelOutputs,
+    PersistentResidencyRuntime,
     SingleResidencyRuntime,
     TorchCudaLifecycle,
 )
@@ -30,6 +34,7 @@ class LocalCudaPipelineConfig:
     dino_root: Path
     device: str = "cuda:0"
     require_history_for_full: bool = True
+    retain_models: bool = False
 
     def __post_init__(self) -> None:
         for name in (
@@ -48,6 +53,8 @@ class LocalCudaPipelineConfig:
             raise ValueError("device must be a non-empty string")
         if not isinstance(self.require_history_for_full, bool):
             raise TypeError("require_history_for_full must be boolean")
+        if not isinstance(self.retain_models, bool):
+            raise TypeError("retain_models must be boolean")
 
 
 class _WarmupInputs:
@@ -90,6 +97,11 @@ class _InputAwareRuntime:
     def status(self) -> object:
         return self._runtime.status()
 
+    def close(self) -> None:
+        close = getattr(self._runtime, "close", None)
+        if callable(close):
+            close()
+
 
 def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipeline:
     """Verify local assets and compose the real adapters without network access."""
@@ -101,9 +113,17 @@ def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipe
         artifact_root=config.artifact_root,
         tokenizer_root=config.tokenizer_root,
         repository_root=config.project_root,
+        native_operator_probe=lambda: probe_focalnet_native_operator(
+            config.focalnet_root,
+            device=config.device,
+        ),
     )
-    detector_artifact = registry.resolve(DETECTOR_MODEL_ID)
-    classifier_artifact = registry.resolve(CLASSIFIER_MODEL_ID)
+    report = registry.verify_all()
+    if not report.ready:
+        raise report.errors[0]
+    verified = {artifact.id: artifact for artifact in report.verified_artifacts}
+    detector_artifact = verified[DETECTOR_MODEL_ID]
+    classifier_artifact = verified[CLASSIFIER_MODEL_ID]
     warmup_inputs = _WarmupInputs()
 
     class DetectorResident:
@@ -141,7 +161,10 @@ def build_local_cuda_pipeline(config: LocalCudaPipelineConfig) -> PredictionPipe
             mammogram, rois, history = inputs
             return self._adapter.predict(mammogram, rois, history)
 
-    runtime = SingleResidencyRuntime(
+    runtime_type = (
+        PersistentResidencyRuntime if config.retain_models else SingleResidencyRuntime
+    )
+    runtime = runtime_type(
         bindings=(
             ModelBinding(
                 model_id=DETECTOR_MODEL_ID,

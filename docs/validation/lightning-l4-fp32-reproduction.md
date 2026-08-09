@@ -100,7 +100,7 @@ This step uses only the Python standard library and can be run on Windows before
 starting a GPU:
 
 ```powershell
-python scripts/l4_validation/14_verify_evidence_archive.py `
+uv run python scripts/l4_validation/14_verify_evidence_archive.py `
   vision-model-serving-l4-fp32-20260807.tar.gz `
   vision-model-serving-l4-fp32-20260807.tar.gz.sha256
 ```
@@ -138,8 +138,8 @@ First try a fresh login shell:
 ```bash
 exec zsh -l
 command -v conda
-command -v python
-python --version
+command -v uv
+uv --version
 ```
 
 If a hardware switch left the shell uninitialized, activate the preserved
@@ -223,6 +223,9 @@ if [[ ! -d "${VMS_REPO}/.git" ]]; then
   git clone https://github.com/Vaibtan/vision-model-serving.git "${VMS_REPO}"
 fi
 
+git -C "${VMS_REPO}" fetch origin agent/django-api
+git -C "${VMS_REPO}" switch agent/django-api
+
 if [[ ! -d "${FOCAL_REPO}/.git" ]]; then
   git clone https://github.com/FocalNet/FocalNet-DINO.git "${FOCAL_REPO}"
 fi
@@ -248,21 +251,24 @@ git -C "${DINO_REPO}" checkout --detach \
   7c446df5b9f45747937fb0d72314eb9f7b66930a
 ```
 
-Install the exact Python packages from one pinned file. The file includes the
-PyTorch CUDA 12.8 wheel index and exact PyTorch and torchvision builds. This
-avoids the failure encountered when unpinned `opencv-python` installed NumPy
-2.5.1 and broke SciPy, pandas, matplotlib, and scikit-learn compatibility.
+Synchronize the exact project environment through uv. `uv.lock` and
+`pyproject.toml` pin the CUDA 12.8 PyTorch index plus every serving package.
+The recorded requirements file remains an evidence mirror; it is not used as
+a second package-management path.
 
 ```bash
-python -m pip install -r "${VMS_REPO}/requirements/l4-validation.txt"
-python -m pip check
+cd "${VMS_REPO}"
+export UV_PYTHON=3.12.11
+uv python install 3.12.11
+uv sync --frozen --extra gpu
+uv pip check
 ```
 
 Verify the complete runtime and write a non-sensitive, deterministic report:
 
 ```bash
 mkdir -p "${STUDIO_ROOT}/environment-snapshots"
-python "${VMS_REPO}/scripts/l4_validation/00_probe_environment.py" \
+uv run python scripts/l4_validation/00_probe_environment.py \
   --output "${STUDIO_ROOT}/environment-snapshots/l4-fp32-report.json"
 ```
 
@@ -324,13 +330,15 @@ backbone, as proven by the strict-load gate below.
 
 ## 6. Patch and build MultiScaleDeformableAttention
 
-Check both reviewed patches against the pinned upstream commit before changing
-the checkout. The first replaces the deprecated dispatch argument used by the
-PyTorch 2.8 extension build. The second removes the training-only FocalNet
-backbone preload; the complete task checkpoint is strict-loaded afterward.
+Check all three reviewed patches against the pinned upstream commit before
+changing the checkout. The first replaces the deprecated dispatch argument
+used by the PyTorch 2.8 extension build. The second removes the training-only
+FocalNet backbone preload; the complete task checkpoint is strict-loaded
+afterward. The third permits a toolkit-only Docker build when `FORCE_CUDA=1`;
+runtime device and functional parity gates remain mandatory.
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/prepare_focalnet.py" check \
+uv run python scripts/l4_validation/prepare_focalnet.py check \
   --repo "${FOCAL_REPO}" \
   --project-root "${VMS_REPO}" \
   --spec "${VMS_REPO}/config/l4-fp32-environment.json"
@@ -348,7 +356,7 @@ capability:
 
 ```bash
 export CUDA_HOME="${CONDA_PREFIX}"
-python "${VMS_REPO}/scripts/l4_validation/prepare_focalnet.py" build \
+uv run python scripts/l4_validation/prepare_focalnet.py build \
   --repo "${FOCAL_REPO}" \
   --project-root "${VMS_REPO}" \
   --spec "${VMS_REPO}/config/l4-fp32-environment.json" \
@@ -359,7 +367,7 @@ Import `torch` before the extension so `libc10.so` and the other PyTorch native
 libraries are loaded. The standalone validator does this correctly:
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/01_validate_cuda_extension.py"
+uv run python scripts/l4_validation/01_validate_cuda_extension.py
 ```
 
 Expected marker:
@@ -379,11 +387,11 @@ export LD_LIBRARY_PATH="${TORCH_LIB_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 ## 7. Strict-load and structurally exercise the detector
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/02_strict_load_detector.py"
+uv run python scripts/l4_validation/02_strict_load_detector.py
 
-python "${VMS_REPO}/scripts/l4_validation/03_make_detector_inference_checkpoint.py"
+uv run python scripts/l4_validation/03_make_detector_inference_checkpoint.py
 
-python "${VMS_REPO}/scripts/l4_validation/04_run_synthetic_detector.py"
+uv run python scripts/l4_validation/04_run_synthetic_detector.py
 ```
 
 Required markers:
@@ -402,34 +410,21 @@ validated SHA-256 is
 
 The selected series is one `MG` object with `SeriesDescription` equal to
 `full mammogram images`. It is a Secondary Capture CBIS-DDSM image licensed by
-TCIA under CC BY 3.0. Preserve the `LICENSE` file contained in the downloaded
-archive.
+TCIA under CC BY 3.0. The repository fetcher bounds the archive, verifies exact
+bytes, and preserves its license and attribution.
 
 ```bash
-export FIXTURE_ROOT="${STUDIO_ROOT}/fixtures/cbis-ddsm"
-export ZIP_PATH="${FIXTURE_ROOT}/${SERIES_UID}.zip"
-
-mkdir -p "${FIXTURE_DIR}"
-
-curl \
-  --fail \
-  --location \
-  --retry 5 \
-  --retry-delay 2 \
-  --retry-all-errors \
-  --output "${ZIP_PATH}.part" \
-  "https://nbia.cancerimagingarchive.net/nbia-api/services/v4/getImage?NewFileNames=Yes&SeriesInstanceUID=${SERIES_UID}"
-
-python -m zipfile -t "${ZIP_PATH}.part"
-mv "${ZIP_PATH}.part" "${ZIP_PATH}"
-python -m zipfile -e "${ZIP_PATH}" "${FIXTURE_DIR}"
+uv run python scripts/fetch_public_fixture.py \
+  --manifest config/public-fixtures.json \
+  --fixture cbis-ddsm-l4-reference \
+  --output-root "${STUDIO_ROOT}/fixtures"
 ```
 
 Validate only `*.dcm`; do not count TCIA's `LICENSE` as a second DICOM:
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/05_validate_dicom.py"
-python "${VMS_REPO}/scripts/l4_validation/06_preprocess_dicom.py"
+uv run python scripts/l4_validation/05_validate_dicom.py
+uv run python scripts/l4_validation/06_preprocess_dicom.py
 ```
 
 Required markers:
@@ -450,7 +445,7 @@ tissue is visible, brighter than the background, and not inverted.
 export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONHASHSEED=0
 
-python "${VMS_REPO}/scripts/l4_validation/07_run_detector_inference.py"
+uv run python scripts/l4_validation/07_run_detector_inference.py
 ```
 
 Expected marker:
@@ -473,10 +468,10 @@ ordered top 300, strict normalized-box `IoU > 0.1` NMS, then top eight.
 ## 10. Audit and strict-load MMBCD without network downloads
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/08_audit_mmbcd_checkpoint.py"
+uv run python scripts/l4_validation/08_audit_mmbcd_checkpoint.py
 
 HF_HUB_OFFLINE=1 TRANSFORMERS_OFFLINE=1 \
-python "${VMS_REPO}/scripts/l4_validation/09_strict_load_mmbcd.py"
+uv run python scripts/l4_validation/09_strict_load_mmbcd.py
 ```
 
 Required markers:
@@ -495,7 +490,7 @@ The tokenizer download is the final intentional network-dependent model-asset
 step:
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/10_download_roberta_tokenizer.py"
+uv run python scripts/l4_validation/10_download_roberta_tokenizer.py
 ```
 
 Then prove the remaining path works offline:
@@ -504,7 +499,7 @@ Then prove the remaining path works offline:
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-python "${VMS_REPO}/scripts/l4_validation/11_prepare_mmbcd_inputs.py"
+uv run python scripts/l4_validation/11_prepare_mmbcd_inputs.py
 ```
 
 Expected marker:
@@ -528,8 +523,8 @@ export PYTHONHASHSEED=0
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
 
-python "${VMS_REPO}/scripts/l4_validation/12_run_mmbcd_inference.py"
-python "${VMS_REPO}/scripts/l4_validation/13_verify_mmbcd_result.py"
+uv run python scripts/l4_validation/12_run_mmbcd_inference.py
+uv run python scripts/l4_validation/13_verify_mmbcd_result.py
 ```
 
 Expected marker from both commands:
@@ -574,7 +569,7 @@ an exact ordered assertion.
 The collector intentionally excludes model weights and the raw DICOM:
 
 ```bash
-python "${VMS_REPO}/scripts/l4_validation/15_collect_evidence.py" \
+uv run python scripts/l4_validation/15_collect_evidence.py \
   --evidence-root "${STUDIO_ROOT}/validation-evidence/l4-fp32-reproduction" \
   --archive "${STUDIO_ROOT}/validation-evidence/vision-model-serving-l4-fp32-reproduction.tar.gz"
 ```
@@ -596,8 +591,9 @@ must remain external until licensing is clarified.
   add only PyTorch's own `lib` directory to `LD_LIBRARY_PATH`.
 - **`libtinfo.so.6: no version information`:** avoid globally prepending all of
   the Conda `lib` directory. The warning did not indicate a Git failure.
-- **OpenCV upgrades NumPy to 2.x:** remove conflicting OpenCV variants and
-  reinstall the versions in `requirements/l4-validation.txt`. Run `pip check`.
+- **OpenCV upgrades NumPy to 2.x:** remove the unmanaged environment and rerun
+  `uv sync --frozen --extra gpu`, then `uv pip check`. Do not install a second
+  unpinned OpenCV path.
 - **DICOM validator finds two files:** the second file is normally `LICENSE`.
   Preserve it; the validator deliberately selects only `.dcm` files.
 - **A timm deprecation warning appears:** the upstream import warning is
@@ -620,7 +616,7 @@ export CUBLAS_WORKSPACE_CONFIG=":4096:8"
 export PYTHONHASHSEED=0
 export HF_HUB_OFFLINE=1
 export TRANSFORMERS_OFFLINE=1
-python "${VMS_REPO}/scripts/l4_validation/17_validate_prediction_pipeline.py" \
+uv run python scripts/l4_validation/17_validate_prediction_pipeline.py \
   --cycles 2
 ```
 

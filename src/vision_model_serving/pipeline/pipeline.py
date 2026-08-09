@@ -66,6 +66,8 @@ class _Decoder(Protocol):
 class _Runtime(Protocol):
     def execute(self, model_id: str, inputs: object) -> ModelOutputs: ...
 
+    def status(self) -> object: ...
+
 
 class PredictionPipeline:
     """Hide decoding, adapter orchestration, model switching, and result shaping."""
@@ -188,6 +190,14 @@ class PredictionPipeline:
             ),
             warnings=warnings,
         )
+
+    def close(self) -> None:
+        close = getattr(self._runtime, "close", None)
+        if callable(close):
+            close()
+
+    def status(self) -> object:
+        return self._runtime.status()
 
 
 def _detector_result(execution: ModelOutputs) -> DetectorResult:

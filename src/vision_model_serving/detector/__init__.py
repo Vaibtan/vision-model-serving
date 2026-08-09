@@ -22,6 +22,7 @@ from .runtime import (
     DetectorResult,
     DetectorTimings,
     FocalNetDinoAdapter,
+    probe_focalnet_native_operator,
 )
 
 __all__ = [
@@ -43,5 +44,6 @@ __all__ = [
     "ProposalSelection",
     "FocalNetDinoAdapter",
     "prediction_sha256",
+    "probe_focalnet_native_operator",
     "strict_nms",
 ]

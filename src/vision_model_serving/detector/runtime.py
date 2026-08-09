@@ -482,6 +482,35 @@ class _LocalFocalNetDinoFactory:
         return config_path
 
 
+def probe_focalnet_native_operator(
+    repository_root: str | Path,
+    *,
+    device: str = "cuda:0",
+) -> bool:
+    """Verify the pinned CUDA device and native detector operator are usable."""
+
+    root = Path(repository_root).expanduser().resolve()
+    selected_device = _validate_device(device)
+    if not selected_device.startswith("cuda"):
+        return False
+    try:
+        import torch
+
+        if not torch.cuda.is_available():
+            return False
+        probe = torch.ones(1, device=selected_device)
+        torch.cuda.synchronize(selected_device)
+        if not bool(torch.isfinite(probe).all().item()):
+            return False
+        ops_root = root / "models" / "dino" / "ops"
+        with _prepend_import_paths(root, ops_root):
+            extension = importlib.import_module("MultiScaleDeformableAttention")
+        _require_module_inside(extension, ops_root)
+        return True
+    except Exception:
+        return False
+
+
 @contextmanager
 def _prepend_import_paths(*paths: Path) -> Iterator[None]:
     values = [str(path) for path in paths]

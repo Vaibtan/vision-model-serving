@@ -12,6 +12,11 @@ def request_fingerprint(request: PredictionRequest, payload: bytes) -> str:
     for value in (
         request.mode.value.encode("utf-8"),
         (request.case.clinical_history or "").encode("utf-8"),
+        (
+            b""
+            if request.detector_score_threshold is None
+            else format(request.detector_score_threshold, ".17g").encode("ascii")
+        ),
         payload,
     ):
         digest.update(len(value).to_bytes(8, "big"))

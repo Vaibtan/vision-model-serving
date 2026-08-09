@@ -83,6 +83,7 @@ class EphemeralJobStore:
                         "prediction_id": str(prediction_id),
                         "mode": request.mode.value,
                         "clinical_history": request.case.clinical_history,
+                        "detector_score_threshold": (request.detector_score_threshold),
                         "request_fingerprint": fingerprint,
                         "expires_at": expires_at,
                     },
@@ -124,6 +125,7 @@ class EphemeralJobStore:
         try:
             mode = PredictionMode(metadata["mode"])
             history = metadata["clinical_history"]
+            threshold = metadata.get("detector_score_threshold")
             if history is not None and not isinstance(history, str):
                 raise TypeError
         except (KeyError, TypeError, ValueError):
@@ -133,6 +135,7 @@ class EphemeralJobStore:
         return PredictionRequest(
             case=CaseInput(BytesIO(payload), history),
             mode=mode,
+            detector_score_threshold=threshold,
         )
 
     def purge_request(self, locator: str) -> None:

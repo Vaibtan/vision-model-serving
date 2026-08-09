@@ -1,5 +1,13 @@
 # Single-residency accelerator runtime
 
+This document records the strict switching policy and its L4 proof. The
+deployed executor now selects `PersistentResidencyRuntime`, which reuses this
+same serialized lifecycle machinery but retains both verified residents after
+their first loads. See [ADR 0002](adr/0002-use-a-persistent-gpu-executor.md)
+and the [current architecture](architecture.md#gpu-lifecycle-active-is-not-resident).
+The strict policy remains the tested rollback when literal one-model residency
+is required.
+
 `SingleResidencyRuntime` is the deep module that owns accelerator lifecycle
 state. Its operational interface is deliberately limited to:
 
@@ -80,8 +88,8 @@ adapters:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m unittest tests.test_single_residency_runtime -v
-python -m unittest discover -s tests -v
+uv run python -m unittest tests.test_single_residency_runtime -v
+uv run python -m unittest discover -s tests -v
 ```
 
 The real checkpoints remain outside Git. This workstation's read-only sibling
@@ -99,7 +107,7 @@ detector-to-classifier cycles:
 cd /teamspace/studios/this_studio/vision-model-serving
 export PYTHONPATH="$PWD/src"
 export CUBLAS_WORKSPACE_CONFIG=:4096:8
-python scripts/l4_validation/16_validate_single_residency.py --cycles 2
+uv run python scripts/l4_validation/16_validate_single_residency.py --cycles 2
 ```
 
 The default Studio layout expects:

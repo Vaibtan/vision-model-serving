@@ -22,7 +22,9 @@ from .contracts import (
     PredictionJobState,
     PredictionNotFound,
     PredictionRequest,
+    PredictionRuntimeUnavailable,
     PredictionStatus,
+    PredictionTimedOut,
     QueueSaturated,
     ResultExpired,
     ResultNotReady,
@@ -199,6 +201,14 @@ class RqGpuExecutionGateway:
             except Exception:  # noqa: BLE001 - sanitize the RQ result boundary
                 raise GatewayUnavailable("prediction status is unavailable") from None
             failure_text = getattr(latest_result, "exc_string", "") or ""
+            timed_out = any(
+                marker in failure_text
+                for marker in (
+                    "JobTimeoutException",
+                    "maximum timeout value",
+                )
+            )
+            runtime_unavailable = "GpuExecutorUnavailable" in failure_text
             worker_lost = any(
                 marker in failure_text
                 for marker in (
@@ -206,14 +216,22 @@ class RqGpuExecutionGateway:
                     "Work-horse terminated unexpectedly",
                 )
             )
-            failure = PredictionFailure(
-                "prediction_worker_lost"
-                if worker_lost
-                else "prediction_execution_failed",
-                "prediction worker was lost"
-                if worker_lost
-                else "prediction execution failed",
-            )
+            if timed_out:
+                failure = PredictionFailure(
+                    "prediction_timeout",
+                    "prediction execution timed out",
+                )
+            elif runtime_unavailable or worker_lost:
+                failure = PredictionFailure(
+                    "prediction_runtime_unavailable",
+                    "prediction runtime was unavailable",
+                    retryable=True,
+                )
+            else:
+                failure = PredictionFailure(
+                    "prediction_execution_failed",
+                    "prediction execution failed",
+                )
         else:
             raise PredictionNotFound("prediction job is unavailable")
         queue_wait_ms = None
@@ -235,12 +253,15 @@ class RqGpuExecutionGateway:
         if status.state is PredictionJobState.EXPIRED:
             raise ResultExpired("prediction result has expired")
         if status.state is PredictionJobState.FAILED:
-            raise PredictionFailed(
-                (
-                    status.failure
-                    or PredictionFailure("prediction_failed", "prediction failed")
-                ).detail
+            failure = status.failure or PredictionFailure(
+                "prediction_failed",
+                "prediction failed",
             )
+            if failure.code == PredictionTimedOut.code:
+                raise PredictionTimedOut(failure.detail)
+            if failure.code == PredictionRuntimeUnavailable.code:
+                raise PredictionRuntimeUnavailable(failure.detail)
+            raise PredictionFailed(failure.detail)
         if status.state is not PredictionJobState.SUCCEEDED:
             raise ResultNotReady("prediction has not completed successfully")
         try:

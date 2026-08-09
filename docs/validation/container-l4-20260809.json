@@ -1,0 +1,101 @@
+{
+  "schema_version": 1,
+  "validated_commit": "5a75a0764d851ca25982ccc906300d586489c666",
+  "environment": {
+    "gpu": "NVIDIA L4",
+    "compute_capability": "8.9",
+    "driver": "580.173.02",
+    "docker": "28.0.1",
+    "docker_compose": "2.27.0",
+    "redis_server": "7.4.10"
+  },
+  "clean_build": {
+    "no_cache": true,
+    "web_image": {
+      "id": "sha256:f82929f9ebca96104c34e2409da9e71b9a2e493e557b39fe3fb27464c874e436",
+      "size_bytes": 424102905,
+      "user": "10001:10001"
+    },
+    "executor_image": {
+      "id": "sha256:87206571672c1d427972706ab0569072e4b3498080269ffe66a20129ab2f6696",
+      "size_bytes": 8599232399,
+      "user": "10001:10001",
+      "python": "3.12.11",
+      "pytorch": "2.8.0+cu128",
+      "cuda": "12.8",
+      "native_operator_built_for": "8.9",
+      "pinned_source_patches_verified": true
+    }
+  },
+  "compose_contract": {
+    "internal_network": true,
+    "localhost_only_http_binding": true,
+    "read_only_root_filesystems": true,
+    "capabilities_dropped": true,
+    "no_new_privileges": true,
+    "redis_persistence_disabled": true,
+    "gpu_visible_only_to_executor": true,
+    "model_mounts_visible_only_to_executor": true,
+    "model_mounts_read_only": true,
+    "jobs_tmpfs_limit": "1g",
+    "executor_socket_tmpfs_limit": "16m",
+    "metrics_tmpfs_limit": "32m",
+    "healthchecks": [
+      "redis",
+      "executor",
+      "rq-worker",
+      "web"
+    ]
+  },
+  "cpu_test_profile": {
+    "gpu_reserved": false,
+    "model_mounts_present": false,
+    "real_redis": true,
+    "public_dicom_sha256": "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c",
+    "submission_http_status": 202,
+    "queued_state_observed": true,
+    "private_payload_absent_from_redis": true,
+    "rq_arguments_are_opaque": true,
+    "structured_http_logs_are_redacted": true
+  },
+  "clean_build_gpu_smoke": {
+    "warmup_runs": 1,
+    "measured_runs": 1,
+    "detector_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+    "classifier_sha256": "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3",
+    "cold_pipeline_total_ms": 24177.657,
+    "warm_pipeline_total_ms": 1418.208,
+    "detector_reused_on_measured_run": true,
+    "classifier_reused_on_measured_run": true
+  },
+  "http_benchmark": {
+    "warmup_runs": 1,
+    "measured_runs": 5,
+    "latency_seconds": {
+      "min": 3.156371770000078,
+      "median": 3.2355242260000523,
+      "p95": 3.3595858550006596,
+      "max": 3.3595858550006596
+    },
+    "result_written_to_explicit_bind_mount": true,
+    "golden_hashes_matched_every_run": true
+  },
+  "image_inspection": {
+    "web_contains_torch": false,
+    "executor_contains_torch": true,
+    "model_mount_directories_baked_in": false,
+    "checkpoint_payloads_absent": true,
+    "dicom_payloads_absent": true,
+    "project_evidence_archives_absent": true
+  },
+  "cleanup": {
+    "running_containers": 0,
+    "project_volumes": 0,
+    "gpu_processes": 0
+  },
+  "host_observations": [
+    "Redis reported vm.overcommit_memory disabled; persistence is disabled in this assessment profile.",
+    "PyTorch could not persist its optional JIT kernel cache under the non-writable service home; the long-lived executor still reused both resident models."
+  ],
+  "validation_boundary": "One public CBIS-DDSM object exercised real HTTP multipart parsing, Django, Redis, a standard RQ worker, the long-lived Unix-socket GPU executor, both strict-loaded FP32 models, exact output hashes, clean image builds, profile isolation, and cleanup on one L4. This is not a concurrency, soak, restart-recovery, medical-accuracy, calibration, or clinical-validation claim."
+}

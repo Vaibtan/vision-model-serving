@@ -1,0 +1,150 @@
+{
+  "schema_version": 1,
+  "execution": {
+    "commit": "b88e1de6b37a12aa041dbfed6c99f643d8a278da",
+    "runtime": {
+      "gpu": "NVIDIA L4",
+      "driver": "580.173.02",
+      "compute_capability": "8.9",
+      "docker": "28.0.1",
+      "docker_compose": "2.27.0"
+    },
+    "images": {
+      "executor": {
+        "id": "sha256:ba3c83530153278920507340e6f8842fd743dd6fd2afe0978c003c35ff677331",
+        "size_bytes": 8599234449
+      },
+      "web": {
+        "id": "sha256:3b8c5e98ddaa79aa8c26cb5643a2ce590347960eca97ff4e710c64341fa8f4b1",
+        "size_bytes": 424104955
+      },
+      "validation": {
+        "id": "sha256:2d086659fbd79b4714becdeb077f40c22209a2784096cad0b39b53159e5c1577",
+        "size_bytes": 424139666
+      }
+    },
+    "reports": {
+      "before_sha256": "6d692e0779015229f484cc3dacd88e60fd56ab189e08e51ef037437cb038721b",
+      "after_sha256": "9ac7ada2aae4fec3da33cc7d06c67cd162c107dff3200599ab0d3b731fd0f438"
+    },
+    "restart_boundary": {
+      "containers_before_restart": 0,
+      "volumes_before_restart": 0,
+      "gpu_processes_before_restart": 0
+    },
+    "final_cleanup": {
+      "containers": 0,
+      "volumes": 0,
+      "gpu_processes": 0
+    }
+  },
+  "behavior": {
+    "cycles": [
+      {
+        "cycle": 1,
+        "detection": {
+          "active_model": "focalnet-dino-detector",
+          "classifier_reused": null,
+          "classifier_sha256": null,
+          "detector_reused": false,
+          "detector_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+          "mode": "detection",
+          "resident_models": [
+            "focalnet-dino-detector"
+          ],
+          "warning_codes": [
+            "aspect_ratio_distorted",
+            "secondary_capture_storage"
+          ]
+        },
+        "full": {
+          "active_model": "mmbcd-classifier",
+          "classifier_reused": false,
+          "classifier_sha256": "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3",
+          "detector_reused": true,
+          "detector_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+          "mode": "full",
+          "resident_models": [
+            "focalnet-dino-detector",
+            "mmbcd-classifier"
+          ],
+          "warning_codes": [
+            "aspect_ratio_distorted",
+            "attention_is_inspection_not_causal_or_clinical_evidence",
+            "class_semantics_and_decision_threshold_unverified",
+            "secondary_capture_storage"
+          ]
+        }
+      },
+      {
+        "cycle": 2,
+        "detection": {
+          "active_model": "focalnet-dino-detector",
+          "classifier_reused": null,
+          "classifier_sha256": null,
+          "detector_reused": true,
+          "detector_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+          "mode": "detection",
+          "resident_models": [
+            "focalnet-dino-detector",
+            "mmbcd-classifier"
+          ],
+          "warning_codes": [
+            "aspect_ratio_distorted",
+            "secondary_capture_storage"
+          ]
+        },
+        "full": {
+          "active_model": "mmbcd-classifier",
+          "classifier_reused": true,
+          "classifier_sha256": "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3",
+          "detector_reused": true,
+          "detector_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+          "mode": "full",
+          "resident_models": [
+            "focalnet-dino-detector",
+            "mmbcd-classifier"
+          ],
+          "warning_codes": [
+            "aspect_ratio_distorted",
+            "attention_is_inspection_not_causal_or_clinical_evidence",
+            "class_semantics_and_decision_threshold_unverified",
+            "secondary_capture_storage"
+          ]
+        }
+      }
+    ]
+  },
+  "identity": {
+    "canonical_array_sha256": "97fa0f80a696ce7f822c1681a8c3f7c072da9262b2bd91239c9f1637eaf68552",
+    "config_sha256": {
+      "l4-fp32-environment.json": "ef6ac049754a2da6753aa586c2187185533597206394c009e4632ede7123c5b0",
+      "model-artifacts.json": "9d949a0a7b8c64fce7109bfb7176b2986c1a895ee5fc5b037792679c0decff4f"
+    },
+    "dicom_sha256": "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c",
+    "manifest_id": "vision-model-serving-l4-fp32-20260807",
+    "models": {
+      "focalnet-dino-detector": "67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4",
+      "mmbcd-classifier": "2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4"
+    }
+  },
+  "privacy": {
+    "job_volume_contains_request_content": false,
+    "redis_contains_request_content": false,
+    "request_files_remaining_after_completion": false
+  },
+  "readiness_checks": {
+    "device": true,
+    "executor": true,
+    "native_operator": true,
+    "redis": true,
+    "rq_worker": true,
+    "verified_artifacts": true
+  },
+  "restart_baseline_matched": true,
+  "operational_warnings": [
+    "Redis warned that host vm.overcommit_memory is disabled; Redis persistence is disabled for this stack.",
+    "PyTorch could not persist its optional JIT kernel cache under the non-writable service home."
+  ],
+  "validation_boundary": "Packaged deterministic execution on one public Secondary Capture fixture; not accuracy, calibration, robustness, or clinical validation."
+}

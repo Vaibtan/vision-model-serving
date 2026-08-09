@@ -305,8 +305,16 @@
       "id": "focalnet-serving-no-backbone-preload",
       "kind": "patch",
       "path": "patches/focalnet-serving-no-backbone-preload.patch",
-      "size_bytes": 510,
-      "sha256": "553c4b282201499e68558c6867275a6e429e72cec1ebdb482887a5a850955ad5",
+      "size_bytes": 1065,
+      "sha256": "fe88967e13ead7496c68e1a005ba0317b88e0fd3bfc39af7b75038403d7ddf57",
+      "applies_to_revision": "23901e021dc6ec8f66bad47983f45a25574452cc"
+    },
+    {
+      "id": "focalnet-docker-force-cuda",
+      "kind": "patch",
+      "path": "patches/focalnet-docker-force-cuda.patch",
+      "size_bytes": 515,
+      "sha256": "8d1639167bc4a27fe1ae2a4f5145ab162ff4dfdcfae352a564400762000ea305",
       "applies_to_revision": "23901e021dc6ec8f66bad47983f45a25574452cc"
     }
   ]

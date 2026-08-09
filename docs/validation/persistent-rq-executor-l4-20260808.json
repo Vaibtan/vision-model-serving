@@ -1,0 +1,97 @@
+{
+  "schema_version": 1,
+  "validated_commit": "775c52b5525976c849fc3383e423665fdd91b220",
+  "environment": {
+    "gpu": "NVIDIA L4",
+    "gpu_memory_mib": 23034,
+    "python": "3.12.11",
+    "pytorch": "2.8.0+cu128",
+    "redis_server": "7.4.10",
+    "rq": "2.10.0"
+  },
+  "topology": {
+    "broker": "real Redis container",
+    "queue_worker": "standard forked RQ Worker",
+    "gpu_executor": "long-lived Unix socket process",
+    "model_residency": "detector and classifier retained together"
+  },
+  "startup_ms": {
+    "executor_artifact_verification": 14326.312,
+    "rq_worker": 707.872
+  },
+  "runs": [
+    {
+      "kind": "cold",
+      "submit_ms": 173.804,
+      "queue_wait_ms": 12.27,
+      "end_to_end_ms": 25871.394,
+      "pipeline_total_ms": 25723.002,
+      "detector": {
+        "prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+        "reused": false,
+        "load_ms": 16599.282,
+        "switch_ms": 0.0,
+        "inference_ms": 273.683
+      },
+      "classifier": {
+        "prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+        "logits": [
+          3.582984209060669,
+          -4.886208534240723
+        ],
+        "reused": false,
+        "load_ms": 7567.887,
+        "switch_ms": 7567.911,
+        "inference_ms": 150.489
+      }
+    },
+    {
+      "kind": "warm",
+      "submit_ms": 196.544,
+      "queue_wait_ms": 10.805,
+      "end_to_end_ms": 1210.788,
+      "pipeline_total_ms": 1115.541,
+      "detector": {
+        "prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+        "reused": true,
+        "load_ms": 0.0,
+        "switch_ms": 0.007,
+        "inference_ms": 268.977
+      },
+      "classifier": {
+        "prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+        "logits": [
+          3.582984209060669,
+          -4.886208534240723
+        ],
+        "reused": true,
+        "load_ms": 0.0,
+        "switch_ms": 0.005,
+        "inference_ms": 126.424
+      }
+    }
+  ],
+  "resident_gpu_memory_mib": 2334,
+  "queue_observations": {
+    "admitted_total": 2,
+    "succeeded_total": 2,
+    "failed_total": 0,
+    "rejected_total": 0,
+    "worker_lost_total": 0,
+    "active_jobs_after_run": 0,
+    "queued_jobs_after_run": 0,
+    "running_jobs_after_run": 0
+  },
+  "privacy": {
+    "rq_arguments_are_two_opaque_tokens": true,
+    "dicom_absent_from_redis_dump": true,
+    "raw_idempotency_keys_absent_from_redis_dump": true,
+    "request_files_purged_after_execution": true
+  },
+  "cleanup": {
+    "redis_container_removed": true,
+    "executor_and_worker_processes_absent": true,
+    "gpu_processes_absent": true
+  },
+  "validation_boundary": "Two sequential full predictions using real Redis, a standard RQ worker, the persistent Unix-socket executor, real model artifacts, and one public DICOM fixture. This establishes exact FP32 output parity, dual residency, warm-path latency, and cleanup for this topology on one L4; it is not a concurrency, soak, restart-recovery, medical-accuracy, calibration, or clinical-validation claim."
+}

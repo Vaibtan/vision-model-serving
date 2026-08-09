@@ -18,15 +18,15 @@ PowerShell:
 
 ```powershell
 $env:PYTHONPATH = "src"
-python -m vision_model_serving.artifacts config/model-artifacts.json
-python -m unittest discover -s tests -v
+uv run python -m vision_model_serving.artifacts config/model-artifacts.json
+uv run python -m unittest discover -s tests -v
 ```
 
 POSIX shells:
 
 ```bash
-PYTHONPATH=src python -m vision_model_serving.artifacts config/model-artifacts.json
-PYTHONPATH=src python -m unittest discover -s tests -v
+PYTHONPATH=src uv run python -m vision_model_serving.artifacts config/model-artifacts.json
+PYTHONPATH=src uv run python -m unittest discover -s tests -v
 ```
 
 Pass `--json` to emit a machine-readable inventory summary. Schema tests use
