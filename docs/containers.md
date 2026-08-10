@@ -154,8 +154,10 @@ docker compose --profile browser up --build \
 docker compose --profile browser down --volumes --remove-orphans
 ```
 
-The browser image contains no CUDA/model code and joins only the internal
-network. The public DICOM is mounted read-only.
+The browser image contains no CUDA/model dependencies and shares the web
+service network namespace so Chromium reaches the trustworthy
+`http://127.0.0.1:8000` origin without weakening Django's browser-security
+headers. The public DICOM is mounted read-only.
 
 ## Destructive-restart validation profile
 
