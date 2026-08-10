@@ -32,6 +32,7 @@ from .adapter import (
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
 _DEVICE = re.compile(r"(?:cpu|cuda(?::[0-9]+)?)")
+_PINNED_DINO_MODULE = "vision_model_serving_pinned_dino"
 _ALIASES = (
     ("img_fc1.weight", "img_fc_layer.1.weight"),
     ("img_fc1.bias", "img_fc_layer.1.bias"),
@@ -275,9 +276,16 @@ def _load_pinned_dino_architecture(dino_root: Path) -> object:
         for path in (module_path, utils_path)
     ):
         raise ClassifierLoadError("pinned DINO architecture source is absent")
+    loaded_architecture = sys.modules.get(_PINNED_DINO_MODULE)
+    if loaded_architecture is not None:
+        loaded_path = getattr(loaded_architecture, "__file__", None)
+        if loaded_path is None or Path(loaded_path).resolve() != module_path:
+            raise ClassifierLoadError("pinned DINO module identity differs")
+        return loaded_architecture
 
     missing = object()
     prior_utils = sys.modules.get("utils", missing)
+    architecture: object | None = None
     try:
         utils_spec = importlib.util.spec_from_file_location("utils", utils_path)
         if utils_spec is None or utils_spec.loader is None:
@@ -287,14 +295,19 @@ def _load_pinned_dino_architecture(dino_root: Path) -> object:
         utils_spec.loader.exec_module(utils_module)
 
         architecture_spec = importlib.util.spec_from_file_location(
-            "vision_model_serving_pinned_dino",
+            _PINNED_DINO_MODULE,
             module_path,
         )
         if architecture_spec is None or architecture_spec.loader is None:
             raise ClassifierLoadError("pinned DINO architecture cannot be loaded")
         architecture = importlib.util.module_from_spec(architecture_spec)
+        sys.modules[_PINNED_DINO_MODULE] = architecture
         architecture_spec.loader.exec_module(architecture)
         return architecture
+    except Exception:
+        if architecture is not None:
+            sys.modules.pop(_PINNED_DINO_MODULE, None)
+        raise
     finally:
         if prior_utils is missing:
             sys.modules.pop("utils", None)

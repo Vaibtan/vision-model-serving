@@ -584,6 +584,10 @@ class ClassifierRuntimeTests(unittest.TestCase):
                 loaded = classifier_runtime._load_pinned_dino_architecture(root)
                 self.assertEqual(loaded.SENTINEL, "pinned")
                 self.assertIs(sys.modules["utils"], prior_utils)
+                self.assertIs(
+                    sys.modules["vision_model_serving_pinned_dino"],
+                    loaded,
+                )
 
     def test_strict_loads_verified_artifact_and_executes_privately(self) -> None:
         shared_weight = object()
