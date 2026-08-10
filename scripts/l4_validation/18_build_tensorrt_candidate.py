@@ -55,6 +55,9 @@ from vision_model_serving.model_ids import (  # noqa: E402
     CLASSIFIER_MODEL_ID,
     DETECTOR_MODEL_ID,
 )
+from vision_model_serving.validation.evidence import (  # noqa: E402
+    sanitize_error_detail,
+)
 from vision_model_serving.validation.optimization import (  # noqa: E402
     validate_optimization_report,
 )
@@ -167,11 +170,13 @@ def main() -> int:
             candidate_plan.unlink()
         failure_path = output_dir / "mmbcd-tensorrt-failure.txt"
         failure_path.write_text(
-            _sanitize_error(
+            sanitize_error_detail(
                 error,
-                project_root,
-                args.dino_root.expanduser().resolve(),
-                args.mmbcd_root.expanduser().resolve(),
+                (
+                    project_root,
+                    args.dino_root.expanduser().resolve(),
+                    args.mmbcd_root.expanduser().resolve(),
+                ),
             ),
             encoding="utf-8",
         )
@@ -330,7 +335,9 @@ def _probe_detector(
         failure_code = "runtime_parity_and_plugin_gate_not_implemented"
     except Exception as error:
         failure_code = f"strict_coverage_failed:{type(error).__name__}"
-        capture.write("\n" + _sanitize_error(error, project_root, focalnet_root))
+        capture.write(
+            "\n" + sanitize_error_detail(error, (project_root, focalnet_root))
+        )
     report_path = output_dir / "focalnet-dino-tensorrt-coverage.txt"
     report_path.write_text(capture.getvalue(), encoding="utf-8")
     return {
@@ -424,7 +431,7 @@ def _build_classifier(
             "failure_code": f"dynamic_export_failed:{type(error).__name__}",
         }
         dynamic_report_path.write_text(
-            _sanitize_error(error, project_root, dino_root, mmbcd_root),
+            sanitize_error_detail(error, (project_root, dino_root, mmbcd_root)),
             encoding="utf-8",
         )
     dynamic_export["report_sha256"] = sha256_file(dynamic_report_path)
@@ -616,13 +623,6 @@ def _verify_dependencies() -> dict[str, str]:
     if observed != _DEPENDENCIES:
         raise RuntimeError(f"TensorRT dependency lane differs: {observed!r}")
     return observed
-
-
-def _sanitize_error(error: Exception, *roots: Path) -> str:
-    value = str(error)
-    for root in roots:
-        value = value.replace(str(root), f"<{root.name}>")
-    return value[:20_000]
 
 
 def _numpy(value: object) -> np.ndarray:

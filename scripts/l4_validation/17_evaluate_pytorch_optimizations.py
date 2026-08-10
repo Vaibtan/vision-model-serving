@@ -55,6 +55,9 @@ from vision_model_serving.model_ids import (  # noqa: E402
     CLASSIFIER_MODEL_ID,
     DETECTOR_MODEL_ID,
 )
+from vision_model_serving.validation.evidence import (  # noqa: E402
+    sanitize_error_detail,
+)
 from vision_model_serving.validation.optimization import (  # noqa: E402
     candidate_promotion,
     validate_optimization_report,
@@ -219,6 +222,12 @@ def main() -> int:
         tolerances={"fp32": 0.0, "tf32": 1e-4, "fp16": 5e-3, "bf16": 1e-2, "compile": 1e-5},
         warmup_runs=args.warmup_runs,
         measured_runs=args.measured_runs,
+        evidence_roots=(
+            project_root,
+            focalnet_root,
+            args.mmbcd_root,
+            args.dino_root,
+        ),
     )
     classifier_matrix = _measure_model(
         torch=torch,
@@ -229,6 +238,12 @@ def main() -> int:
         tolerances={"fp32": 0.0, "tf32": 1e-4, "fp16": 5e-3, "bf16": 1e-2, "compile": 1e-5},
         warmup_runs=args.warmup_runs,
         measured_runs=args.measured_runs,
+        evidence_roots=(
+            project_root,
+            focalnet_root,
+            args.mmbcd_root,
+            args.dino_root,
+        ),
     )
     device = torch.cuda.get_device_properties("cuda:0")
     report = {
@@ -287,6 +302,7 @@ def _measure_model(
     tolerances: Mapping[str, float],
     warmup_runs: int,
     measured_runs: int,
+    evidence_roots: tuple[Path, ...],
 ) -> dict[str, object]:
     baseline_outputs: dict[str, np.ndarray] | None = None
     candidates: list[dict[str, object]] = []
@@ -325,14 +341,14 @@ def _measure_model(
             candidate = _failed_candidate(
                 policy,
                 "cuda_out_of_memory",
-                detail=str(error),
+                detail=sanitize_error_detail(error, evidence_roots),
                 cuda_oom=True,
             )
         except Exception as error:  # one failed candidate must not hide the matrix
             candidate = _failed_candidate(
                 policy,
                 f"candidate_failed:{type(error).__name__}",
-                detail=str(error),
+                detail=sanitize_error_detail(error, evidence_roots),
                 cuda_oom=False,
             )
         candidates.append(candidate)
