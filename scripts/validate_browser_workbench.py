@@ -9,6 +9,9 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from playwright.sync_api import sync_playwright
+from vision_model_serving.validation.acceptance_contract import (
+    PACKAGED_ACCEPTANCE_HISTORY,
+)
 
 
 def main() -> int:
@@ -46,9 +49,7 @@ def main() -> int:
         )
         page.locator("#dicom").set_input_files(args.dicom)
         page.locator("#preview-image").wait_for(state="visible", timeout=timeout_ms)
-        page.locator("#clinical-history").fill(
-            "Prior breast surgery; no label or diagnosis supplied."
-        )
+        page.locator("#clinical-history").fill(PACKAGED_ACCEPTANCE_HISTORY)
         page.get_by_role("button", name="Run inference").click()
         page.locator("#results-panel.is-visible").wait_for(
             state="visible",
@@ -89,7 +90,7 @@ def main() -> int:
             ):
                 raise RuntimeError("browser classifier output differs from the golden")
             serialized = json.dumps(result, sort_keys=True)
-            if "Prior breast surgery" in serialized:
+            if PACKAGED_ACCEPTANCE_HISTORY in serialized:
                 raise RuntimeError("browser JSON export retained clinical history")
             with page.expect_download(timeout=timeout_ms) as png_download:
                 page.get_by_role("button", name="Download overlay PNG").click()

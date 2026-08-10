@@ -6,6 +6,7 @@ FROM ${PLAYWRIGHT_IMAGE}
 
 COPY --from=uv /uv /uvx /bin/
 ENV PATH=/app/.venv/bin:$PATH \
+    PYTHONPATH=/app/src \
     PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     UV_COMPILE_BYTECODE=1 \
@@ -13,5 +14,6 @@ ENV PATH=/app/.venv/bin:$PATH \
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --only-group browser --no-install-project
+COPY --chown=1000:1000 src ./src
 COPY --chown=1000:1000 scripts/validate_browser_workbench.py ./scripts/validate_browser_workbench.py
 USER 1000:1000

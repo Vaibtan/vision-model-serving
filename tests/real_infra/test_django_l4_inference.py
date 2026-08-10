@@ -10,7 +10,9 @@ from pathlib import Path
 from time import monotonic, sleep
 
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
-from vision_model_serving.validation.packaged_http import PACKAGED_ACCEPTANCE_HISTORY
+from vision_model_serving.validation.acceptance_contract import (
+    PACKAGED_ACCEPTANCE_HISTORY,
+)
 
 EXPECTED_DICOM_SHA256 = (
     "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"

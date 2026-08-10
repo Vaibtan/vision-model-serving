@@ -10,9 +10,11 @@ import urllib.request
 from typing import Any, Final
 
 from vision_model_serving.pipeline.contracts import PredictionMode
+from vision_model_serving.validation.acceptance_contract import (
+    PACKAGED_ACCEPTANCE_HISTORY,
+)
 
 
-PACKAGED_ACCEPTANCE_HISTORY: Final = "real public mammogram acceptance."
 _POLL_INTERVAL_SECONDS: Final = 0.1
 
 

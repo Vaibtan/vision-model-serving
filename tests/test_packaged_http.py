@@ -12,8 +12,10 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
 from vision_model_serving.pipeline import PredictionMode  # noqa: E402
-from vision_model_serving.validation.packaged_http import (  # noqa: E402
+from vision_model_serving.validation.acceptance_contract import (  # noqa: E402
     PACKAGED_ACCEPTANCE_HISTORY,
+)
+from vision_model_serving.validation.packaged_http import (  # noqa: E402
     PackagedPredictionClient,
 )
 
