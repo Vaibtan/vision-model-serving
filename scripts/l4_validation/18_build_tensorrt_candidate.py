@@ -220,11 +220,7 @@ def main() -> int:
         "decision": decision,
         "production_selection": {
             "backend": "pytorch-eager",
-            "reason": (
-                "TensorRT remains evidence-gated. A classifier engine GO is a "
-                "PARTIAL result until the packaged single-residency endpoint "
-                "passes same-revision parity, restart, and end-to-end benchmarks."
-            ),
+            "reason": _production_reason(decision, detector, classifier),
         },
         "validation_boundary": (
             "FP32/TF32-disabled TensorRT feasibility with a static token-width-5 "
@@ -241,6 +237,45 @@ def main() -> int:
     print(json.dumps(report, indent=2, sort_keys=True))
     print(f"TENSORRT SPIKE CONCLUDED: {decision.upper()}")
     return 0
+
+
+def _production_reason(
+    decision: str,
+    detector: Mapping[str, object],
+    classifier: Mapping[str, object],
+) -> str:
+    if decision == "go":
+        return (
+            "Both strict production profiles passed the isolated TensorRT gates. "
+            "Production remains eager FP32 until TensorRT is deliberately selected "
+            "and the packaged single-residency, restart, and benchmark gates pass."
+        )
+    if decision == "partial":
+        return (
+            "The classifier production profile passed, but detector full coverage "
+            "did not. This is a PARTIAL result, not whole-pipeline TensorRT; "
+            "production remains eager FP32 and no fallback is enabled."
+        )
+    classifier_shape_coverage = classifier.get("shape_coverage")
+    classifier_profile_failed = (
+        isinstance(classifier_shape_coverage, Mapping)
+        and classifier_shape_coverage.get("passed") is False
+    )
+    classifier_reason = (
+        "the classifier's required token-width 2..90 profile did not pass"
+        if classifier_profile_failed
+        else "the classifier's full-engine gates did not all pass"
+    )
+    detector_reason = (
+        "detector full coverage did not pass"
+        if detector.get("decision") != "go"
+        else "detector full coverage passed"
+    )
+    return (
+        f"TensorRT was not promoted because {classifier_reason} and "
+        f"{detector_reason}. Production remains eager FP32 and no fallback is "
+        "enabled."
+    )
 
 
 def _probe_detector(
