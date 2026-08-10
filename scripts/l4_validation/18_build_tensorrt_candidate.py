@@ -227,8 +227,9 @@ def main() -> int:
             ),
         },
         "validation_boundary": (
-            "Fixed-shape FP32/TF32-disabled TensorRT feasibility on one NVIDIA L4 "
-            "and one public DICOM. It is not clinical or cross-hardware evidence."
+            "FP32/TF32-disabled TensorRT feasibility with fixed batch, ROI, and "
+            "image shapes plus token width 1..90 on one NVIDIA L4 and one public "
+            "DICOM. It is not clinical or cross-hardware evidence."
         ),
     }
     write_json_atomic(output_dir / "tensorrt-spike.json", report)
@@ -361,11 +362,17 @@ def _build_classifier(
     digest.update(eager_outputs["logits"].tobytes())
     digest.update(eager_outputs["fused_embeddings"].tobytes())
     if digest.hexdigest() != MMBCD_PREDICTION_SHA256:
-        raise RuntimeError("MMBCD fixed-shape baseline differs from the L4 golden")
+        raise RuntimeError("MMBCD TensorRT baseline differs from the L4 golden")
 
     capture = StringIO()
     export_started = perf_counter()
-    exported = torch.export.export(loaded.model, inputs, strict=True)
+    token_width = torch.export.Dim("token_width", min=1, max=90)
+    exported = torch.export.export(
+        loaded.model,
+        inputs,
+        dynamic_shapes=({}, {1: token_width}, {1: token_width}),
+        strict=True,
+    )
     export_ms = (perf_counter() - export_started) * 1_000.0
     with torch.inference_mode():
         exported_outputs = exported.module()(*inputs)
@@ -375,10 +382,31 @@ def _build_classifier(
     }
     if any(value > 1e-6 for value in export_differences.values()):
         raise RuntimeError("strict MMBCD export differs from eager FP32")
+    trt_inputs = (
+        torch_tensorrt.Input(
+            shape=(1, 8, 3, 224, 224),
+            dtype=torch.float32,
+            name="roi_crops",
+        ),
+        torch_tensorrt.Input(
+            min_shape=(1, 1),
+            opt_shape=tuple(inputs[1].shape),
+            max_shape=(1, 90),
+            dtype=torch.int64,
+            name="input_ids",
+        ),
+        torch_tensorrt.Input(
+            min_shape=(1, 1),
+            opt_shape=tuple(inputs[2].shape),
+            max_shape=(1, 90),
+            dtype=torch.int64,
+            name="attention_mask",
+        ),
+    )
     with redirect_stdout(capture), redirect_stderr(capture):
         torch_tensorrt.dynamo.compile(
             exported,
-            arg_inputs=inputs,
+            arg_inputs=trt_inputs,
             enabled_precisions={torch.float32},
             require_full_compilation=True,
             disable_tf32=True,
@@ -389,7 +417,7 @@ def _build_classifier(
     build_started = perf_counter()
     engine_bytes = torch_tensorrt.dynamo.convert_exported_program_to_serialized_trt_engine(
         exported,
-        arg_inputs=inputs,
+        arg_inputs=trt_inputs,
         enabled_precisions={torch.float32},
         require_full_compilation=True,
         disable_tf32=True,
@@ -459,7 +487,10 @@ def _build_classifier(
         "tensorrt_p50_ms": trt_p50,
         "warm_p50_improvement_percent": (1.0 - trt_p50 / eager_p50) * 100.0,
         "promotion_threshold_passed": performance_passed,
-        "scope": "fixed-shape classifier forward only",
+        "scope": (
+            "classifier forward only at the token-width-5 optimization point "
+            "of the admitted 1..90 dynamic profile"
+        ),
     }
     performance_path = output_dir / "mmbcd-tensorrt-performance.json"
     write_json_atomic(performance_path, performance)
@@ -494,8 +525,20 @@ def _build_classifier(
             },
             "inputs": [
                 {"name": "roi_crops", "dtype": "float32", "shape": [1, 8, 3, 224, 224]},
-                {"name": "input_ids", "dtype": "int64", "shape": [1, 90]},
-                {"name": "attention_mask", "dtype": "int64", "shape": [1, 90]},
+                {
+                    "name": "input_ids",
+                    "dtype": "int64",
+                    "min_shape": [1, 1],
+                    "opt_shape": [1, 5],
+                    "max_shape": [1, 90],
+                },
+                {
+                    "name": "attention_mask",
+                    "dtype": "int64",
+                    "min_shape": [1, 1],
+                    "opt_shape": [1, 5],
+                    "max_shape": [1, 90],
+                },
             ],
             "outputs": [
                 {"name": "logits", "dtype": "float32", "shape": [1, 2]},
@@ -549,17 +592,22 @@ def _build_classifier(
 def _classifier_inputs(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     with np.load(path.expanduser().resolve(), allow_pickle=False) as bundle:
         crops = np.ascontiguousarray(bundle["crops"][None, ...], dtype=np.float32)
-        ids = _pad(bundle["input_ids"], 1)
-        mask = _pad(bundle["attention_mask"], 0)
+        ids = _token_input(bundle["input_ids"])
+        mask = _token_input(bundle["attention_mask"])
+    if ids.shape != mask.shape:
+        raise RuntimeError("MMBCD token inputs have different shapes")
     return crops, ids, mask
 
 
-def _pad(values: np.ndarray, fill: int) -> np.ndarray:
-    if values.ndim != 2 or values.shape[0] != 1 or values.shape[1] > 90:
-        raise RuntimeError("MMBCD token input differs from the fixed TensorRT contract")
-    result = np.full((1, 90), fill, dtype=np.int64)
-    result[:, : values.shape[1]] = values
-    return result
+def _token_input(values: np.ndarray) -> np.ndarray:
+    if (
+        values.ndim != 2
+        or values.shape[0] != 1
+        or values.shape[1] < 1
+        or values.shape[1] > 90
+    ):
+        raise RuntimeError("MMBCD token input is outside the TensorRT profile")
+    return np.ascontiguousarray(values, dtype=np.int64)
 
 
 def _verify_dependencies() -> dict[str, str]:

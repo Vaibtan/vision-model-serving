@@ -14,9 +14,15 @@ import numpy as np
 
 
 INPUT_CONTRACT = (
-    ("roi_crops", np.dtype(np.float32), (1, 8, 3, 224, 224)),
-    ("input_ids", np.dtype(np.int64), (1, 90)),
-    ("attention_mask", np.dtype(np.int64), (1, 90)),
+    (
+        "roi_crops",
+        np.dtype(np.float32),
+        (1, 8, 3, 224, 224),
+        (1, 8, 3, 224, 224),
+        (1, 8, 3, 224, 224),
+    ),
+    ("input_ids", np.dtype(np.int64), (1, 1), (1, 5), (1, 90)),
+    ("attention_mask", np.dtype(np.int64), (1, 1), (1, 5), (1, 90)),
 )
 OUTPUT_CONTRACT = (
     ("logits", np.dtype(np.float32), (1, 2)),
@@ -67,13 +73,23 @@ def main() -> int:
     allocations: list[object] = []
     outputs: dict[str, np.ndarray] = {}
     try:
-        for engine_name, (logical_name, dtype, shape) in zip(
+        for engine_name, (logical_name, dtype, minimum, optimum, maximum) in zip(
             engine_inputs,
             INPUT_CONTRACT,
             strict=True,
         ):
-            _verify_tensor_contract(engine, context, engine_name, dtype, shape, trt)
             host = inputs[logical_name]
+            _verify_input_contract(
+                engine,
+                context,
+                engine_name,
+                dtype,
+                minimum,
+                optimum,
+                maximum,
+                tuple(host.shape),
+                trt,
+            )
             device = _cuda(cudart.cudaMalloc(host.nbytes))
             allocations.append(device)
             _cuda(
@@ -87,12 +103,17 @@ def main() -> int:
             )
             if not context.set_tensor_address(engine_name, int(device)):
                 raise RuntimeError("TensorRT input address binding failed")
+        missing_shapes = context.infer_shapes()
+        if missing_shapes:
+            raise RuntimeError(
+                f"TensorRT input shapes remain unspecified: {missing_shapes!r}"
+            )
         for engine_name, (logical_name, dtype, shape) in zip(
             engine_outputs,
             OUTPUT_CONTRACT,
             strict=True,
         ):
-            _verify_tensor_contract(engine, context, engine_name, dtype, shape, trt)
+            _verify_output_contract(context, engine_name, dtype, shape, trt, engine)
             host = np.empty(shape, dtype=dtype)
             outputs[logical_name] = host
             device = _cuda(cudart.cudaMalloc(host.nbytes))
@@ -151,7 +172,7 @@ def main() -> int:
         },
         "gates": {
             "deserialized": True,
-            "fixed_io_contract": True,
+            "dynamic_io_contract": True,
             "executed": True,
             "pytorch_absent": not forbidden.intersection(sys.modules),
         },
@@ -168,42 +189,87 @@ def _load_inputs(path: Path) -> dict[str, np.ndarray]:
         crops = np.ascontiguousarray(bundle["crops"], dtype=np.float32)
         if crops.shape == (8, 3, 224, 224):
             crops = crops[None, ...]
-        input_ids = _pad(bundle["input_ids"], 1)
-        attention_mask = _pad(bundle["attention_mask"], 0)
+        input_ids = _token_input(bundle["input_ids"])
+        attention_mask = _token_input(bundle["attention_mask"])
     values = {
         "roi_crops": crops,
         "input_ids": input_ids,
         "attention_mask": attention_mask,
     }
-    for name, dtype, shape in INPUT_CONTRACT:
+    if input_ids.shape != attention_mask.shape:
+        raise RuntimeError("TensorRT token inputs have different shapes")
+    for name, dtype, minimum, _, maximum in INPUT_CONTRACT:
         value = values[name]
-        if value.dtype != dtype or value.shape != shape:
-            raise RuntimeError(f"TensorRT input {name} differs from the fixed contract")
+        if value.dtype != dtype or not _within(tuple(value.shape), minimum, maximum):
+            raise RuntimeError(f"TensorRT input {name} differs from the profile")
     return values
 
 
-def _pad(values: np.ndarray, fill: int) -> np.ndarray:
-    if values.ndim != 2 or values.shape[0] != 1 or values.shape[1] > 90:
+def _token_input(values: np.ndarray) -> np.ndarray:
+    if (
+        values.ndim != 2
+        or values.shape[0] != 1
+        or values.shape[1] < 1
+        or values.shape[1] > 90
+    ):
         raise RuntimeError("TensorRT token input is invalid")
-    result = np.full((1, 90), fill, dtype=np.int64)
-    result[:, : values.shape[1]] = values
-    return result
+    return np.ascontiguousarray(values, dtype=np.int64)
 
 
-def _verify_tensor_contract(
+def _verify_input_contract(
     engine: object,
+    context: object,
+    name: str,
+    dtype: np.dtype,
+    minimum: tuple[int, ...],
+    optimum: tuple[int, ...],
+    maximum: tuple[int, ...],
+    actual: tuple[int, ...],
+    trt: object,
+) -> None:
+    observed_dtype = np.dtype(trt.nptype(engine.get_tensor_dtype(name)))
+    observed_profile = tuple(
+        tuple(shape)
+        for shape in engine.get_tensor_profile_shape(name, 0)
+    )
+    if observed_dtype != dtype or observed_profile != (minimum, optimum, maximum):
+        raise RuntimeError(
+            f"TensorRT input {name} differs: {observed_dtype} {observed_profile}"
+        )
+    if not _within(actual, minimum, maximum):
+        raise RuntimeError(f"TensorRT input {name} is outside its profile")
+    engine_shape = tuple(engine.get_tensor_shape(name))
+    if -1 in engine_shape and not context.set_input_shape(name, actual):
+        raise RuntimeError(f"TensorRT input shape binding failed for {name}")
+    if tuple(context.get_tensor_shape(name)) != actual:
+        raise RuntimeError(f"TensorRT input shape differs for {name}")
+
+
+def _verify_output_contract(
     context: object,
     name: str,
     dtype: np.dtype,
     shape: tuple[int, ...],
     trt: object,
+    engine: object,
 ) -> None:
     observed_dtype = np.dtype(trt.nptype(engine.get_tensor_dtype(name)))
     observed_shape = tuple(context.get_tensor_shape(name))
     if observed_dtype != dtype or observed_shape != shape:
         raise RuntimeError(
-            f"TensorRT tensor {name} differs: {observed_dtype} {observed_shape}"
+            f"TensorRT output {name} differs: {observed_dtype} {observed_shape}"
         )
+
+
+def _within(
+    actual: tuple[int, ...],
+    minimum: tuple[int, ...],
+    maximum: tuple[int, ...],
+) -> bool:
+    return len(actual) == len(minimum) == len(maximum) and all(
+        lower <= observed <= upper
+        for observed, lower, upper in zip(actual, minimum, maximum, strict=True)
+    )
 
 
 def _cuda(result: object) -> object:

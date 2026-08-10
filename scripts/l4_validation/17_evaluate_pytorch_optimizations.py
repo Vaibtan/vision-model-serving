@@ -320,13 +320,19 @@ def _measure_model(
                 },
             }
             candidate["status"] = "passed" if parity else "rejected"
-        except torch.cuda.OutOfMemoryError:
+        except torch.cuda.OutOfMemoryError as error:
             torch.cuda.empty_cache()
-            candidate = _failed_candidate(policy, "cuda_out_of_memory", cuda_oom=True)
+            candidate = _failed_candidate(
+                policy,
+                "cuda_out_of_memory",
+                detail=str(error),
+                cuda_oom=True,
+            )
         except Exception as error:  # one failed candidate must not hide the matrix
             candidate = _failed_candidate(
                 policy,
                 f"candidate_failed:{type(error).__name__}",
+                detail=str(error),
                 cuda_oom=False,
             )
         candidates.append(candidate)
@@ -334,7 +340,10 @@ def _measure_model(
         torch.cuda.empty_cache()
     baseline = candidates[0]
     if baseline["status"] != "passed":
-        raise RuntimeError("FP32 optimization baseline did not pass")
+        raise RuntimeError(
+            "FP32 optimization baseline did not pass: "
+            f"{baseline['failure_code']}: {baseline['failure_detail']}"
+        )
     baseline_performance = baseline["performance"]
     for candidate in candidates:
         if candidate["name"] == "fp32":
@@ -452,12 +461,14 @@ def _failed_candidate(
     policy: CandidatePolicy,
     failure_code: str,
     *,
+    detail: str,
     cuda_oom: bool,
 ) -> dict[str, object]:
     return {
         "name": policy.name,
         "status": "failed",
         "failure_code": failure_code,
+        "failure_detail": detail[:1_000],
         "parity": {"passed": False},
         "performance": {
             "latency_ms": None,
@@ -481,17 +492,18 @@ def _failed_candidate(
 def _classifier_inputs(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     with np.load(path.expanduser().resolve(), allow_pickle=False) as bundle:
         crops = np.ascontiguousarray(bundle["crops"][None, ...], dtype=np.float32)
-        input_ids = _pad_tokens(bundle["input_ids"], value=1)
-        attention_mask = _pad_tokens(bundle["attention_mask"], value=0)
+        input_ids = np.ascontiguousarray(bundle["input_ids"], dtype=np.int64)
+        attention_mask = np.ascontiguousarray(
+            bundle["attention_mask"], dtype=np.int64
+        )
+    if (
+        input_ids.ndim != 2
+        or input_ids.shape[0] != 1
+        or not 1 <= input_ids.shape[1] <= 90
+        or attention_mask.shape != input_ids.shape
+    ):
+        raise RuntimeError("MMBCD token tensors differ from the pinned request")
     return crops, input_ids, attention_mask
-
-
-def _pad_tokens(values: np.ndarray, *, value: int) -> np.ndarray:
-    if values.ndim != 2 or values.shape[0] != 1 or values.shape[1] > 90:
-        raise RuntimeError("MMBCD token tensor exceeds the fixed candidate contract")
-    result = np.full((1, 90), value, dtype=np.int64)
-    result[:, : values.shape[1]] = values
-    return result
 
 
 def _numpy(value: object) -> np.ndarray:

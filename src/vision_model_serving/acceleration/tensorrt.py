@@ -17,8 +17,8 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _CLASSIFIER_INPUTS = (
     ("roi_crops", "float32", (1, 8, 3, 224, 224)),
-    ("input_ids", "int64", (1, 90)),
-    ("attention_mask", "int64", (1, 90)),
+    ("input_ids", "int64", ((1, 1), (1, 5), (1, 90))),
+    ("attention_mask", "int64", ((1, 1), (1, 5), (1, 90))),
 )
 _CLASSIFIER_OUTPUTS = (
     ("logits", "float32", (1, 2)),
@@ -237,35 +237,86 @@ def _plugin_contract(
 
 def _tensor_contract(
     value: object, path: str
-) -> tuple[tuple[str, str, tuple[int, ...]], ...]:
+) -> tuple[
+    tuple[
+        str,
+        str,
+        tuple[int, ...] | tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]],
+    ],
+    ...,
+]:
     if not isinstance(value, list) or not value:
         raise TensorRtManifestError(f"TensorRT {path} contract is invalid")
-    result: list[tuple[str, str, tuple[int, ...]]] = []
+    result: list[
+        tuple[
+            str,
+            str,
+            tuple[int, ...]
+            | tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]],
+        ]
+    ] = []
     for item in value:
         tensor = _mapping(item, path)
-        if set(tensor) != {"name", "dtype", "shape"}:
+        keys = set(tensor)
+        static_keys = {"name", "dtype", "shape"}
+        dynamic_keys = {
+            "name",
+            "dtype",
+            "min_shape",
+            "opt_shape",
+            "max_shape",
+        }
+        if keys not in {frozenset(static_keys), frozenset(dynamic_keys)}:
             raise TensorRtManifestError(f"TensorRT {path} contract is incomplete")
         name = tensor.get("name")
         dtype = tensor.get("dtype")
-        shape = tensor.get("shape")
         if (
             not isinstance(name, str)
             or not name
             or dtype not in {"float32", "int64"}
-            or not isinstance(shape, list)
-            or not shape
-            or any(
-                isinstance(dimension, bool)
-                or not isinstance(dimension, int)
-                or dimension <= 0
-                for dimension in shape
-            )
         ):
             raise TensorRtManifestError(f"TensorRT {path} tensor is invalid")
-        result.append((name, dtype, tuple(shape)))
+        if keys == static_keys:
+            shape = _shape(tensor.get("shape"), path)
+            result.append((name, dtype, shape))
+            continue
+        minimum = _shape(tensor.get("min_shape"), path)
+        optimum = _shape(tensor.get("opt_shape"), path)
+        maximum = _shape(tensor.get("max_shape"), path)
+        if not (
+            len(minimum) == len(optimum) == len(maximum)
+            and all(
+                lower <= preferred <= upper
+                for lower, preferred, upper in zip(
+                    minimum,
+                    optimum,
+                    maximum,
+                    strict=True,
+                )
+            )
+        ):
+            raise TensorRtManifestError(
+                f"TensorRT {path} dynamic profile is invalid"
+            )
+        result.append((name, dtype, (minimum, optimum, maximum)))
     if len({name for name, _, _ in result}) != len(result):
         raise TensorRtManifestError(f"TensorRT {path} names must be unique")
     return tuple(result)
+
+
+def _shape(value: object, path: str) -> tuple[int, ...]:
+    if (
+        not isinstance(value, list)
+        or not value
+        or any(
+            isinstance(dimension, bool)
+            or not isinstance(dimension, int)
+            or dimension <= 0
+            for dimension in value
+        )
+    ):
+        raise TensorRtManifestError(f"TensorRT {path} tensor is invalid")
+    return tuple(value)
 
 
 def _mapping(value: object, path: str) -> Mapping[str, Any]:

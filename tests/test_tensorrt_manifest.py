@@ -47,8 +47,20 @@ def manifest(plan: bytes) -> dict[str, object]:
         },
         "inputs": [
             {"name": "roi_crops", "dtype": "float32", "shape": [1, 8, 3, 224, 224]},
-            {"name": "input_ids", "dtype": "int64", "shape": [1, 90]},
-            {"name": "attention_mask", "dtype": "int64", "shape": [1, 90]},
+            {
+                "name": "input_ids",
+                "dtype": "int64",
+                "min_shape": [1, 1],
+                "opt_shape": [1, 5],
+                "max_shape": [1, 90],
+            },
+            {
+                "name": "attention_mask",
+                "dtype": "int64",
+                "min_shape": [1, 1],
+                "opt_shape": [1, 5],
+                "max_shape": [1, 90],
+            },
         ],
         "outputs": [
             {"name": "logits", "dtype": "float32", "shape": [1, 2]},
@@ -172,6 +184,25 @@ class TensorRtManifestTests(unittest.TestCase):
             root = Path(directory)
             payload = manifest(plan)
             payload["engine"]["filename"] = "../outside.plan"
+            path = root / "manifest.json"
+            path.write_text(json.dumps(payload), encoding="utf-8")
+
+            with self.assertRaises(TensorRtManifestError):
+                load_engine_manifest(
+                    path,
+                    engine_root=root,
+                    expected_model_id=CLASSIFIER_MODEL_ID,
+                    expected_checkpoint_sha256=CHECKPOINT_SHA256,
+                    compatibility=compatibility(),
+                )
+
+    def test_invalid_dynamic_token_profile_is_rejected(self) -> None:
+        plan = b"serialized-tensorrt-plan"
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            (root / "mmbcd-fp32.plan").write_bytes(plan)
+            payload = manifest(plan)
+            payload["inputs"][1]["opt_shape"] = [1, 91]
             path = root / "manifest.json"
             path.write_text(json.dumps(payload), encoding="utf-8")
 

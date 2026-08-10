@@ -132,11 +132,17 @@ The upstream module contains a pure-PyTorch core used for debug/testing, but ups
 
 ## 4. Shape policy
 
-Start with fixed shapes. Fixed inputs reduce export ambiguity, tactic search, memory-profile uncertainty, and plugin complexity.
+Fix every dimension whose semantics are fixed. Admit a dynamic profile only
+where the endpoint already produces a bounded variable dimension and changing
+that dimension would change the model result.
 
 ### MMBCD
 
-Use exactly batch 1, eight 224-by-224 crops, and 90 text tokens. Any other shape is a contract error. Do not create an optimization profile that silently admits inputs the endpoint cannot validate.
+Use exactly batch 1 and eight 224-by-224 crops. Preserve the tokenizer's real
+sequence width and admit only a tied `input_ids`/`attention_mask` TensorRT
+profile from 1 through 90 tokens, with the pinned public request's width 5 as
+the optimization point. Padding that request to width 90 was rejected on L4:
+it changed the fused-embedding golden even with the attention mask present.
 
 ### Detector
 
@@ -307,7 +313,8 @@ A model is **GO for TensorRT production** only when all are true:
 
 The project is **PARTIAL** when MMBCD passes every gate but the detector remains blocked on its custom plugin, or when only a fixed detector shape is validated. In that state it may accurately claim:
 
-> The MMBCD classifier uses a strict full TensorRT engine for the validated fixed-shape contract.
+> The MMBCD classifier uses a strict full TensorRT engine for the validated
+> fixed image/ROI and dynamic 1-through-90 token-width contract.
 
 It may not claim that the whole pipeline uses TensorRT. The runtime must report the backend per stage, and the TensorRT-backed stage still has no eager fallback. Whether a mixed eager-detector/TensorRT-classifier release satisfies the assignment is a product decision, not something the runtime should conceal.
 
@@ -331,7 +338,7 @@ Stop promotion when any of these occurs:
 - TensorRT 10.12 supports the repository's CUDA 12.8 lane and L4 compute capability.
 - MMBCD is the rational first compilation target, subject to an actual strict coverage report.
 - FocalNet-DINO contains an opaque custom deformable-attention CUDA operation with no upstream export/plugin registration, so plugin work is the expected blocker.
-- fixed-shape contracts, strict full compilation, raw-plan execution, and the validation gates above are an implementable design.
+- fixed image/ROI shapes, a bounded tied token-width profile, strict full compilation, raw-plan execution, and the validation gates above are an implementable design.
 
 ### Not supported until a target-L4 run with the real artifacts
 
@@ -348,7 +355,8 @@ The existing eager FP32 L4 validation remains valuable baseline evidence. It doe
 ## 11. Recommended implementation order
 
 1. Add the exact acceleration-tool pins to a separate locked builder/validation dependency group and record every resolved version.
-2. Make MMBCD token width statically 90 and add contract tests that reject all other Tensor shapes.
+2. Preserve MMBCD token width, bind both token tensors to the same 1-through-90
+   dynamic profile, and reject every shape outside that profile.
 3. Create an inference-only MMBCD tensor wrapper; run strict export and archive its first unsupported-operator report.
 4. If coverage is complete, build the FP32/TF32-disabled raw plan on L4 and run TensorRT-only, parity, endpoint, residency, and performance gates.
 5. Run the same strict detector export solely to capture the exact custom-operator failure and graph context.

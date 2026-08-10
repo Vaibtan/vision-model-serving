@@ -45,7 +45,8 @@ docker build -f docker/tensorrt.Dockerfile \
 Run the builder on the target L4 with the same read-only model/source mounts.
 It performs:
 
-1. strict MMBCD `torch.export` at `[1,8,3,224,224]` and token width 90;
+1. strict MMBCD `torch.export` at `[1,8,3,224,224]` with a tied dynamic
+   token-width profile of 1 through 90 (optimization point 5);
 2. Torch-TensorRT dry-run analysis with full compilation required;
 3. raw serialized FP32 plan build with TF32 disabled;
 4. execution in a fresh verifier that imports TensorRT/CUDA Python/NumPy but
