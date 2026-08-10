@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 from pathlib import Path
+import re
 import sys
 from tempfile import TemporaryDirectory
 from threading import Thread
@@ -144,6 +145,7 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
     def test_full_workflow_renders_selects_and_exports_evidence(self) -> None:
         result = prediction_result()
         status_calls = 0
+        idempotency_key = ""
 
         def status_route(route: object) -> None:
             nonlocal status_calls
@@ -157,14 +159,16 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
             lambda route: fulfill(route, {"result": result}),
         )
         self.page.route("**/api/v1/predictions/browser-job", status_route)
-        self.page.route(
-            "**/api/v1/predictions",
-            lambda route: fulfill(
+        def submission(route: object) -> None:
+            nonlocal idempotency_key
+            idempotency_key = route.request.headers.get("idempotency-key", "")
+            fulfill(
                 route,
                 {"prediction_id": "browser-job", "state": "queued"},
                 status=202,
-            ),
-        )
+            )
+
+        self.page.route("**/api/v1/predictions", submission)
         self.page.route(
             "**/api/v1/models",
             lambda route: fulfill(
@@ -186,6 +190,10 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
             pixels = np.arange(1024 * 1024, dtype=np.uint16).reshape(1024, 1024)
             dicom_path.write_bytes(dicom_bytes(pixels))
 
+            self.page.add_init_script(
+                "Object.defineProperty(Crypto.prototype, 'randomUUID', "
+                "{value: undefined, configurable: true});"
+            )
             self.page.goto(self.live_server_url)
             self.page.locator("#dicom").set_input_files(dicom_path)
             self.page.locator("#preview-image").wait_for(state="visible")
@@ -225,6 +233,13 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
                 self.assertTrue(colors and len(colors) > 2)
 
         self.assertGreaterEqual(status_calls, 3)
+        self.assertRegex(
+            idempotency_key,
+            re.compile(
+                r"^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-"
+                r"[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+            ),
+        )
         self.assertEqual(self.browser_errors, [])
 
     def test_detection_mode_never_submits_hidden_history(self) -> None:

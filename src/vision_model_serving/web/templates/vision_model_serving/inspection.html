@@ -195,6 +195,13 @@
       let lastResult = null;
 
       const csrfToken = () => form.querySelector("[name=csrfmiddlewaretoken]").value;
+      const idempotencyKey = () => {
+        const bytes = crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, (value) => value.toString(16).padStart(2, "0"));
+        return `${hex.slice(0, 4).join("")}-${hex.slice(4, 6).join("")}-${hex.slice(6, 8).join("")}-${hex.slice(8, 10).join("")}-${hex.slice(10).join("")}`;
+      };
       const setStatus = (state, detail) => {
         statusDot.dataset.state = state;
         statusText.textContent = state === "idle" ? "Waiting for a DICOM" : state.replaceAll("_", " ");
@@ -243,7 +250,7 @@
           data.delete("csrfmiddlewaretoken");
           if (selectedMode() !== "full") data.delete("clinical_history");
           if (!data.get("detector_score_threshold")) data.delete("detector_score_threshold");
-          const response = await fetch("/api/v1/predictions", { method: "POST", body: data, headers: { "Prefer": "respond-async", "Idempotency-Key": crypto.randomUUID(), "X-CSRFToken": csrfToken() }, credentials: "same-origin" });
+          const response = await fetch("/api/v1/predictions", { method: "POST", body: data, headers: { "Prefer": "respond-async", "Idempotency-Key": idempotencyKey(), "X-CSRFToken": csrfToken() }, credentials: "same-origin" });
           if (!response.ok) await apiError(response);
           const handle = await response.json();
           setStatus(handle.state, "Prediction accepted. This page polls the public status resource.");
