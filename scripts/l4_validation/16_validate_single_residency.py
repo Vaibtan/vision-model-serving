@@ -56,6 +56,9 @@ def main() -> None:
         SingleResidencyRuntime,
         TorchCudaLifecycle,
     )
+    from vision_model_serving.validation.revision import require_clean_revision
+
+    revision = require_clean_revision(project_root)
 
     artifact_root = args.artifact_dir.expanduser().resolve()
     tokenizer_root = args.tokenizer_dir.expanduser().resolve()
@@ -206,7 +209,9 @@ def main() -> None:
 
     output_path = args.output.expanduser().resolve()
     manifest = {
-        "pipeline": "single-residency-real-dicom-l4-fp32-v1",
+        "schema_version": 2,
+        "pipeline": "single-residency-real-dicom-l4-fp32-v2",
+        "revision": revision,
         "cycles": records,
         "final_status": {
             "state": status.state.value,

@@ -364,6 +364,11 @@ uv run python scripts/l4_validation/prepare_focalnet.py build \
   --max-jobs 4
 ```
 
+The build helper also recognizes NVIDIA Conda's target-specific layout under
+`${CUDA_HOME}/targets/x86_64-linux`, adding its headers and libraries without
+changing the pinned toolkit identity. It places the active Python environment
+on `PATH` so the pinned Ninja backend is used.
+
 Import `torch` before the extension so `libc10.so` and the other PyTorch native
 libraries are loaded. The standalone validator does this correctly:
 

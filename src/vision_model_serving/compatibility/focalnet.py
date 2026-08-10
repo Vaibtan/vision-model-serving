@@ -136,9 +136,20 @@ def build_focalnet_extension(
             "CUDACXX": str(nvcc),
             "TORCH_CUDA_ARCH_LIST": spec.torch_arch_list,
             "MAX_JOBS": str(max_jobs),
-            "PATH": str(cuda_home / "bin") + os.pathsep + environment.get("PATH", ""),
         }
     )
+    _prepend_environment_path(environment, "PATH", cuda_home / "bin")
+    _prepend_environment_path(environment, "PATH", Path(sys.executable).resolve().parent)
+    conda_target = cuda_home / "targets" / "x86_64-linux"
+    if (conda_target / "include" / "cuda_runtime_api.h").is_file():
+        _prepend_environment_path(environment, "CPATH", conda_target / "include")
+        if (conda_target / "lib").is_dir():
+            _prepend_environment_path(environment, "LIBRARY_PATH", conda_target / "lib")
+            _prepend_environment_path(
+                environment,
+                "LD_LIBRARY_PATH",
+                conda_target / "lib",
+            )
     subprocess.run(
         [sys.executable, "setup.py", "build_ext", "--inplace"],
         cwd=ops_dir,
@@ -149,6 +160,15 @@ def build_focalnet_extension(
     if not candidates:
         raise PatchCheckError("Build completed without an in-place extension module")
     return candidates[0]
+
+
+def _prepend_environment_path(
+    environment: dict[str, str],
+    name: str,
+    path: Path,
+) -> None:
+    existing = environment.get(name, "")
+    environment[name] = str(path) + (os.pathsep + existing if existing else "")
 
 
 def _git(

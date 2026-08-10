@@ -24,6 +24,7 @@ import numpy as np
 from _common import (
     DETECTOR_PREDICTION_SHA256,
     MMBCD_PREDICTION_SHA256,
+    decode_dicom_file,
     default_paths,
     load_json,
     sha256_array,
@@ -57,6 +58,7 @@ from vision_model_serving.model_ids import (  # noqa: E402
 from vision_model_serving.validation.optimization import (  # noqa: E402
     validate_optimization_report,
 )
+from vision_model_serving.validation.revision import require_clean_revision  # noqa: E402
 
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -95,7 +97,7 @@ def main() -> int:
     if args.warmup_runs < 1 or args.measured_runs < 5:
         parser.error("warmup/measured runs must be at least 1/5")
     project_root = args.project_root.expanduser().resolve()
-    _verify_clean_revision(project_root, args.revision)
+    require_clean_revision(project_root, args.revision)
     optimization = load_json(args.optimization_evidence)
     validate_optimization_report(optimization)
     if optimization["revision"] != args.revision:
@@ -127,7 +129,7 @@ def main() -> int:
     if not artifact_report.ready:
         raise artifact_report.errors[0]
     artifacts = {item.id: item for item in artifact_report.verified_artifacts}
-    canonical = DicomCanonicalizer().decode(args.dicom.read_bytes())
+    canonical = decode_dicom_file(args.dicom, DicomCanonicalizer())
     detector_host = np.array(
         DetectorPreprocessor().prepare(canonical.pixels).tensor,
         dtype=np.float32,
@@ -565,14 +567,6 @@ def _verify_dependencies() -> dict[str, str]:
     if observed != _DEPENDENCIES:
         raise RuntimeError(f"TensorRT dependency lane differs: {observed!r}")
     return observed
-
-
-def _verify_clean_revision(root: Path, revision: str) -> None:
-    prefix = ["git", "-c", f"safe.directory={root.as_posix()}", "-C", str(root)]
-    observed = subprocess.check_output([*prefix, "rev-parse", "HEAD"], text=True).strip()
-    dirty = subprocess.check_output([*prefix, "status", "--porcelain"], text=True).strip()
-    if observed != revision or dirty:
-        raise RuntimeError("TensorRT evidence requires the exact clean revision")
 
 
 def _sanitize_error(error: Exception, *roots: Path) -> str:

@@ -36,6 +36,10 @@ from vision_model_serving.validation.packaged_http import (
     PackagedPredictionClient,
 )
 from vision_model_serving.validation.reporting import write_json_atomic
+from vision_model_serving.validation.revision import (
+    RevisionEvidenceError,
+    require_clean_revision,
+)
 
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -545,12 +549,12 @@ def _inventory(payload: dict[str, Any]) -> dict[str, Any]:
 
 
 def _verify_clean_revision(project_root: Path, revision: str) -> None:
-    head = _command(["git", "rev-parse", "HEAD"], cwd=project_root)
-    dirty = _command(["git", "status", "--porcelain"], cwd=project_root)
-    if head != revision or dirty:
+    try:
+        require_clean_revision(project_root, revision)
+    except RevisionEvidenceError as error:
         raise BenchmarkContractError(
-            "benchmark must run from the exact clean committed revision"
-        )
+            f"benchmark must run from the exact clean committed revision: {error}"
+        ) from None
 
 
 def _environment_identity(

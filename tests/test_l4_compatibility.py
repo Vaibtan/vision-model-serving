@@ -10,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -21,6 +22,9 @@ from vision_model_serving.compatibility import (  # noqa: E402
     evaluate_environment,
     load_environment_spec,
     prepare_focalnet_patches,
+)
+from vision_model_serving.compatibility.focalnet import (  # noqa: E402
+    build_focalnet_extension,
 )
 
 
@@ -188,6 +192,54 @@ class L4EnvironmentTests(unittest.TestCase):
                 )
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("usage:", result.stdout)
+
+    def test_extension_build_supports_conda_target_cuda_layout(self) -> None:
+        spec = load_environment_spec(SPEC_PATH)
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            repository = root / "upstream"
+            ops = repository / "models" / "dino" / "ops"
+            ops.mkdir(parents=True)
+            (ops / "setup.py").write_text("# fixture\n", encoding="utf-8")
+            toolkit = root / "cuda-12.8"
+            (toolkit / "bin").mkdir(parents=True)
+            (toolkit / "bin" / "nvcc").write_text("fixture\n", encoding="utf-8")
+            target = toolkit / "targets" / "x86_64-linux"
+            (target / "include").mkdir(parents=True)
+            (target / "include" / "cuda_runtime_api.h").write_text(
+                "fixture\n", encoding="utf-8"
+            )
+            (target / "lib").mkdir()
+            captured: dict[str, str] = {}
+
+            def run(arguments, **kwargs):
+                if arguments[0] == str(toolkit / "bin" / "nvcc"):
+                    return subprocess.CompletedProcess(
+                        arguments, 0, stdout="Cuda compilation tools, release 12.8"
+                    )
+                captured.update(kwargs["env"])
+                (ops / "MultiScaleDeformableAttention.fixture.so").write_bytes(b"so")
+                return subprocess.CompletedProcess(arguments, 0)
+
+            with patch.dict(os.environ, {"CUDA_HOME": str(toolkit)}, clear=False):
+                with patch(
+                    "vision_model_serving.compatibility.focalnet.subprocess.run",
+                    side_effect=run,
+                ):
+                    build_focalnet_extension(repository, spec)
+
+            self.assertEqual(
+                captured["CPATH"].split(os.pathsep)[0], str(target / "include")
+            )
+            self.assertEqual(
+                captured["LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib")
+            )
+            self.assertEqual(
+                captured["LD_LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib")
+            )
+            self.assertEqual(
+                captured["PATH"].split(os.pathsep)[0], str(Path(sys.executable).parent)
+            )
 
     @staticmethod
     def _git(repository: Path, *arguments: str) -> subprocess.CompletedProcess[str]:

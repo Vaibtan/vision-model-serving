@@ -24,6 +24,7 @@ import numpy as np
 from _common import (
     DETECTOR_PREDICTION_SHA256,
     MMBCD_PREDICTION_SHA256,
+    decode_dicom_file,
     default_paths,
     load_json,
     sha256_array,
@@ -58,6 +59,7 @@ from vision_model_serving.validation.optimization import (  # noqa: E402
     candidate_promotion,
     validate_optimization_report,
 )
+from vision_model_serving.validation.revision import require_clean_revision  # noqa: E402
 
 
 @dataclass(frozen=True, slots=True)
@@ -102,9 +104,10 @@ def main() -> int:
         parser.error("warmup/measured runs must be at least 1/5")
     if len(args.revision) != 40 or any(c not in "0123456789abcdef" for c in args.revision):
         parser.error("--revision must be a full lowercase Git commit")
-    _verify_clean_revision(args.project_root, args.revision)
+    require_clean_revision(args.project_root, args.revision)
     residency_identity = _verify_single_residency_evidence(
-        args.single_residency_evidence
+        args.single_residency_evidence,
+        args.revision,
     )
     os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
     import torch
@@ -128,7 +131,7 @@ def main() -> int:
         raise artifact_report.errors[0]
     artifacts = {item.id: item for item in artifact_report.verified_artifacts}
 
-    canonical = DicomCanonicalizer().decode(args.dicom.read_bytes())
+    canonical = decode_dicom_file(args.dicom, DicomCanonicalizer())
     detector_input = DetectorPreprocessor().prepare(canonical.pixels)
     detector_host = np.array(detector_input.tensor, dtype=np.float32, copy=True)
     detector_postprocessor = DetectorPostprocessor()
@@ -510,8 +513,10 @@ def _distribution(values: list[float]) -> dict[str, float | int]:
     }
 
 
-def _verify_single_residency_evidence(path: Path) -> str:
+def _verify_single_residency_evidence(path: Path, revision: str) -> str:
     payload = load_json(path)
+    if payload.get("schema_version") != 2 or payload.get("revision") != revision:
+        raise RuntimeError("single-residency evidence revision differs")
     cycles = payload.get("cycles")
     if not isinstance(cycles, list) or len(cycles) < 2:
         raise RuntimeError("single-residency evidence has too few cycles")
@@ -524,14 +529,6 @@ def _verify_single_residency_evidence(path: Path) -> str:
     if payload.get("final_status", {}).get("resident_models") != [CLASSIFIER_MODEL_ID]:
         raise RuntimeError("single-residency evidence has an invalid final resident")
     return sha256_file(path.expanduser().resolve())
-
-
-def _verify_clean_revision(root: Path, revision: str) -> None:
-    prefix = ["git", "-c", f"safe.directory={root.resolve().as_posix()}", "-C", str(root)]
-    observed = subprocess.check_output([*prefix, "rev-parse", "HEAD"], text=True).strip()
-    dirty = subprocess.check_output([*prefix, "status", "--porcelain"], text=True).strip()
-    if observed != revision or dirty:
-        raise RuntimeError("optimization evidence requires the exact clean revision")
 
 
 def _nvidia_value(field: str) -> str:

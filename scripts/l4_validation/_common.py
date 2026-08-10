@@ -67,6 +67,13 @@ def default_paths() -> dict[str, Path]:
     }
 
 
+def decode_dicom_file(path: Path, canonicalizer: Any) -> Any:
+    """Decode one fixture through the canonicalizer's binary-stream contract."""
+
+    with require_file(path).open("rb") as stream:
+        return canonicalizer.decode(stream)
+
+
 def path_argument(
     parser: argparse.ArgumentParser,
     name: str,
