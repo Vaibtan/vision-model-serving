@@ -63,7 +63,10 @@ def main() -> int:
             raise RuntimeError("browser ROI selection did not expose score/attention")
         summary = page.locator("#summary-grid").inner_text()
         runtime = page.locator("#runtime-values").inner_text()
-        if "Class probabilities" not in summary or "mmbcd-classifier" not in runtime:
+        if (
+            "class probabilities" not in summary.casefold()
+            or "mmbcd-classifier" not in runtime
+        ):
             raise RuntimeError(
                 "browser result evidence panels are incomplete: "
                 f"summary={summary!r}, runtime={runtime!r}"
