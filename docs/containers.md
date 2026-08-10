@@ -16,7 +16,9 @@ localhost:8000 -> Gunicorn/Django -> Redis -> standard RQ worker
 The web and RQ services share the roughly 424 MB CPU image. The executor uses
 the CUDA image and is the only service with an NVIDIA device, checkpoints,
 tokenizer, or model-source mounts. Redis is reachable only on the internal
-Compose network and runs with RDB and AOF persistence disabled.
+backend network and runs with RDB and AOF persistence disabled. Web also joins
+a no-masquerade edge bridge so Docker can publish only `127.0.0.1:8000`; no
+other service joins that bridge.
 
 ## Build and asset boundary
 
@@ -98,7 +100,8 @@ The smoke service then sends a warmup plus one measured full request through
 Gunicorn and verifies both exact prediction hashes.
 
 After a successful build, startup can be forced to use only local images and
-runtime mounts. The internal network prevents service egress:
+runtime mounts. The backend network is internal, and the web-only edge bridge
+disables IP masquerading while permitting the loopback port publication:
 
 ```bash
 docker compose --profile gpu up --no-build --pull never \
@@ -187,8 +190,8 @@ docker compose --profile validation down --volumes --remove-orphans
   `VMS_JOBS_SIZE`. Socket and metrics tmpfs volumes are separately bounded.
 - Every service is non-root, drops all Linux capabilities, uses
   `no-new-privileges`, and has a read-only root filesystem.
-- Only `127.0.0.1:8000` is published. Redis and the executor socket are never
-  published.
+- Only `127.0.0.1:8000` is published through the web-only no-masquerade edge
+  bridge. Redis and the executor socket are never published.
 - Shutdown gives the RQ work-horse 190 seconds and the executor/Gunicorn 30
   seconds to finish cleanup.
 

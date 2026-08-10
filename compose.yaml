@@ -170,6 +170,7 @@ services:
       VMS_SYNC_WAIT_SECONDS: "5"
     networks:
       - backend
+      - edge
     depends_on:
       redis:
         condition: service_healthy
@@ -314,6 +315,11 @@ services:
 networks:
   backend:
     internal: true
+  edge:
+    driver: bridge
+    driver_opts:
+      com.docker.network.bridge.enable_ip_masquerade: "false"
+      com.docker.network.bridge.host_binding_ipv4: "127.0.0.1"
 
 volumes:
   executor-run:

@@ -17,7 +17,8 @@ flowchart LR
 
 The web and RQ images are CPU-only. Only the executor receives an NVIDIA
 device and read-only checkpoint, tokenizer, and source mounts. Redis and the
-Unix socket are reachable only on the internal Compose network/shared tmpfs.
+Unix socket are reachable only on the internal Compose backend/shared tmpfs.
+Web alone also joins a no-masquerade edge bridge for the loopback HTTP port.
 
 ## Module seams
 
