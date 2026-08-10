@@ -243,7 +243,9 @@ docker compose --profile gpu down --volumes --remove-orphans
 | DICOM is rejected | Check the supported syntax/pixel limits in [`dicom-canonicalization.md`](dicom-canonicalization.md); do not convert it silently. |
 
 TensorRT, FP16/BF16, TF32, and `torch.compile` are not selected in production.
-The repository implements isolated fail-closed L4 evaluation lanes; promotion
-still requires generated same-revision parity, memory, reliability, restart,
-and end-to-end performance evidence. There is no eager fallback inside the
-TensorRT engine verifier.
+The isolated fail-closed L4 lanes have been run and are recorded in the
+[current resolution evidence](validation/spec-resolution-l4-20260810.md).
+Every PyTorch alternative failed parity or strict capture. TensorRT proved only
+a static-width classifier diagnostic; required dynamic shape coverage and
+detector coverage failed, so no engine was retained or promoted. There is no
+eager fallback inside the TensorRT engine verifier.

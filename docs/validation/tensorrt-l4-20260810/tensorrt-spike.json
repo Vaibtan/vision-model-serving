@@ -1,0 +1,119 @@
+{
+  "decision": "stop",
+  "environment": {
+    "compute_capability": "8.9",
+    "cuda": "12.8",
+    "dependencies": {
+      "cuda-python": "12.8.0",
+      "onnx": "1.16.0",
+      "polygraphy": "0.49.24",
+      "tensorrt": "10.12.0.36",
+      "torch-tensorrt": "2.8.0"
+    },
+    "driver": "580.173.02",
+    "gpu_name": "NVIDIA L4",
+    "optimization_evidence_sha256": "17b7868b2d58009772e779acadb8723c172a32dcad0417ca89a5368237b47166",
+    "script_sha256": "34612e019b39fa527f8f332ef46136b862d99eda0946464e87b931408ff56a4c",
+    "torch": "2.8.0+cu128"
+  },
+  "measured_at": "2026-08-10T07:24:41.671374+00:00",
+  "models": {
+    "focalnet-dino-detector": {
+      "coverage_report_sha256": "b0043d7a7b8cd605b247d9c5e89e3adf5b3f03ae67036994d1a227b663a57db3",
+      "custom_operator": "MultiScaleDeformableAttention",
+      "decision": "stop",
+      "dryrun_completed": false,
+      "elapsed_ms": 118.85860300026252,
+      "engine_built": false,
+      "failure_code": "strict_coverage_failed:Unsupported",
+      "next_action": "Implement an exact TensorRT IPluginV3 plus Torch-TensorRT converter only if the assignment budget justifies custom deformable-attention work.",
+      "parity_passed": false,
+      "performance_threshold_passed": false,
+      "plugin_required": true,
+      "require_full_compilation": true,
+      "strict_export": false
+    },
+    "mmbcd-classifier": {
+      "decision": "stop",
+      "dryrun_completed": true,
+      "dryrun_report_sha256": "04b27b20bb0c10965e04d3dc8c3a18108c11755cb82e1f68ae9eb001363a6b3d",
+      "engine_build_ms": 19380.688749999536,
+      "engine_built": true,
+      "export_max_absolute_difference": {
+        "fused_embeddings": 0.0,
+        "logits": 0.0,
+        "roi_attention": 0.0
+      },
+      "export_ms": 6128.104923000137,
+      "parity": {
+        "absolute_tolerance": 0.0001,
+        "eager_output_sha256": {
+          "fused_embeddings": "591c6410ad3f3edc9e0494b74c842b8f9a84fcf0386c933fc3ee0009a3ca39aa",
+          "logits": "160377bd942df268f699f8fab28b3b146376cf5c7a6ec355156cf5baeae59a4a",
+          "roi_attention": "5c0dcac164f7741d9f4a3e9943555d5f39961920afe359473e9dff8bff44d84a"
+        },
+        "max_absolute_difference": {
+          "fused_embeddings": 5.9604644775390625e-06,
+          "logits": 2.86102294921875e-06,
+          "roi_attention": 1.4901161193847656e-07
+        },
+        "passed": true,
+        "predicted_class_equal": true,
+        "tensorrt_output_sha256": {
+          "fused_embeddings": "a0eb8ac0584f38cc2bf2cd719a429123f825fc88871d814f5615b3c30ac60700",
+          "logits": "213f12d6d176feb047679ad5ed30102c541af7e88866c67ff962a8bd8560693f",
+          "roi_attention": "eec9301b1da1dac543c3e09ee0e289edc2faaa4daab42ff05c983dc61d5933c4"
+        }
+      },
+      "performance": {
+        "eager_latencies_ms": [
+          91.65481099989847,
+          93.70870900056616,
+          94.16970299935201,
+          95.45392300060485,
+          92.4331340011122,
+          96.12941699924704,
+          96.55427299912844,
+          99.05362599965883,
+          96.83341900017695,
+          94.46072500031732
+        ],
+        "eager_p50_ms": 94.95732400046109,
+        "promotion_threshold_passed": true,
+        "scope": "classifier forward only for the exact static token-width-5 public fixture; it is not production shape coverage",
+        "tensorrt_p50_ms": 68.56750150018343,
+        "warm_p50_improvement_percent": 27.791244938778515
+      },
+      "promotion_boundary": "The static diagnostic plan is always deleted. Production requires one strict 2..90 token profile with the same parity/performance gates.",
+      "pytorch_partition_count": 0,
+      "require_full_compilation": true,
+      "runtime_report_sha256": "f37d9389141d5a376916b3618063b52db4e68d3ef66f3abeabe266111a158c56",
+      "shape_coverage": {
+        "dynamic_strict_export": {
+          "failure_code": "dynamic_export_failed:UserError",
+          "passed": false,
+          "report_sha256": "ee1eaabc46451ee2d560ef053ea091c680417e42755e77b9ff359001336b2928"
+        },
+        "failure_code": "dynamic_export_failed:UserError",
+        "passed": false,
+        "required_profile": {
+          "max_token_width": 90,
+          "min_token_width": 2,
+          "opt_token_width": 5
+        },
+        "static_fixture_token_width": 5
+      },
+      "static_fixture_engine_sha256": "847d4a12efcb69a381f188fbccba0ee1011f6dde3dc5312c394ce11634d21209",
+      "strict_export": true,
+      "tensorrt_only_runtime_passed": true,
+      "unsupported_operators": []
+    }
+  },
+  "production_selection": {
+    "backend": "pytorch-eager",
+    "reason": "TensorRT was not promoted because the classifier's required token-width 2..90 profile did not pass and detector full coverage did not pass. Production remains eager FP32 and no fallback is enabled."
+  },
+  "revision": "204cff209fbf88f0aff3cb932274d1426850a682",
+  "schema_version": 1,
+  "validation_boundary": "FP32/TF32-disabled TensorRT feasibility with a static token-width-5 diagnostic engine and a separately gated 2..90 production profile on one NVIDIA L4 and one public DICOM. It is not clinical or cross-hardware evidence."
+}

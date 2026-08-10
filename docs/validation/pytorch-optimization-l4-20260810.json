@@ -1,0 +1,525 @@
+{
+  "environment": {
+    "compute_capability": "8.9",
+    "cuda": "12.8",
+    "cudnn": "91002",
+    "device": "NVIDIA L4",
+    "driver": "580.173.02",
+    "measured_at": "2026-08-10T07:21:13.261353+00:00",
+    "script_sha256": "b1fed04f9eb847a93570a1fd3e3dbe14f02d6f64aa7bc03720ab7d48c3794902",
+    "single_residency_evidence_sha256": "f21e675a7af85d0d4ad6d5ba22484119d3793dbaca660a17bb7d6f38d2029278",
+    "torch": "2.8.0+cu128"
+  },
+  "final_runtime": {
+    "backend": "pytorch-eager",
+    "precision": "float32",
+    "tf32": false
+  },
+  "models": {
+    "focalnet-dino-detector": {
+      "baseline": "fp32",
+      "candidates": [
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 14948.297408000144,
+          "name": "fp32",
+          "parity": {
+            "absolute_tolerance": 0.0,
+            "max_absolute_difference": {
+              "pred_boxes": 0.0,
+              "pred_logits": 0.0
+            },
+            "output_sha256": {
+              "pred_boxes": "c21033d4b3efb7e1b7678640c534a8e061d203779524835907bf825048abc8af",
+              "pred_logits": "582bd1bd9284550f5391625fa7deb00e8d3c5b11e4904e9a2b2dd1a8c9b2ea31"
+            },
+            "passed": true
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 241.86778259277344,
+              "mean": 235.0561294555664,
+              "min": 230.55360412597656,
+              "p50": 232.9528350830078,
+              "p95": 241.86778259277344,
+              "p99": 241.86778259277344,
+              "population_stddev": 3.512411248703134
+            },
+            "peak_allocated_bytes": 1302597632,
+            "peak_reserved_bytes": 1530920960,
+            "throughput_per_second": 4.2543030139915325
+          },
+          "precision": "float32",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "baseline_reference"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "passed",
+          "tf32": false
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 12204.768112000238,
+          "name": "tf32",
+          "parity": {
+            "absolute_tolerance": 0.0001,
+            "max_absolute_difference": {
+              "pred_boxes": 0.876276433467865,
+              "pred_logits": 2.104689121246338
+            },
+            "output_sha256": {
+              "pred_boxes": "c84e9bd7e4cc91d67f4ce7f5503ec896bce911bc2ee4204d80a2a8a05669ba57",
+              "pred_logits": "02c9c3f0d5d994e8a23ae07bbd6e0cb9657dfb4d62eb5bdb1c57f52724d81f6f"
+            },
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 156.514404296875,
+              "mean": 152.25068206787108,
+              "min": 150.61097717285156,
+              "p50": 151.27346801757812,
+              "p95": 156.514404296875,
+              "p99": 156.514404296875,
+              "population_stddev": 1.7382853572782202
+            },
+            "peak_allocated_bytes": 1302597632,
+            "peak_reserved_bytes": 1530920960,
+            "throughput_per_second": 6.568115074546694
+          },
+          "precision": "float32",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "parity_failed",
+              "warm_p50_improved_at_least_15_percent",
+              "throughput_improved_at_least_15_percent"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "rejected",
+          "tf32": true
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 11728.435879000244,
+          "name": "fp16",
+          "parity": {
+            "absolute_tolerance": 0.005,
+            "max_absolute_difference": {
+              "pred_boxes": 0.9375835657119751,
+              "pred_logits": 2.1647963523864746
+            },
+            "output_sha256": {
+              "pred_boxes": "17467b315d8483300ca80936caeef4784e73577e8d129b74fb5d68966d5026f1",
+              "pred_logits": "fd25c4a0746329edccde77103ce30b749585ea9aae1945a9408e22a1a8eaae90"
+            },
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 132.54042053222656,
+              "mean": 124.35365219116211,
+              "min": 120.47872161865234,
+              "p50": 121.43206024169922,
+              "p95": 132.54042053222656,
+              "p99": 132.54042053222656,
+              "population_stddev": 4.759370374962097
+            },
+            "peak_allocated_bytes": 1673766400,
+            "peak_reserved_bytes": 2040528896,
+            "throughput_per_second": 8.041581267454488
+          },
+          "precision": "float16",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "parity_failed",
+              "warm_p50_improved_at_least_15_percent",
+              "throughput_improved_at_least_15_percent"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "rejected",
+          "tf32": false
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": null,
+            "recompilation_count": null
+          },
+          "failure_code": "candidate_failed:NotImplementedError",
+          "failure_detail": "\"ms_deform_attn_forward_cuda\" not implemented for 'BFloat16'",
+          "name": "bf16",
+          "parity": {
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": null,
+            "peak_allocated_bytes": null,
+            "peak_reserved_bytes": null,
+            "throughput_per_second": null
+          },
+          "precision": "bfloat16",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "candidate_failed:NotImplementedError"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "failed",
+          "tf32": false
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": true,
+            "fullgraph_required": true,
+            "graph_break_count": null,
+            "recompilation_count": null
+          },
+          "failure_code": "candidate_failed:Unsupported",
+          "failure_detail": "torch.* op returned non-Tensor\n  Explanation: torch.* ops that return a non-Tensor cannot be traced into the Dynamo FX graph output\n\n\n  Developer debug context: example_value type: NotImplementedType; op: call_method; target: __eq__\n\n\nfrom user code:\n   File \"<vms-focalnet-9789bb4>/models/dino/dino.py\", line 240, in forward\n    samples = nested_tensor_from_tensor_list(samples)\n  File \"<vms-focalnet-9789bb4>/util/misc.py\", line 397, in nested_tensor_from_tensor_list\n    return NestedTensor(tensor, mask)\n  File \"<vision-model-serving-rq-validation>/.venv/lib/python3.12/site-packages/torch/_dynamo/polyfills/__init__.py\", line 209, in instantiate_user_defined_class_object\n    obj.__init__(*args, **kwargs)\n  File \"<vms-focalnet-9789bb4>/util/misc.py\", line 305, in __init__\n    if mask == 'auto':\n\nSet TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS=\"+dynamo\"\n",
+          "name": "compile",
+          "parity": {
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": null,
+            "peak_allocated_bytes": null,
+            "peak_reserved_bytes": null,
+            "throughput_per_second": null
+          },
+          "precision": "float32",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "candidate_failed:Unsupported"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "failed",
+          "tf32": false
+        }
+      ],
+      "selected": "fp32"
+    },
+    "mmbcd-classifier": {
+      "baseline": "fp32",
+      "candidates": [
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 5621.3163479988,
+          "name": "fp32",
+          "parity": {
+            "absolute_tolerance": 0.0,
+            "max_absolute_difference": {
+              "fused_embeddings": 0.0,
+              "logits": 0.0,
+              "roi_attention": 0.0
+            },
+            "output_sha256": {
+              "fused_embeddings": "591c6410ad3f3edc9e0494b74c842b8f9a84fcf0386c933fc3ee0009a3ca39aa",
+              "logits": "160377bd942df268f699f8fab28b3b146376cf5c7a6ec355156cf5baeae59a4a",
+              "roi_attention": "5c0dcac164f7741d9f4a3e9943555d5f39961920afe359473e9dff8bff44d84a"
+            },
+            "passed": true
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 95.81465911865234,
+              "mean": 93.4139907836914,
+              "min": 91.56505584716797,
+              "p50": 92.66893005371094,
+              "p95": 95.81465911865234,
+              "p99": 95.81465911865234,
+              "population_stddev": 1.4338060493512657
+            },
+            "peak_allocated_bytes": 912794624,
+            "peak_reserved_bytes": 994050048,
+            "throughput_per_second": 10.705034562923139
+          },
+          "precision": "float32",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "baseline_reference"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "passed",
+          "tf32": false
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 4279.489836000721,
+          "name": "tf32",
+          "parity": {
+            "absolute_tolerance": 0.0001,
+            "max_absolute_difference": {
+              "fused_embeddings": 0.0025211572647094727,
+              "logits": 0.0006008148193359375,
+              "roi_attention": 0.00012558698654174805
+            },
+            "output_sha256": {
+              "fused_embeddings": "5da383913933b9984babb772ab4d90548477775b69eb18b0b15da12f7243aa41",
+              "logits": "2a7dc2972d97fdce4fbb477a925883f51c040798c7edf89c6fc2396e845b6437",
+              "roi_attention": "09cb5cd5b85a48bde0958fb7411170adafd3be8033f24557d8848698867821b7"
+            },
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 84.5660171508789,
+              "mean": 75.12790985107422,
+              "min": 73.09414672851562,
+              "p50": 74.11917114257812,
+              "p95": 84.5660171508789,
+              "p99": 84.5660171508789,
+              "population_stddev": 3.242732529390998
+            },
+            "peak_allocated_bytes": 912794624,
+            "peak_reserved_bytes": 994050048,
+            "throughput_per_second": 13.31063251968937
+          },
+          "precision": "float32",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "parity_failed",
+              "warm_p50_improved_at_least_15_percent",
+              "throughput_improved_at_least_15_percent"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "rejected",
+          "tf32": true
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 4263.106505999531,
+          "name": "fp16",
+          "parity": {
+            "absolute_tolerance": 0.005,
+            "max_absolute_difference": {
+              "fused_embeddings": 0.008227348327636719,
+              "logits": 0.004416465759277344,
+              "roi_attention": 0.000679895281791687
+            },
+            "output_sha256": {
+              "fused_embeddings": "d5edad0894ba58a05a7a38e4a9e0f3a5dfd9fc4e84cb1149240b99f6950a1bf9",
+              "logits": "348b75ca45fa421383e54b677b3f5dfca526b3a8b331195b833e36bfcbad3088",
+              "roi_attention": "8d19bbc4921c1d37978e1bd31380a3f0070b2e517dc9f1d01929f32ba87962ff"
+            },
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 75.5291519165039,
+              "mean": 67.1912956237793,
+              "min": 63.63961410522461,
+              "p50": 64.7383041381836,
+              "p95": 75.5291519165039,
+              "p99": 75.5291519165039,
+              "population_stddev": 4.029550065404124
+            },
+            "peak_allocated_bytes": 1083030528,
+            "peak_reserved_bytes": 1277165568,
+            "throughput_per_second": 14.882880151608441
+          },
+          "precision": "float16",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "parity_failed",
+              "warm_p50_improved_at_least_15_percent",
+              "throughput_improved_at_least_15_percent"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "rejected",
+          "tf32": false
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": false,
+            "fullgraph_required": false,
+            "graph_break_count": 0,
+            "recompilation_count": 0
+          },
+          "load_ms": 4385.479266000402,
+          "name": "bf16",
+          "parity": {
+            "absolute_tolerance": 0.01,
+            "max_absolute_difference": {
+              "fused_embeddings": 0.09804892539978027,
+              "logits": 0.020484209060668945,
+              "roi_attention": 0.008041620254516602
+            },
+            "output_sha256": {
+              "fused_embeddings": "2ddb7af8b8e0b111799be49979e16759f6141da895f87b36c04641052857b38e",
+              "logits": "cf6a14c037ee8e19d1403bb122ed8adf1902f2192b6af5765e94389019856d35",
+              "roi_attention": "9af0894cdf70b9425629c13bb4b63c9598884d10301d92aabfb5f04fe9c510f2"
+            },
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": {
+              "count": 10,
+              "max": 89.34809875488281,
+              "mean": 83.95878143310547,
+              "min": 82.16985321044922,
+              "p50": 82.9327392578125,
+              "p95": 89.34809875488281,
+              "p99": 89.34809875488281,
+              "population_stddev": 2.0393815118529646
+            },
+            "peak_allocated_bytes": 1191742464,
+            "peak_reserved_bytes": 1335885824,
+            "throughput_per_second": 11.910606406272754
+          },
+          "precision": "bfloat16",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "parity_failed",
+              "material_improvement_missing"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "rejected",
+          "tf32": false
+        },
+        {
+          "compile": {
+            "compilation_ms": null,
+            "enabled": true,
+            "fullgraph_required": true,
+            "graph_break_count": null,
+            "recompilation_count": null
+          },
+          "failure_code": "candidate_failed:Unsupported",
+          "failure_detail": "Unsupported context manager\n  Explanation: Dynamo does not know how to enter a `lock` context manager.\n  Hint: Avoid using the unsupported context manager.\n  Hint: If the context manager seems like it should be supported (e.g. torch.set_grad_enabled), then it may be the case that it was created outside the compiled region, which Dynamo does not support. Supported context managers can cross graph break boundaries only if they are local non-closure variables, or are intermediate values.\n  Hint: File an issue to PyTorch. Simple context managers can potentially be supported, but note that context managers can't be supported in general\n\n  Developer debug context: Attempted SETUP_WITH/BEFORE_WITH on UserDefinedObjectVariable(lock)\n\n\nfrom user code:\n   File \"<vision-model-serving-rq-validation>/src/vision_model_serving/classifier/runtime.py\", line 394, in forward\n    text_output = self.text_encoder(\n  File \"<vision-model-serving-rq-validation>/.venv/lib/python3.12/site-packages/transformers/u",
+          "name": "compile",
+          "parity": {
+            "passed": false
+          },
+          "performance": {
+            "latency_ms": null,
+            "peak_allocated_bytes": null,
+            "peak_reserved_bytes": null,
+            "throughput_per_second": null
+          },
+          "precision": "float32",
+          "promotion": {
+            "accepted": false,
+            "reasons": [
+              "candidate_failed:Unsupported"
+            ]
+          },
+          "reliability": {
+            "cuda_oom": false,
+            "model_switch_leak": false
+          },
+          "status": "failed",
+          "tf32": false
+        }
+      ],
+      "selected": "fp32"
+    }
+  },
+  "policy": {
+    "candidate_order": [
+      "fp32",
+      "tf32",
+      "fp16",
+      "bf16",
+      "compile"
+    ],
+    "measured_runs": 10,
+    "memory_retention_threshold_percent": 20,
+    "one_change_at_a_time": true,
+    "retention_threshold_percent": 15,
+    "warmup_runs": 3
+  },
+  "revision": "204cff209fbf88f0aff3cb932274d1426850a682",
+  "schema_version": 1,
+  "validation_boundary": "Optimization screening on one checksum-pinned public DICOM and one NVIDIA L4. A candidate is not selected for serving until the packaged single-residency benchmark also passes parity and reliability gates."
+}

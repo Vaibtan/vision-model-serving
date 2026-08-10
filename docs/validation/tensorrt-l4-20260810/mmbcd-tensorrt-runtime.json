@@ -1,0 +1,45 @@
+{
+  "engine": {
+    "input_tensor_names": [
+      "image_tensor",
+      "input_ids",
+      "attention_mask"
+    ],
+    "output_tensor_names": [
+      "output0",
+      "output1",
+      "output2"
+    ]
+  },
+  "gates": {
+    "deserialized": true,
+    "executed": true,
+    "pytorch_absent": true,
+    "static_fixture_io_contract": true
+  },
+  "performance": {
+    "latencies_ms": [
+      69.11472400133789,
+      68.41615799930878,
+      68.53045000025304,
+      68.64410900016082,
+      68.60455300011381,
+      68.50859299993317,
+      68.2525659995008,
+      68.52046599851747,
+      69.8847889998433,
+      75.67056500010949
+    ],
+    "mean_ms": 69.41469729990786,
+    "measured_runs": 10,
+    "p50_ms": 68.56750150018343,
+    "population_stddev_ms": 2.131834627423467,
+    "warmup_runs": 3
+  },
+  "runtime": {
+    "cuda_python": "12.8.0",
+    "forbidden_frameworks_imported": [],
+    "tensorrt": "10.12.0.36"
+  },
+  "schema_version": 1
+}

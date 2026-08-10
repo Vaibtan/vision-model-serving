@@ -1,0 +1,20 @@
+{
+  "absolute_tolerance": 0.0001,
+  "eager_output_sha256": {
+    "fused_embeddings": "591c6410ad3f3edc9e0494b74c842b8f9a84fcf0386c933fc3ee0009a3ca39aa",
+    "logits": "160377bd942df268f699f8fab28b3b146376cf5c7a6ec355156cf5baeae59a4a",
+    "roi_attention": "5c0dcac164f7741d9f4a3e9943555d5f39961920afe359473e9dff8bff44d84a"
+  },
+  "max_absolute_difference": {
+    "fused_embeddings": 5.9604644775390625e-06,
+    "logits": 2.86102294921875e-06,
+    "roi_attention": 1.4901161193847656e-07
+  },
+  "passed": true,
+  "predicted_class_equal": true,
+  "tensorrt_output_sha256": {
+    "fused_embeddings": "a0eb8ac0584f38cc2bf2cd719a429123f825fc88871d814f5615b3c30ac60700",
+    "logits": "213f12d6d176feb047679ad5ed30102c541af7e88866c67ff962a8bd8560693f",
+    "roi_attention": "eec9301b1da1dac543c3e09ee0e289edc2faaa4daab42ff05c983dc61d5933c4"
+  }
+}

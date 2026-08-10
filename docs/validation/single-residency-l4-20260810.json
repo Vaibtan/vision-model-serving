@@ -1,0 +1,106 @@
+{
+  "cycles": [
+    {
+      "classifier_memory": {
+        "allocated_bytes": 622689280,
+        "peak_allocated_bytes": 912790528,
+        "peak_reserved_bytes": 994050048,
+        "reserved_bytes": 994050048
+      },
+      "classifier_prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+      "classifier_timings": {
+        "inference_ms": 139.9156990009942,
+        "load_ms": 6181.076241000483,
+        "switch_ms": 6362.455147998844
+      },
+      "cycle": 1,
+      "detector_memory": {
+        "allocated_bytes": 945110016,
+        "peak_allocated_bytes": 1302455296,
+        "peak_reserved_bytes": 1528823808,
+        "reserved_bytes": 1528823808
+      },
+      "detector_prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+      "detector_timings": {
+        "inference_ms": 268.90144900062296,
+        "load_ms": 15241.450902998622,
+        "switch_ms": 0.0
+      },
+      "resident_after_classifier": [
+        "mmbcd-classifier"
+      ],
+      "resident_after_detector": [
+        "focalnet-dino-detector"
+      ]
+    },
+    {
+      "classifier_memory": {
+        "allocated_bytes": 622689280,
+        "peak_allocated_bytes": 912790528,
+        "peak_reserved_bytes": 994050048,
+        "reserved_bytes": 994050048
+      },
+      "classifier_prediction_sha256": "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b",
+      "classifier_timings": {
+        "inference_ms": 132.00785200024256,
+        "load_ms": 4774.492698999893,
+        "switch_ms": 4974.2761489997065
+      },
+      "cycle": 2,
+      "detector_memory": {
+        "allocated_bytes": 945110016,
+        "peak_allocated_bytes": 1302455296,
+        "peak_reserved_bytes": 1528823808,
+        "reserved_bytes": 1528823808
+      },
+      "detector_prediction_sha256": "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5",
+      "detector_timings": {
+        "inference_ms": 271.4147100014088,
+        "load_ms": 12635.69188099973,
+        "switch_ms": 12848.711878999893
+      },
+      "resident_after_classifier": [
+        "mmbcd-classifier"
+      ],
+      "resident_after_detector": [
+        "focalnet-dino-detector"
+      ]
+    }
+  ],
+  "final_status": {
+    "active_inferences": 0,
+    "active_model": "mmbcd-classifier",
+    "artifact": {
+      "id": "mmbcd-classifier",
+      "repository_revision": "14ac5e099c79253b01e0885d2ebefa6f86cfd8f0",
+      "sha256": "2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4"
+    },
+    "memory": {
+      "allocated_bytes": 622689280,
+      "peak_allocated_bytes": 912790528,
+      "peak_reserved_bytes": 994050048,
+      "reserved_bytes": 994050048
+    },
+    "metrics": {
+      "failure_count": 0,
+      "load_count": 4,
+      "reuse_count": 0,
+      "switch_count": 3,
+      "unload_count": 3
+    },
+    "resident_models": [
+      "mmbcd-classifier"
+    ],
+    "state": "ready",
+    "timings": {
+      "last_inference_ms": 132.00785200024256,
+      "last_load_ms": 4774.492698999893,
+      "last_switch_ms": 4974.2761489997065,
+      "last_unload_ms": 199.76395400044566
+    }
+  },
+  "pipeline": "single-residency-real-dicom-l4-fp32-v2",
+  "revision": "204cff209fbf88f0aff3cb932274d1426850a682",
+  "schema_version": 2,
+  "validation_boundary": "Serving lifecycle and exact-hash smoke test on one public fixture; not medical accuracy, calibration, or clinical validation."
+}

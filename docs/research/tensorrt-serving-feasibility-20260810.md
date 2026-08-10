@@ -1,18 +1,34 @@
 # TensorRT Serving Feasibility for the L4 Pipeline
 
-**Status:** research and fail-closed implementation complete; no L4 TensorRT engine has been built or run
+**Status:** research, fail-closed implementation, and L4 feasibility run complete; production decision STOP
 **Date:** 2026-08-10
 **Scope:** the pinned PyTorch 2.8/CUDA 12.8 FocalNet-DINO and MMBCD implementations in this repository, strict no-fallback compilation, target-L4 validation, and promotion criteria
 
 ## Executive decision
 
-TensorRT is feasible for this project, but it is not yet an evidence-backed property of either model.
+TensorRT feasibility is now measured for both models, and neither has a
+production-promotable profile.
 
-- **MMBCD is the first implementation target.** Its reconstructed DINO ViT, RoBERTa, pooling, attention, and classifier are composed from ordinary PyTorch/Transformers operations. That makes a full-engine build plausible, not guaranteed. A strict `torch.export` capture and Torch-TensorRT dry run must determine actual converter coverage.
-- **FocalNet-DINO is expected to require a TensorRT plugin.** Its `MultiScaleDeformableAttention` is a PyBind C++/CUDA extension, not a registered `torch.library` custom operator, and upstream provides neither a fake/meta implementation nor an ONNX symbolic. Its current wrapper cannot simply execute inside a TensorRT plan. The CUDA kernel must be exposed through a real TensorRT plugin, or an alternative pure-PyTorch decomposition must separately prove full compilation, numerical parity, and adequate performance.
-- **The production path must be fail closed.** Default Torch-TensorRT behavior can partition a graph and run unsupported regions in PyTorch. That is useful for exploration but does not satisfy a full-engine claim. Promotion requires strict export, zero unsupported operations, `require_full_compilation=True`, a raw serialized TensorRT plan, and a TensorRT-only runtime smoke test.
-- **Initial precision is FP32 with TF32 disabled.** FP16 is a later, independently gated optimization. The current eager FP32 L4 evidence does not validate TensorRT, TensorRT FP32, or FP16.
-- **No L4 acceleration claim can be made from this workstation.** The plan must be built and validated with the real checkpoints on an NVIDIA L4 in the pinned environment. Until then, the correct decision is **GO for implementation, STOP for promotion**.
+- **MMBCD static feasibility passed, but production shape coverage failed.** A
+  strict token-width-5 diagnostic engine compiled with zero PyTorch partitions,
+  ran through the PyTorch-free verifier, passed output parity, and improved warm
+  p50 by 27.8%. The required token-width 2-through-90 profile failed strict
+  export, so the diagnostic plan was deleted and the model decision is STOP.
+- **FocalNet-DINO requires a TensorRT plugin or separately proven
+  decomposition.** Its `MultiScaleDeformableAttention` PyBind C++/CUDA path
+  failed strict coverage before an engine could be built. No PyTorch partition
+  or silent fallback was accepted.
+- **The production path remains fail closed.** Promotion still requires strict
+  export, zero unsupported operations, `require_full_compilation=True`, a raw
+  serialized plan, a TensorRT-only runtime smoke test, and the packaged
+  single-residency/restart/benchmark gates.
+- **Eager FP32 with TF32 disabled remains selected.** The associated PyTorch
+  matrix rejected every alternative candidate on parity or strict-capture
+  grounds.
+
+The generated reports are indexed in the
+[Spec-resolution record](../validation/spec-resolution-l4-20260810.md). The
+correct decision is **implementation complete, production promotion STOP**.
 
 This is intentionally a single TensorRT deployment path, not a chain of optional execution fallbacks. ONNX and Polygraphy are diagnostic and comparison tools unless the ONNX parser route is explicitly selected as the sole production builder.
 

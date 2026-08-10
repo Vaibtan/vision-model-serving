@@ -1,0 +1,19 @@
+{
+  "eager_latencies_ms": [
+    91.65481099989847,
+    93.70870900056616,
+    94.16970299935201,
+    95.45392300060485,
+    92.4331340011122,
+    96.12941699924704,
+    96.55427299912844,
+    99.05362599965883,
+    96.83341900017695,
+    94.46072500031732
+  ],
+  "eager_p50_ms": 94.95732400046109,
+  "promotion_threshold_passed": true,
+  "scope": "classifier forward only for the exact static token-width-5 public fixture; it is not production shape coverage",
+  "tensorrt_p50_ms": 68.56750150018343,
+  "warm_p50_improvement_percent": 27.791244938778515
+}

@@ -1,0 +1,19 @@
+
+torch.* op returned non-Tensor
+  Explanation: torch.* ops that return a non-Tensor cannot be traced into the Dynamo FX graph output
+
+
+  Developer debug context: example_value type: NotImplementedType; op: call_method; target: __eq__
+
+
+from user code:
+   File "<vms-focalnet-9789bb4>/models/dino/dino.py", line 240, in forward
+    samples = nested_tensor_from_tensor_list(samples)
+  File "<vms-focalnet-9789bb4>/util/misc.py", line 397, in nested_tensor_from_tensor_list
+    return NestedTensor(tensor, mask)
+  File "<vision-model-serving-rq-validation>/.venv/lib/python3.12/site-packages/torch/_dynamo/polyfills/__init__.py", line 209, in instantiate_user_defined_class_object
+    obj.__init__(*args, **kwargs)
+  File "<vms-focalnet-9789bb4>/util/misc.py", line 305, in __init__
+    if mask == 'auto':
+
+Set TORCHDYNAMO_VERBOSE=1 for the internal stack trace (please do this especially if you're reporting a bug to PyTorch). For even more developer context, set TORCH_LOGS="+dynamo"

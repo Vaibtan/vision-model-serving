@@ -4,6 +4,22 @@ Eager FP32 with TF32 disabled is the only selected serving backend. Candidate
 code lives in validation/acceleration modules and scripts; the executor has no
 runtime fallback chain or backend toggle.
 
+## Current L4 decision
+
+The 2026-08-10 matrix retained eager FP32 for both models. TF32 and FP16 were
+faster but failed the frozen-output parity gates; detector BF16 is unsupported,
+classifier BF16 failed parity, and both strict full-graph compile candidates
+failed capture. See the [machine-readable matrix](validation/pytorch-optimization-l4-20260810.json)
+and [summary](validation/pytorch-optimization-l4-20260810.md).
+
+TensorRT concluded **STOP**. The static token-width-5 MMBCD diagnostic engine
+used zero PyTorch partitions, ran in the PyTorch-free verifier, passed parity,
+and improved warm p50 by 27.8%. It was still deleted because the required
+token-width 2-through-90 profile failed strict export. FocalNet-DINO stopped at
+the custom `MultiScaleDeformableAttention` coverage boundary and needs a real
+TensorRT plugin or a separately proven decomposition. The full evidence is in
+the [TensorRT report](validation/tensorrt-l4-20260810/tensorrt-spike.json).
+
 ## PyTorch matrix
 
 Run the real strict-residency gate first, then evaluate each model with exactly

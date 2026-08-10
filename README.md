@@ -45,6 +45,12 @@ The unit suite validates contracts without proprietary weights. Real service
 claims require the separate Redis/DICOM or L4/Compose gates; see
 [fresh-machine reproduction](docs/reproduction.md).
 
+The current NVIDIA L4 run passed strict single residency, artifact-scoped
+readiness, the schema-v3 concurrency benchmark, destructive restart, and the
+packaged browser workflow. The optimization matrix retained eager FP32 and the
+TensorRT lane concluded a measured STOP. See the
+[five-finding resolution record](docs/validation/spec-resolution-l4-20260810.md).
+
 ## API surface
 
 | Method | Path | Purpose |
