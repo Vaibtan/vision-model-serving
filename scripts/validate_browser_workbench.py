@@ -64,7 +64,10 @@ def main() -> int:
         summary = page.locator("#summary-grid").inner_text()
         runtime = page.locator("#runtime-values").inner_text()
         if "Class probabilities" not in summary or "mmbcd-classifier" not in runtime:
-            raise RuntimeError("browser result evidence panels are incomplete")
+            raise RuntimeError(
+                "browser result evidence panels are incomplete: "
+                f"summary={summary!r}, runtime={runtime!r}"
+            )
         states = page.evaluate("window.__vmsObservedStates")
         if "queued" not in states or "succeeded" not in states:
             raise RuntimeError(f"browser did not observe queue completion: {states!r}")
