@@ -235,15 +235,13 @@ class GpuExecutorServer:
             response = {"schema_version": 1, "ok": True}
         except Exception:  # noqa: BLE001 - sanitize the process seam
             try:
-                runtime_unavailable = not self._executor.status().ready
+                runtime_unavailable = not self._executor.status().artifact_ready
             except Exception:  # noqa: BLE001 - preserve the sanitized seam
                 runtime_unavailable = True
             response = {
                 "schema_version": 1,
                 "ok": False,
-                "error": (
-                    "runtime_unavailable" if runtime_unavailable else "execution_failed"
-                ),
+                "error": ("runtime_unavailable" if runtime_unavailable else "execution_failed"),
             }
         try:
             writer.write(_encode(response))
@@ -256,9 +254,7 @@ class GpuExecutorServer:
         if not self._socket_path.exists():
             return
         if not self._socket_path.is_socket():
-            raise GpuExecutorConfigurationError(
-                "executor socket path exists and is not a socket"
-            )
+            raise GpuExecutorConfigurationError("executor socket path exists and is not a socket")
         try:
             with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as probe:
                 probe.settimeout(0.2)
@@ -310,10 +306,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         startup=ExecutorStartupTimings(
             artifact_verification_ms=composition.artifact_verification_ms,
             runtime_initialization_ms=composition.runtime_initialization_ms,
-            process_start_to_artifact_ready_ms=(
-                perf_counter() - process_started
-            )
-            * 1_000.0,
+            process_start_to_artifact_ready_ms=(perf_counter() - process_started) * 1_000.0,
         ),
     )
     server = GpuExecutorServer(args.socket_path, executor)
@@ -390,9 +383,7 @@ def _read_message(connection: socket.socket) -> object:
     try:
         return json.loads(chunks)
     except (UnicodeDecodeError, json.JSONDecodeError):
-        raise GpuExecutorUnavailable(
-            "prediction executor response is unavailable"
-        ) from None
+        raise GpuExecutorUnavailable("prediction executor response is unavailable") from None
 
 
 def _status_to_dict(status: GpuExecutorStatus) -> dict[str, object]:
@@ -480,23 +471,17 @@ def _status_from_dict(value: object) -> GpuExecutorStatus:
             startup=ExecutorStartupTimings(
                 artifact_verification_ms=startup["artifact_verification_ms"],
                 runtime_initialization_ms=startup["runtime_initialization_ms"],
-                process_start_to_artifact_ready_ms=startup[
-                    "process_start_to_artifact_ready_ms"
-                ],
+                process_start_to_artifact_ready_ms=startup["process_start_to_artifact_ready_ms"],
             ),
         )
     except (TypeError, ValueError):
-        raise GpuExecutorUnavailable(
-            "prediction executor status is unavailable"
-        ) from None
+        raise GpuExecutorUnavailable("prediction executor status is unavailable") from None
 
 
 def _threading_unix_server_type() -> type[socketserver.BaseServer]:
     unix_server = getattr(socketserver, "UnixStreamServer", None)
     if unix_server is None:
-        raise GpuExecutorConfigurationError(
-            "Unix-domain sockets are unavailable on this platform"
-        )
+        raise GpuExecutorConfigurationError("Unix-domain sockets are unavailable on this platform")
     return type(
         "ThreadingUnixStreamServer",
         (socketserver.ThreadingMixIn, unix_server),

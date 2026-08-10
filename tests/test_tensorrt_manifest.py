@@ -14,6 +14,7 @@ sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 from vision_model_serving.acceleration.tensorrt import (  # noqa: E402
     EngineRuntimeCompatibility,
     TensorRtManifestError,
+    detector_plugin_requirement,
     load_engine_manifest,
 )
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID  # noqa: E402
@@ -98,6 +99,31 @@ def compatibility() -> EngineRuntimeCompatibility:
 
 
 class TensorRtManifestTests(unittest.TestCase):
+    def test_detector_plugin_requirement_is_not_reached_before_strict_export(self) -> None:
+        result = detector_plugin_requirement(
+            strict_export=False,
+            dryrun_completed=False,
+            unsupported_operators=(),
+        )
+
+        self.assertEqual(result.status, "not_reached")
+        self.assertIsNone(result.required)
+
+    def test_detector_plugin_requirement_uses_observed_coverage(self) -> None:
+        required = detector_plugin_requirement(
+            strict_export=True,
+            dryrun_completed=False,
+            unsupported_operators=("MultiScaleDeformableAttention",),
+        )
+        complete = detector_plugin_requirement(
+            strict_export=True,
+            dryrun_completed=True,
+            unsupported_operators=(),
+        )
+
+        self.assertEqual((required.status, required.required), ("measured", True))
+        self.assertEqual((complete.status, complete.required), ("measured", False))
+
     def test_valid_full_engine_manifest_loads_exact_plan(self) -> None:
         plan = b"serialized-tensorrt-plan"
         with TemporaryDirectory() as directory:
@@ -116,11 +142,14 @@ class TensorRtManifestTests(unittest.TestCase):
 
         self.assertEqual(observed.plan_sha256, hashlib.sha256(plan).hexdigest())
         self.assertEqual(observed.decision, "go")
-        self.assertEqual(observed.input_names, (
-            "roi_crops",
-            "input_ids",
-            "attention_mask",
-        ))
+        self.assertEqual(
+            observed.input_names,
+            (
+                "roi_crops",
+                "input_ids",
+                "attention_mask",
+            ),
+        )
 
     def test_corrupt_plan_or_wrong_runtime_fails_without_fallback(self) -> None:
         plan = b"serialized-tensorrt-plan"

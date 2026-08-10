@@ -1,8 +1,10 @@
 # Fresh-machine reproduction and API operation
 
-This guide reproduces the validated FP32 service from source. It requires the
-two evaluator-supplied checkpoints; their redistribution is not authorized, so
-they are never downloaded by this repository or copied into an image.
+This guide reproduces the current FP32 service configuration from source. The
+linked L4 evidence validates its embedded earlier revisions; the current
+Pillow and implementation changes require a new L4 run. The guide requires two
+evaluator-supplied checkpoints. Their redistribution is not authorized, so they
+are never downloaded by this repository or copied into an image.
 
 ## 1. Prerequisites
 
@@ -18,12 +20,74 @@ Clone and synchronize the CPU development environment:
 git clone https://github.com/Vaibtan/vision-model-serving.git
 cd vision-model-serving
 git switch main
-uv sync --frozen --extra gateway --extra web
+export UV_PYTHON=3.12
+uv sync --frozen --python 3.12 --extra gateway --extra web --group dev
 uv lock --check
 export PYTHONPATH="$PWD/src"
 uv run python -m unittest discover -s tests
+uvx --from ruff==0.14.13 ruff check \
+  src tests scripts manage.py config_cfg.py main.py
+
+format_base="$(git merge-base HEAD origin/main)"
+mapfile -d '' changed_python < <(
+  git diff --name-only --diff-filter=ACMR -z "$format_base" HEAD -- '*.py'
+)
+if (( ${#changed_python[@]} > 0 )); then
+  uvx --from ruff==0.14.13 ruff format --check -- "${changed_python[@]}"
+fi
+
 uv run python manage.py check
+
+audit_dir="$(mktemp -d)"
+trap 'rm -rf -- "$audit_dir"' EXIT
+uv export --locked --all-extras --all-groups --no-emit-project --no-hashes \
+  --output-file "$audit_dir/locked.txt"
+cp "$audit_dir/locked.txt" "$audit_dir/source-requirements.txt"
+printf '\n' >> "$audit_dir/source-requirements.txt"
+cat requirements/tensorrt-l4.txt >> "$audit_dir/source-requirements.txt"
+sed -E \
+  's/^(torch(vision)?==[0-9]+\.[0-9]+\.[0-9]+)\+cu[0-9]+/\1/' \
+  "$audit_dir/source-requirements.txt" > "$audit_dir/requirements.txt"
+
+audit_status=0
+uvx --from pip-audit==2.9.0 pip-audit \
+  --strict --no-deps --disable-pip --progress-spinner off \
+  --format json --output "$audit_dir/report.json" \
+  --requirement "$audit_dir/requirements.txt" || audit_status=$?
+if (( audit_status > 1 )); then
+  exit "$audit_status"
+fi
+uv run --no-sync python .github/scripts/verify_dependency_audit.py \
+  --report "$audit_dir/report.json" \
+  --baseline .github/dependency-audit-baseline.json \
+  --requirements "$audit_dir/requirements.txt" \
+  --source-requirements "$audit_dir/source-requirements.txt"
+
+VMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
+VMS_CSRF_COOKIE_SECURE=true \
+VMS_DEBUG=false \
+VMS_SECRET_KEY=local-validation-only-change-before-deployment \
+VMS_SECURE_HSTS_INCLUDE_SUBDOMAINS=true \
+VMS_SECURE_HSTS_PRELOAD=true \
+VMS_SECURE_HSTS_SECONDS=31536000 \
+VMS_SECURE_SSL_REDIRECT=true \
+VMS_SESSION_COOKIE_SECURE=true \
+uv run python manage.py check --deploy
+
+uv run python manage.py spectacular \
+  --format openapi-json --file /tmp/vms-openapi.json \
+  --validate --fail-on-warn
 ```
+
+The audit covers every package selected from `uv.lock` on the Ubuntu/Python
+3.12 CI runner with all extras and groups, plus the five exact top-level
+TensorRT builder pins. CUDA local suffixes are removed only for advisory
+identity lookup; packages are not installed or substituted. The TensorRT
+requirements file does not lock its transitive graph, so TensorRT-only
+transitives absent from `uv.lock` are explicitly outside this result. The
+reviewed PyTorch and ONNX baseline entries remain unresolved risks pending
+L4-compatible upgrades and fresh parity, reliability, image-output, and
+TensorRT validation. New, changed, skipped, or stale findings fail the verifier.
 
 The assessed implementation is on `main`. Use a reviewed commit rather than a
 moving branch for an assessed deployment.
@@ -50,6 +114,14 @@ uv run python scripts/fetch_public_fixture.py \
 Both commands must report DICOM SHA-256
 `9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c`.
 The second command proves the installed copy without network access.
+
+With the fixture present, validate every tracked Compose profile without
+starting containers:
+
+```bash
+VMS_DICOM_PATH="$PWD/fixtures/cbis-ddsm/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547/1-1.dcm" \
+docker compose --profile "*" config --quiet
+```
 
 ## 3. Prepare external runtime assets
 
@@ -216,12 +288,14 @@ docker compose --profile browser down --volumes --remove-orphans
 ```
 
 The browser gate drives real upload, polling, overlay/crop/attention
-inspection, and sanitized JSON/PNG export through Chromium. For the schema-v3
+inspection, and sanitized JSON/PNG export through Chromium. For the schema-v4
 host benchmark and strict TensorRT/PyTorch L4 lanes, use
 [`containers.md`](containers.md#benchmark-profile) and
 [`acceleration.md`](acceleration.md). The benchmark requires a clean exact
 revision, fresh unloaded executor, concurrency 1/2/4, Docker identity, and
-`nvidia-smi` sampling; it writes both JSON and Markdown or fails.
+`nvidia-smi` sampling. It binds service identity/capacity/precision to observed
+operations, requires zero offered-load failures, and writes both JSON and
+Markdown or fails.
 
 Always remove the stack volumes after assessment work; they are tmpfs-backed
 but can contain bounded results until their TTL expires:
@@ -243,9 +317,11 @@ docker compose --profile gpu down --volumes --remove-orphans
 | DICOM is rejected | Check the supported syntax/pixel limits in [`dicom-canonicalization.md`](dicom-canonicalization.md); do not convert it silently. |
 
 TensorRT, FP16/BF16, TF32, and `torch.compile` are not selected in production.
-The isolated fail-closed L4 lanes have been run and are recorded in the
-[current resolution evidence](validation/spec-resolution-l4-20260810.md).
-Every PyTorch alternative failed parity or strict capture. TensorRT proved only
-a static-width classifier diagnostic; required dynamic shape coverage and
-detector coverage failed, so no engine was retained or promoted. There is no
-eager fallback inside the TensorRT engine verifier.
+The isolated fail-closed L4 lanes were run for the revisions embedded in the
+[historical resolution evidence](validation/spec-resolution-l4-20260810.md);
+current-revision L4 acceptance is pending a rerun. The prior PyTorch screening
+rejected every alternative on parity or strict capture, and its schema-v3
+acceptance contract also awaits that rerun. TensorRT proved only a static-width
+classifier diagnostic; required dynamic shape coverage and detector coverage
+failed, so no engine was retained or promoted. There is no eager fallback
+inside the TensorRT engine verifier.

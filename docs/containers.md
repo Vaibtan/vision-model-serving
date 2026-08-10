@@ -114,6 +114,11 @@ The benchmark is the same real HTTP path, not a model stub. Start the stack
 with queue capacity four, but run the harness on the L4 host so it can record
 Docker image identity and sample `nvidia-smi` truthfully.
 
+Generate `--environment-evidence` from the same clean revision immediately
+before the benchmark. The schema-v4 harness rejects a prior passing report when
+its Python, complete package set, CUDA/device lane, or lane-config digest differs
+from the current checked-in L4 configuration.
+
 ```bash
 export VMS_QUEUE_CAPACITY=4
 docker compose --profile benchmark up --build -d redis executor rq-worker web
@@ -134,12 +139,19 @@ uv run --extra gateway --extra web python scripts/benchmark_api.py \
 ```
 
 The harness requires a clean exact revision and a fresh unloaded executor.
-Schema v3 records cold full, switch-to-detection, compatible warm detections,
+Schema v4 records cold full, switch-to-detection, compatible warm detections,
 full-after-detection, repeated switch-bound full requests, concurrency 1/2/4,
 failure accounting, stage distributions, startup timing, runtime/compiler/
 container identity (the content-addressed local image ID plus pinned base-image
-digests), utilization, memory/OOM state, and max-one residency. It writes both
-JSON and Markdown or fails.
+digests), utilization, memory/OOM state, and max-one residency. Promotion also
+binds the recorded manifest/model identities, queue capacity, and FP32 policy to
+the observed `/operations` snapshots. Plan construction also requires the exact
+public DICOM bytes, manifest digest, tokenizer files, repository assets, and
+served golden hashes; every lifecycle and throughput success is checked against
+the complete packaged prediction contract. Golden/parity errors and any failure
+at the offered concurrency 1/2/4 load fail promotion. HTTP-minus-pipeline
+overhead is recomputed by the validator, with only a 1 ms clock tolerance. The
+harness writes both JSON and Markdown or fails.
 
 ## Browser acceptance profile
 

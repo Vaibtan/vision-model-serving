@@ -1,33 +1,23 @@
 #!/usr/bin/env python3
-"""Build and gate strict MMBCD TensorRT and detector coverage candidates."""
+"""Build and publish strict MMBCD TensorRT and detector coverage evidence."""
 
 from __future__ import annotations
 
 import argparse
-from contextlib import redirect_stderr, redirect_stdout
-from datetime import UTC, datetime
-import gc
-import hashlib
 from importlib import metadata
-from io import StringIO
 import json
 import os
 from pathlib import Path
 import re
 import subprocess
 import sys
-from time import perf_counter
-from typing import Any, Mapping
 
 import numpy as np
 
 from _common import (
-    DETECTOR_PREDICTION_SHA256,
-    MMBCD_PREDICTION_SHA256,
     decode_dicom_file,
     default_paths,
     load_json,
-    sha256_array,
     sha256_file,
     write_json_atomic,
 )
@@ -37,17 +27,10 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
 
 from vision_model_serving.artifacts import ArtifactRegistry  # noqa: E402
-from vision_model_serving.classifier.runtime import (  # noqa: E402
-    LocalMmbcdModelFactory,
-    _load_verified_mmbcd_model,
-)
 from vision_model_serving.detector.postprocessing import (  # noqa: E402
-    DetectorPostprocessor,
     DetectorPreprocessor,
 )
 from vision_model_serving.detector.runtime import (  # noqa: E402
-    _LocalFocalNetDinoFactory,
-    _load_verified_detector_model,
     probe_focalnet_native_operator,
 )
 from vision_model_serving.dicom import DicomCanonicalizer  # noqa: E402
@@ -55,13 +38,15 @@ from vision_model_serving.model_ids import (  # noqa: E402
     CLASSIFIER_MODEL_ID,
     DETECTOR_MODEL_ID,
 )
-from vision_model_serving.validation.evidence import (  # noqa: E402
-    sanitize_error_detail,
-)
 from vision_model_serving.validation.optimization import (  # noqa: E402
     validate_optimization_report,
 )
 from vision_model_serving.validation.revision import require_clean_revision  # noqa: E402
+from vision_model_serving.validation.tensorrt_experiment import (  # noqa: E402
+    TensorRtReportContext,
+    TorchTensorRtMeasurements,
+    run_tensorrt_experiment,
+)
 
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -75,6 +60,120 @@ _DEPENDENCIES = {
 
 
 def main() -> int:
+    args = _parse_args()
+    project_root = args.project_root.expanduser().resolve()
+    require_clean_revision(project_root, args.revision)
+    optimization = load_json(args.optimization_evidence)
+    validate_optimization_report(optimization)
+    if optimization["revision"] != args.revision:
+        raise RuntimeError("optimization evidence revision differs")
+
+    dependencies = _verify_dependencies()
+    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
+    os.environ.setdefault("HF_HUB_OFFLINE", "1")
+    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
+    __import__("tensorrt")
+    import torch
+    import torch_tensorrt
+
+    if not torch.cuda.is_available():
+        raise RuntimeError("CUDA is unavailable")
+
+    output_dir = args.output_dir.expanduser().resolve()
+    output_dir.mkdir(parents=True, exist_ok=True)
+    artifact_root = args.artifact_root.expanduser().resolve()
+    tokenizer_root = args.tokenizer_root.expanduser().resolve()
+    focalnet_root = args.focalnet_root.expanduser().resolve()
+    dino_root = args.dino_root.expanduser().resolve()
+    mmbcd_root = args.mmbcd_root.expanduser().resolve()
+    dicom_path = args.dicom.expanduser().resolve()
+    input_bundle = args.mmbcd_input_bundle.expanduser().resolve()
+    optimization_evidence = args.optimization_evidence.expanduser().resolve()
+    registry = ArtifactRegistry(
+        project_root / "config" / "model-artifacts.json",
+        artifact_root=artifact_root,
+        tokenizer_root=tokenizer_root,
+        repository_root=project_root,
+        native_operator_probe=lambda: probe_focalnet_native_operator(
+            focalnet_root,
+            device="cuda:0",
+        ),
+    )
+    artifact_report = registry.verify_all()
+    if not artifact_report.ready:
+        raise artifact_report.errors[0]
+    artifacts = {item.id: item for item in artifact_report.verified_artifacts}
+    canonical = decode_dicom_file(dicom_path, DicomCanonicalizer())
+    detector_host = np.array(
+        DetectorPreprocessor().prepare(canonical.pixels).tensor,
+        dtype=np.float32,
+        copy=True,
+    )
+
+    measurements = TorchTensorRtMeasurements(
+        torch=torch,
+        torch_tensorrt=torch_tensorrt,
+        detector_artifact=artifacts[DETECTOR_MODEL_ID],
+        classifier_artifact=artifacts[CLASSIFIER_MODEL_ID],
+        project_root=project_root,
+        focalnet_root=focalnet_root,
+        dino_root=dino_root,
+        mmbcd_root=mmbcd_root,
+        input_bundle=input_bundle,
+        output_dir=output_dir,
+        runtime_verify_script=project_root / "scripts" / "tensorrt_runtime_verify.py",
+        python_executable=sys.executable,
+        detector_host=detector_host,
+        canonical=canonical,
+        warmup_runs=args.warmup_runs,
+        measured_runs=args.measured_runs,
+    )
+
+    def report_environment() -> dict[str, object]:
+        return {
+            "dependencies": dependencies,
+            "torch": torch.__version__,
+            "cuda": torch.version.cuda,
+            "gpu_name": torch.cuda.get_device_name("cuda:0"),
+            "compute_capability": ".".join(
+                str(value) for value in torch.cuda.get_device_capability("cuda:0")
+            ),
+            "driver": _nvidia_value("driver_version"),
+            "script_sha256": sha256_file(Path(__file__).resolve()),
+            "optimization_evidence_sha256": sha256_file(optimization_evidence),
+        }
+
+    context = TensorRtReportContext(
+        revision=args.revision,
+        environment=report_environment,
+    )
+    result = run_tensorrt_experiment(
+        context,
+        measurements,
+        output_dir=output_dir,
+        failure_roots=(
+            project_root,
+            artifact_root,
+            tokenizer_root,
+            focalnet_root,
+            dino_root,
+            mmbcd_root,
+            dicom_path.parent,
+            input_bundle.parent,
+            optimization_evidence.parent,
+        ),
+    )
+    write_json_atomic(output_dir / "tensorrt-spike.json", result.report)
+    (output_dir / "tensorrt-spike.md").write_text(
+        result.markdown,
+        encoding="utf-8",
+    )
+    print(json.dumps(result.report, indent=2, sort_keys=True))
+    print(f"TENSORRT SPIKE CONCLUDED: {result.report['decision'].upper()}")
+    return 0
+
+
+def _parse_args() -> argparse.Namespace:
     defaults = default_paths()
     parser = argparse.ArgumentParser()
     parser.add_argument("--project-root", type=Path, default=PROJECT_ROOT)
@@ -99,523 +198,7 @@ def main() -> int:
         parser.error("--revision must be a full lowercase Git commit")
     if args.warmup_runs < 1 or args.measured_runs < 5:
         parser.error("warmup/measured runs must be at least 1/5")
-    project_root = args.project_root.expanduser().resolve()
-    require_clean_revision(project_root, args.revision)
-    optimization = load_json(args.optimization_evidence)
-    validate_optimization_report(optimization)
-    if optimization["revision"] != args.revision:
-        raise RuntimeError("optimization evidence revision differs")
-    dependencies = _verify_dependencies()
-    os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    os.environ.setdefault("HF_HUB_OFFLINE", "1")
-    os.environ.setdefault("TRANSFORMERS_OFFLINE", "1")
-    import tensorrt as trt
-    import torch
-    import torch_tensorrt
-
-    if not torch.cuda.is_available():
-        raise RuntimeError("CUDA is unavailable")
-    output_dir = args.output_dir.expanduser().resolve()
-    output_dir.mkdir(parents=True, exist_ok=True)
-    focalnet_root = args.focalnet_root.expanduser().resolve()
-    registry = ArtifactRegistry(
-        project_root / "config" / "model-artifacts.json",
-        artifact_root=args.artifact_root,
-        tokenizer_root=args.tokenizer_root,
-        repository_root=project_root,
-        native_operator_probe=lambda: probe_focalnet_native_operator(
-            focalnet_root,
-            device="cuda:0",
-        ),
-    )
-    artifact_report = registry.verify_all()
-    if not artifact_report.ready:
-        raise artifact_report.errors[0]
-    artifacts = {item.id: item for item in artifact_report.verified_artifacts}
-    canonical = decode_dicom_file(args.dicom, DicomCanonicalizer())
-    detector_host = np.array(
-        DetectorPreprocessor().prepare(canonical.pixels).tensor,
-        dtype=np.float32,
-        copy=True,
-    )
-    detector = _probe_detector(
-        torch=torch,
-        torch_tensorrt=torch_tensorrt,
-        artifact=artifacts[DETECTOR_MODEL_ID],
-        project_root=project_root,
-        focalnet_root=focalnet_root,
-        detector_host=detector_host,
-        canonical=canonical,
-        output_dir=output_dir,
-    )
-    gc.collect()
-    torch.cuda.empty_cache()
-    try:
-        classifier = _build_classifier(
-            torch=torch,
-            torch_tensorrt=torch_tensorrt,
-            trt=trt,
-            artifact=artifacts[CLASSIFIER_MODEL_ID],
-            project_root=project_root,
-            dino_root=args.dino_root,
-            mmbcd_root=args.mmbcd_root,
-            input_bundle=args.mmbcd_input_bundle,
-            output_dir=output_dir,
-            warmup_runs=args.warmup_runs,
-            measured_runs=args.measured_runs,
-        )
-    except Exception as error:
-        candidate_plan = output_dir / "mmbcd-fp32.candidate.plan"
-        if candidate_plan.exists():
-            candidate_plan.unlink()
-        failure_path = output_dir / "mmbcd-tensorrt-failure.txt"
-        failure_path.write_text(
-            sanitize_error_detail(
-                error,
-                (
-                    project_root,
-                    args.dino_root.expanduser().resolve(),
-                    args.mmbcd_root.expanduser().resolve(),
-                ),
-            ),
-            encoding="utf-8",
-        )
-        classifier = {
-            "strict_export": False,
-            "dryrun_completed": False,
-            "require_full_compilation": True,
-            "pytorch_partition_count": None,
-            "unsupported_operators": [],
-            "engine_built": False,
-            "tensorrt_only_runtime_passed": False,
-            "parity": {"passed": False},
-            "performance": {"promotion_threshold_passed": False},
-            "decision": "stop",
-            "failure_code": f"classifier_tensorrt_failed:{type(error).__name__}",
-            "failure_report_sha256": sha256_file(failure_path),
-        }
-    if classifier["decision"] == "go" and detector["decision"] != "go":
-        decision = "partial"
-    elif classifier["decision"] == "go" and detector["decision"] == "go":
-        decision = "go"
-    else:
-        decision = "stop"
-    report = {
-        "schema_version": 1,
-        "revision": args.revision,
-        "measured_at": datetime.now(UTC).isoformat(),
-        "environment": {
-            "dependencies": dependencies,
-            "torch": torch.__version__,
-            "cuda": torch.version.cuda,
-            "gpu_name": torch.cuda.get_device_name("cuda:0"),
-            "compute_capability": ".".join(
-                str(value) for value in torch.cuda.get_device_capability("cuda:0")
-            ),
-            "driver": _nvidia_value("driver_version"),
-            "script_sha256": sha256_file(Path(__file__).resolve()),
-            "optimization_evidence_sha256": sha256_file(
-                args.optimization_evidence.expanduser().resolve()
-            ),
-        },
-        "models": {
-            DETECTOR_MODEL_ID: detector,
-            CLASSIFIER_MODEL_ID: classifier,
-        },
-        "decision": decision,
-        "production_selection": {
-            "backend": "pytorch-eager",
-            "reason": _production_reason(decision, detector, classifier),
-        },
-        "validation_boundary": (
-            "FP32/TF32-disabled TensorRT feasibility with a static token-width-5 "
-            "diagnostic engine and a separately gated 2..90 production profile "
-            "on one NVIDIA L4 and one public DICOM. It is not clinical or "
-            "cross-hardware evidence."
-        ),
-    }
-    write_json_atomic(output_dir / "tensorrt-spike.json", report)
-    (output_dir / "tensorrt-spike.md").write_text(
-        _render_markdown(report),
-        encoding="utf-8",
-    )
-    print(json.dumps(report, indent=2, sort_keys=True))
-    print(f"TENSORRT SPIKE CONCLUDED: {decision.upper()}")
-    return 0
-
-
-def _production_reason(
-    decision: str,
-    detector: Mapping[str, object],
-    classifier: Mapping[str, object],
-) -> str:
-    if decision == "go":
-        return (
-            "Both strict production profiles passed the isolated TensorRT gates. "
-            "Production remains eager FP32 until TensorRT is deliberately selected "
-            "and the packaged single-residency, restart, and benchmark gates pass."
-        )
-    if decision == "partial":
-        return (
-            "The classifier production profile passed, but detector full coverage "
-            "did not. This is a PARTIAL result, not whole-pipeline TensorRT; "
-            "production remains eager FP32 and no fallback is enabled."
-        )
-    classifier_shape_coverage = classifier.get("shape_coverage")
-    classifier_profile_failed = (
-        isinstance(classifier_shape_coverage, Mapping)
-        and classifier_shape_coverage.get("passed") is False
-    )
-    classifier_reason = (
-        "the classifier's required token-width 2..90 profile did not pass"
-        if classifier_profile_failed
-        else "the classifier's full-engine gates did not all pass"
-    )
-    detector_reason = (
-        "detector full coverage did not pass"
-        if detector.get("decision") != "go"
-        else "detector full coverage passed"
-    )
-    return (
-        f"TensorRT was not promoted because {classifier_reason} and "
-        f"{detector_reason}. Production remains eager FP32 and no fallback is "
-        "enabled."
-    )
-
-
-def _probe_detector(
-    *,
-    torch: object,
-    torch_tensorrt: object,
-    artifact: object,
-    project_root: Path,
-    focalnet_root: Path,
-    detector_host: np.ndarray,
-    canonical: object,
-    output_dir: Path,
-) -> dict[str, object]:
-    loaded = _load_verified_detector_model(
-        artifact,
-        model_factory=_LocalFocalNetDinoFactory(
-            repository_root=focalnet_root,
-            project_root=project_root,
-            expected_revision=artifact.repository_revision,
-            device="cuda:0",
-        ).build,
-        device="cuda:0",
-    )
-    tensor = torch.from_numpy(detector_host).to("cuda:0")
-    with torch.inference_mode():
-        baseline = loaded.model([tensor])
-    proposals = DetectorPostprocessor().process(
-        _numpy(baseline["pred_logits"]),
-        _numpy(baseline["pred_boxes"]),
-        canonical.geometry,
-    )
-    if proposals.prediction_sha256 != DETECTOR_PREDICTION_SHA256:
-        raise RuntimeError("detector TensorRT baseline differs from the L4 golden")
-    capture = StringIO()
-    strict_export = False
-    dryrun_completed = False
-    failure_code: str | None = None
-    started = perf_counter()
-    try:
-        exported = torch.export.export(loaded.model, ([tensor],), strict=True)
-        strict_export = True
-        with redirect_stdout(capture), redirect_stderr(capture):
-            torch_tensorrt.dynamo.compile(
-                exported,
-                arg_inputs=([tensor],),
-                enabled_precisions={torch.float32},
-                require_full_compilation=True,
-                disable_tf32=True,
-                dryrun=True,
-            )
-        dryrun_completed = True
-        failure_code = "runtime_parity_and_plugin_gate_not_implemented"
-    except Exception as error:
-        failure_code = f"strict_coverage_failed:{type(error).__name__}"
-        capture.write(
-            "\n" + sanitize_error_detail(error, (project_root, focalnet_root))
-        )
-    report_path = output_dir / "focalnet-dino-tensorrt-coverage.txt"
-    report_path.write_text(capture.getvalue(), encoding="utf-8")
-    return {
-        "strict_export": strict_export,
-        "dryrun_completed": dryrun_completed,
-        "require_full_compilation": True,
-        "coverage_report_sha256": sha256_file(report_path),
-        "elapsed_ms": (perf_counter() - started) * 1_000.0,
-        "custom_operator": "MultiScaleDeformableAttention",
-        "plugin_required": not dryrun_completed,
-        "engine_built": False,
-        "parity_passed": False,
-        "performance_threshold_passed": False,
-        "decision": "stop",
-        "failure_code": failure_code,
-        "next_action": (
-            "Implement an exact TensorRT IPluginV3 plus Torch-TensorRT converter "
-            "only if the assignment budget justifies custom deformable-attention work."
-        ),
-    }
-
-
-def _build_classifier(
-    *,
-    torch: object,
-    torch_tensorrt: object,
-    trt: object,
-    artifact: object,
-    project_root: Path,
-    dino_root: Path,
-    mmbcd_root: Path,
-    input_bundle: Path,
-    output_dir: Path,
-    warmup_runs: int,
-    measured_runs: int,
-) -> dict[str, object]:
-    loaded = _load_verified_mmbcd_model(
-        artifact,
-        model_factory=LocalMmbcdModelFactory(
-            dino_root=dino_root,
-            mmbcd_root=mmbcd_root,
-            project_root=project_root,
-            expected_mmbcd_revision=artifact.repository_revision,
-        ).build,
-        device="cuda:0",
-    )
-    host_inputs = _classifier_inputs(input_bundle)
-    inputs = tuple(torch.from_numpy(value).to("cuda:0") for value in host_inputs)
-    with torch.inference_mode():
-        for _ in range(warmup_runs):
-            eager = loaded.model(*inputs)
-        torch.cuda.synchronize("cuda:0")
-        eager_latencies: list[float] = []
-        for _ in range(measured_runs):
-            started = perf_counter()
-            eager = loaded.model(*inputs)
-            torch.cuda.synchronize("cuda:0")
-            eager_latencies.append((perf_counter() - started) * 1_000.0)
-    eager_outputs = {
-        "logits": _numpy(eager[0]),
-        "fused_embeddings": _numpy(eager[1]),
-        "roi_attention": _numpy(eager[2]),
-    }
-    digest = hashlib.sha256()
-    digest.update(eager_outputs["logits"].tobytes())
-    digest.update(eager_outputs["fused_embeddings"].tobytes())
-    if digest.hexdigest() != MMBCD_PREDICTION_SHA256:
-        raise RuntimeError("MMBCD TensorRT baseline differs from the L4 golden")
-
-    capture = StringIO()
-    dynamic_report_path = output_dir / "mmbcd-dynamic-export.txt"
-    try:
-        token_width = torch.export.Dim("token_width", min=2, max=90)
-        torch.export.export(
-            loaded.model,
-            inputs,
-            dynamic_shapes=({}, {1: token_width}, {1: token_width}),
-            strict=True,
-        )
-        dynamic_export = {
-            "passed": True,
-            "failure_code": None,
-        }
-        dynamic_report_path.write_text(
-            "strict dynamic export passed\n",
-            encoding="utf-8",
-        )
-    except Exception as error:
-        dynamic_export = {
-            "passed": False,
-            "failure_code": f"dynamic_export_failed:{type(error).__name__}",
-        }
-        dynamic_report_path.write_text(
-            sanitize_error_detail(error, (project_root, dino_root, mmbcd_root)),
-            encoding="utf-8",
-        )
-    dynamic_export["report_sha256"] = sha256_file(dynamic_report_path)
-    export_started = perf_counter()
-    exported = torch.export.export(loaded.model, inputs, strict=True)
-    export_ms = (perf_counter() - export_started) * 1_000.0
-    with torch.inference_mode():
-        exported_outputs = exported.module()(*inputs)
-    export_differences = {
-        name: float(np.max(np.abs(_numpy(value) - eager_outputs[name])))
-        for name, value in zip(eager_outputs, exported_outputs, strict=True)
-    }
-    if any(value > 1e-6 for value in export_differences.values()):
-        raise RuntimeError("strict MMBCD export differs from eager FP32")
-    trt_inputs = (
-        torch_tensorrt.Input(
-            shape=(1, 8, 3, 224, 224),
-            dtype=torch.float32,
-            name="roi_crops",
-        ),
-        torch_tensorrt.Input(
-            shape=tuple(inputs[1].shape),
-            dtype=torch.int64,
-            name="input_ids",
-        ),
-        torch_tensorrt.Input(
-            shape=tuple(inputs[2].shape),
-            dtype=torch.int64,
-            name="attention_mask",
-        ),
-    )
-    with redirect_stdout(capture), redirect_stderr(capture):
-        torch_tensorrt.dynamo.compile(
-            exported,
-            arg_inputs=trt_inputs,
-            enabled_precisions={torch.float32},
-            require_full_compilation=True,
-            disable_tf32=True,
-            dryrun=True,
-        )
-    dryrun_path = output_dir / "mmbcd-tensorrt-dryrun.txt"
-    dryrun_path.write_text(capture.getvalue(), encoding="utf-8")
-    build_started = perf_counter()
-    engine_bytes = torch_tensorrt.dynamo.convert_exported_program_to_serialized_trt_engine(
-        exported,
-        arg_inputs=trt_inputs,
-        enabled_precisions={torch.float32},
-        require_full_compilation=True,
-        disable_tf32=True,
-        use_python_runtime=True,
-        version_compatible=False,
-        hardware_compatible=False,
-        pass_through_build_failures=False,
-    )
-    build_ms = (perf_counter() - build_started) * 1_000.0
-    candidate_plan = output_dir / "mmbcd-fp32.candidate.plan"
-    candidate_plan.write_bytes(engine_bytes)
-    runtime_bundle = output_dir / "mmbcd-tensorrt-outputs.npz"
-    runtime_report = output_dir / "mmbcd-tensorrt-runtime.json"
-    subprocess.run(
-        [
-            sys.executable,
-            str(PROJECT_ROOT / "scripts" / "tensorrt_runtime_verify.py"),
-            "--plan",
-            str(candidate_plan),
-            "--input-bundle",
-            str(input_bundle),
-            "--output-bundle",
-            str(runtime_bundle),
-            "--report",
-            str(runtime_report),
-            "--warmup-runs",
-            str(warmup_runs),
-            "--measured-runs",
-            str(measured_runs),
-        ],
-        check=True,
-        timeout=900,
-    )
-    with np.load(runtime_bundle, allow_pickle=False) as bundle:
-        trt_outputs = {name: np.ascontiguousarray(bundle[name]) for name in eager_outputs}
-    differences = {
-        name: float(np.max(np.abs(value - eager_outputs[name])))
-        for name, value in trt_outputs.items()
-    }
-    predicted_class_equal = int(np.argmax(trt_outputs["logits"])) == int(
-        np.argmax(eager_outputs["logits"])
-    )
-    parity_passed = predicted_class_equal and all(
-        value <= 1e-4 for value in differences.values()
-    )
-    parity = {
-        "passed": parity_passed,
-        "absolute_tolerance": 1e-4,
-        "max_absolute_difference": differences,
-        "predicted_class_equal": predicted_class_equal,
-        "eager_output_sha256": {
-            name: sha256_array(value) for name, value in eager_outputs.items()
-        },
-        "tensorrt_output_sha256": {
-            name: sha256_array(value) for name, value in trt_outputs.items()
-        },
-    }
-    parity_path = output_dir / "mmbcd-tensorrt-parity.json"
-    write_json_atomic(parity_path, parity)
-    runtime = load_json(runtime_report)
-    eager_p50 = float(np.median(eager_latencies))
-    trt_p50 = float(runtime["performance"]["p50_ms"])
-    performance_passed = trt_p50 <= eager_p50 * 0.85
-    performance = {
-        "eager_latencies_ms": eager_latencies,
-        "eager_p50_ms": eager_p50,
-        "tensorrt_p50_ms": trt_p50,
-        "warm_p50_improvement_percent": (1.0 - trt_p50 / eager_p50) * 100.0,
-        "promotion_threshold_passed": performance_passed,
-        "scope": (
-            "classifier forward only for the exact static token-width-5 public "
-            "fixture; it is not production shape coverage"
-        ),
-    }
-    performance_path = output_dir / "mmbcd-tensorrt-performance.json"
-    write_json_atomic(performance_path, performance)
-    fixture_engine_sha256 = sha256_file(candidate_plan)
-    candidate_plan.unlink()
-    shape_coverage = {
-        "passed": False,
-        "required_profile": {
-            "min_token_width": 2,
-            "opt_token_width": 5,
-            "max_token_width": 90,
-        },
-        "static_fixture_token_width": 5,
-        "dynamic_strict_export": dynamic_export,
-        "failure_code": (
-            "dynamic_profile_engine_not_built"
-            if dynamic_export["passed"]
-            else dynamic_export["failure_code"]
-        ),
-    }
-    decision = "stop"
-    return {
-        "strict_export": True,
-        "export_ms": export_ms,
-        "export_max_absolute_difference": export_differences,
-        "dryrun_completed": True,
-        "require_full_compilation": True,
-        "pytorch_partition_count": 0,
-        "unsupported_operators": [],
-        "dryrun_report_sha256": sha256_file(dryrun_path),
-        "engine_built": True,
-        "engine_build_ms": build_ms,
-        "static_fixture_engine_sha256": fixture_engine_sha256,
-        "tensorrt_only_runtime_passed": all(runtime["gates"].values()),
-        "runtime_report_sha256": sha256_file(runtime_report),
-        "parity": parity,
-        "performance": performance,
-        "shape_coverage": shape_coverage,
-        "decision": decision,
-        "promotion_boundary": (
-            "The static diagnostic plan is always deleted. Production requires "
-            "one strict 2..90 token profile with the same parity/performance gates."
-        ),
-    }
-
-
-def _classifier_inputs(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-    with np.load(path.expanduser().resolve(), allow_pickle=False) as bundle:
-        crops = np.ascontiguousarray(bundle["crops"][None, ...], dtype=np.float32)
-        ids = _token_input(bundle["input_ids"])
-        mask = _token_input(bundle["attention_mask"])
-    if ids.shape != mask.shape:
-        raise RuntimeError("MMBCD token inputs have different shapes")
-    return crops, ids, mask
-
-
-def _token_input(values: np.ndarray) -> np.ndarray:
-    if (
-        values.ndim != 2
-        or values.shape[0] != 1
-        or values.shape[1] < 2
-        or values.shape[1] > 90
-    ):
-        raise RuntimeError("MMBCD token input is outside the TensorRT profile")
-    return np.ascontiguousarray(values, dtype=np.int64)
+    return args
 
 
 def _verify_dependencies() -> dict[str, str]:
@@ -625,38 +208,15 @@ def _verify_dependencies() -> dict[str, str]:
     return observed
 
 
-def _numpy(value: object) -> np.ndarray:
-    return np.ascontiguousarray(value.detach().float().cpu().numpy())
-
-
 def _nvidia_value(field: str) -> str:
-    return subprocess.check_output(
-        ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
-        text=True,
-        timeout=10,
-    ).splitlines()[0].strip()
-
-
-def _render_markdown(report: Mapping[str, object]) -> str:
-    detector = report["models"][DETECTOR_MODEL_ID]
-    classifier = report["models"][CLASSIFIER_MODEL_ID]
-    return "\n".join(
-        (
-            "# TensorRT spike",
-            "",
-            f"Revision: `{report['revision']}`",
-            f"Decision: **{str(report['decision']).upper()}**",
-            "",
-            "| Model | Strict export | Full compilation | Engine | Parity | Performance gate | Decision |",
-            "| --- | --- | --- | --- | --- | --- | --- |",
-            f"| {DETECTOR_MODEL_ID} | {detector['strict_export']} | {detector['dryrun_completed']} | {detector['engine_built']} | {detector['parity_passed']} | {detector['performance_threshold_passed']} | {detector['decision']} |",
-            f"| {CLASSIFIER_MODEL_ID} | {classifier['strict_export']} | {classifier['dryrun_completed']} | {classifier['engine_built']} | {classifier['parity']['passed']} | {classifier['performance']['promotion_threshold_passed']} | {classifier['decision']} |",
-            "",
-            str(report["production_selection"]["reason"]),
-            "",
-            str(report["validation_boundary"]),
-            "",
+    return (
+        subprocess.check_output(
+            ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
+            text=True,
+            timeout=10,
         )
+        .splitlines()[0]
+        .strip()
     )
 
 

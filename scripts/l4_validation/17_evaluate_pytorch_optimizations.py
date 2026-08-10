@@ -4,20 +4,14 @@
 from __future__ import annotations
 
 import argparse
-from contextlib import nullcontext
-from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-import gc
 import hashlib
 import json
-import math
 import os
 from pathlib import Path
-import statistics
 import subprocess
 import sys
-from time import perf_counter
-from typing import Any, Callable, Mapping
+from typing import Mapping
 
 import numpy as np
 
@@ -32,9 +26,14 @@ from _common import (
     write_json_atomic,
 )
 
-
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
+
+from _optimization_measurement import (  # noqa: E402
+    SwitchTarget,
+    observe_candidate,
+    observe_repeated_switches,
+)
 
 from vision_model_serving.artifacts import ArtifactRegistry  # noqa: E402
 from vision_model_serving.classifier.runtime import (  # noqa: E402
@@ -42,8 +41,10 @@ from vision_model_serving.classifier.runtime import (  # noqa: E402
     _load_verified_mmbcd_model,
 )
 from vision_model_serving.detector.postprocessing import (  # noqa: E402
+    DetectorProposal,
     DetectorPostprocessor,
     DetectorPreprocessor,
+    ProposalSelection,
 )
 from vision_model_serving.detector.runtime import (  # noqa: E402
     _LocalFocalNetDinoFactory,
@@ -55,31 +56,17 @@ from vision_model_serving.model_ids import (  # noqa: E402
     CLASSIFIER_MODEL_ID,
     DETECTOR_MODEL_ID,
 )
-from vision_model_serving.validation.evidence import (  # noqa: E402
-    sanitize_error_detail,
-)
 from vision_model_serving.validation.optimization import (  # noqa: E402
-    candidate_promotion,
+    CandidateMeasurement,
+    DetectorParityComparison,
+    DetectorParityRecord,
+    OptimizationExperiment,
+    OptimizationPolicy,
+    OPTIMIZATION_POLICIES,
+    compare_detector_records,
     validate_optimization_report,
 )
 from vision_model_serving.validation.revision import require_clean_revision  # noqa: E402
-
-
-@dataclass(frozen=True, slots=True)
-class CandidatePolicy:
-    name: str
-    autocast_dtype: str | None = None
-    tf32: bool = False
-    compile: bool = False
-
-
-POLICIES = (
-    CandidatePolicy("fp32"),
-    CandidatePolicy("tf32", tf32=True),
-    CandidatePolicy("fp16", autocast_dtype="float16"),
-    CandidatePolicy("bf16", autocast_dtype="bfloat16"),
-    CandidatePolicy("compile", compile=True),
-)
 
 
 def main() -> int:
@@ -139,7 +126,7 @@ def main() -> int:
     detector_host = np.array(detector_input.tensor, dtype=np.float32, copy=True)
     detector_postprocessor = DetectorPostprocessor()
 
-    def load_detector() -> tuple[object, object, float]:
+    def load_detector() -> tuple[object, tuple[object, ...], float]:
         loaded = _load_verified_detector_model(
             artifacts[DETECTOR_MODEL_ID],
             model_factory=_LocalFocalNetDinoFactory(
@@ -173,24 +160,86 @@ def main() -> int:
         if proposals.prediction_sha256 != DETECTOR_PREDICTION_SHA256:
             raise RuntimeError("detector FP32 baseline differs from the L4 golden")
 
+    def compare_detector(
+        baseline: Mapping[str, object],
+        observed: Mapping[str, object],
+        score_tolerance: float,
+    ) -> Mapping[str, object]:
+        baseline_arrays = _arrays(baseline)
+        observed_arrays = _arrays(observed)
+        if (
+            baseline_arrays.keys() != observed_arrays.keys()
+            or baseline_arrays.keys() != {"pred_logits", "pred_boxes"}
+            or any(
+                observed_arrays[name].shape != reference.shape
+                for name, reference in baseline_arrays.items()
+            )
+        ):
+            raise RuntimeError("detector candidate raw output contract differs")
+        baseline_selection = detector_postprocessor.process(
+            baseline_arrays["pred_logits"],
+            baseline_arrays["pred_boxes"],
+            canonical.geometry,
+        )
+        observed_selection = detector_postprocessor.process(
+            observed_arrays["pred_logits"],
+            observed_arrays["pred_boxes"],
+            canonical.geometry,
+        )
+        minimum_iou = 1.0 if score_tolerance == 0.0 else 0.99
+        baseline_stages = {
+            name: _detector_stage_records(baseline_selection, name)
+            for name in ("raw", "post_nms", "selected_rois")
+        }
+        observed_stages = {
+            name: _detector_stage_records(observed_selection, name) for name in baseline_stages
+        }
+        comparisons = {
+            name: compare_detector_records(
+                baseline_stages[name],
+                observed_stages[name],
+                score_tolerance=score_tolerance,
+                logit_tolerance=score_tolerance,
+                box_tolerance=score_tolerance,
+                minimum_iou=minimum_iou,
+            )
+            for name in baseline_stages
+        }
+        return {
+            "passed": all(comparison.passed for comparison in comparisons.values()),
+            "method": "raw_post_nms_selected_roi_score_class_iou",
+            "score_tolerance": score_tolerance,
+            "logit_tolerance": score_tolerance,
+            "box_tolerance": score_tolerance,
+            "minimum_iou": minimum_iou,
+            "raw_output_shapes": {
+                name: list(value.shape) for name, value in observed_arrays.items()
+            },
+            "stages": {
+                name: _detector_comparison_evidence(
+                    comparison,
+                    baseline_count=len(baseline_stages[name]),
+                    candidate_count=len(observed_stages[name]),
+                )
+                for name, comparison in comparisons.items()
+            },
+            "output_sha256": {name: sha256_array(value) for name, value in observed_arrays.items()},
+        }
+
     classifier_host = _classifier_inputs(args.mmbcd_input_bundle)
 
-    def load_classifier() -> tuple[object, object, float]:
+    def load_classifier() -> tuple[object, tuple[object, ...], float]:
         loaded = _load_verified_mmbcd_model(
             artifacts[CLASSIFIER_MODEL_ID],
             model_factory=LocalMmbcdModelFactory(
                 dino_root=args.dino_root,
                 mmbcd_root=args.mmbcd_root,
                 project_root=project_root,
-                expected_mmbcd_revision=(
-                    artifacts[CLASSIFIER_MODEL_ID].repository_revision
-                ),
+                expected_mmbcd_revision=(artifacts[CLASSIFIER_MODEL_ID].repository_revision),
             ).build,
             device="cuda:0",
         )
-        inputs = tuple(
-            loaded.torch.from_numpy(value).to("cuda:0") for value in classifier_host
-        )
+        inputs = tuple(loaded.torch.from_numpy(value).to("cuda:0") for value in classifier_host)
         return loaded.model, inputs, loaded.load_ms
 
     def call_classifier(model: object, inputs: tuple[object, ...]) -> object:
@@ -212,42 +261,99 @@ def main() -> int:
         if digest.hexdigest() != MMBCD_PREDICTION_SHA256:
             raise RuntimeError("classifier FP32 baseline differs from the L4 golden")
 
+    def compare_classifier(
+        baseline: Mapping[str, object],
+        observed: Mapping[str, object],
+        tolerance: float,
+    ) -> Mapping[str, object]:
+        baseline_arrays = _arrays(baseline)
+        observed_arrays = _arrays(observed)
+        if baseline_arrays.keys() != observed_arrays.keys() or any(
+            observed_arrays[name].shape != reference.shape
+            for name, reference in baseline_arrays.items()
+        ):
+            raise RuntimeError("classifier candidate output contract differs")
+        differences = {
+            name: float(np.max(np.abs(observed_arrays[name] - reference)))
+            for name, reference in baseline_arrays.items()
+        }
+        return {
+            "passed": all(value <= tolerance for value in differences.values()),
+            "method": "elementwise_absolute",
+            "absolute_tolerance": tolerance,
+            "max_absolute_difference": differences,
+            "output_sha256": {name: sha256_array(value) for name, value in observed_arrays.items()},
+        }
+
     measured_at = datetime.now(UTC).isoformat()
-    detector_matrix = _measure_model(
-        torch=torch,
-        load_model=load_detector,
-        call_model=call_detector,
-        project_output=project_detector,
+    tolerances = {
+        "fp32": 0.0,
+        "tf32": 1e-4,
+        "fp16": 5e-3,
+        "bf16": 1e-2,
+        "compile": 1e-5,
+    }
+    evidence_roots = (
+        project_root,
+        focalnet_root,
+        args.mmbcd_root,
+        args.dino_root,
+    )
+    switch_targets = (
+        SwitchTarget(DETECTOR_MODEL_ID, load_detector, call_detector),
+        SwitchTarget(CLASSIFIER_MODEL_ID, load_classifier, call_classifier),
+    )
+    switch_reliability = {
+        policy.name: observe_repeated_switches(
+            torch=torch,
+            policy=policy,
+            targets=switch_targets,
+            cycles=2,
+            memory_growth_threshold_percent=20.0,
+            evidence_roots=evidence_roots,
+        )
+        for policy in OPTIMIZATION_POLICIES
+    }
+
+    def measure_detector(policy: OptimizationPolicy) -> CandidateMeasurement:
+        return observe_candidate(
+            torch=torch,
+            policy=policy,
+            load_model=load_detector,
+            call_model=call_detector,
+            project_output=project_detector,
+            warmup_runs=args.warmup_runs,
+            measured_runs=args.measured_runs,
+            evidence_roots=evidence_roots,
+        )
+
+    def measure_classifier(policy: OptimizationPolicy) -> CandidateMeasurement:
+        return observe_candidate(
+            torch=torch,
+            policy=policy,
+            load_model=load_classifier,
+            call_model=call_classifier,
+            project_output=project_classifier,
+            warmup_runs=args.warmup_runs,
+            measured_runs=args.measured_runs,
+            evidence_roots=evidence_roots,
+        )
+
+    detector_matrix = OptimizationExperiment(
+        model_id=DETECTOR_MODEL_ID,
+        tolerances=tolerances,
         verify_reference=verify_detector_reference,
-        tolerances={"fp32": 0.0, "tf32": 1e-4, "fp16": 5e-3, "bf16": 1e-2, "compile": 1e-5},
-        warmup_runs=args.warmup_runs,
-        measured_runs=args.measured_runs,
-        evidence_roots=(
-            project_root,
-            focalnet_root,
-            args.mmbcd_root,
-            args.dino_root,
-        ),
-    )
-    classifier_matrix = _measure_model(
-        torch=torch,
-        load_model=load_classifier,
-        call_model=call_classifier,
-        project_output=project_classifier,
+        compare=compare_detector,
+    ).run(measure_detector, switch_reliability=switch_reliability)
+    classifier_matrix = OptimizationExperiment(
+        model_id=CLASSIFIER_MODEL_ID,
+        tolerances=tolerances,
         verify_reference=verify_classifier_reference,
-        tolerances={"fp32": 0.0, "tf32": 1e-4, "fp16": 5e-3, "bf16": 1e-2, "compile": 1e-5},
-        warmup_runs=args.warmup_runs,
-        measured_runs=args.measured_runs,
-        evidence_roots=(
-            project_root,
-            focalnet_root,
-            args.mmbcd_root,
-            args.dino_root,
-        ),
-    )
+        compare=compare_classifier,
+    ).run(measure_classifier, switch_reliability=switch_reliability)
     device = torch.cuda.get_device_properties("cuda:0")
     report = {
-        "schema_version": 1,
+        "schema_version": 3,
         "revision": args.revision,
         "environment": {
             "measured_at": measured_at,
@@ -258,6 +364,9 @@ def main() -> int:
             "cuda": torch.version.cuda,
             "cudnn": str(torch.backends.cudnn.version()),
             "script_sha256": sha256_file(Path(__file__).resolve()),
+            "measurement_module_sha256": sha256_file(
+                Path(__file__).with_name("_optimization_measurement.py").resolve()
+            ),
             "single_residency_evidence_sha256": residency_identity,
         },
         "policy": {
@@ -265,9 +374,10 @@ def main() -> int:
             "measured_runs": args.measured_runs,
             "retention_threshold_percent": 15,
             "memory_retention_threshold_percent": 20,
-            "candidate_order": [policy.name for policy in POLICIES],
+            "candidate_order": [policy.name for policy in OPTIMIZATION_POLICIES],
             "one_change_at_a_time": True,
         },
+        "switch_reliability": switch_reliability,
         "models": {
             DETECTOR_MODEL_ID: detector_matrix,
             CLASSIFIER_MODEL_ID: classifier_matrix,
@@ -279,8 +389,10 @@ def main() -> int:
         },
         "validation_boundary": (
             "Optimization screening on one checksum-pinned public DICOM and one "
-            "NVIDIA L4. A candidate is not selected for serving until the packaged "
-            "single-residency benchmark also passes parity and reliability gates."
+            "NVIDIA L4. Every promotion gate includes two candidate-specific "
+            "detector-to-classifier switch cycles, post-release CUDA memory, and "
+            "standalone release evidence; production selection still requires the "
+            "packaged single-residency benchmark."
         ),
     }
     validate_optimization_report(report)
@@ -292,226 +404,11 @@ def main() -> int:
     return 0
 
 
-def _measure_model(
-    *,
-    torch: object,
-    load_model: Callable[[], tuple[object, tuple[object, ...], float]],
-    call_model: Callable[[object, tuple[object, ...]], object],
-    project_output: Callable[[object], dict[str, np.ndarray]],
-    verify_reference: Callable[[Mapping[str, np.ndarray]], None],
-    tolerances: Mapping[str, float],
-    warmup_runs: int,
-    measured_runs: int,
-    evidence_roots: tuple[Path, ...],
-) -> dict[str, object]:
-    baseline_outputs: dict[str, np.ndarray] | None = None
-    candidates: list[dict[str, object]] = []
-    for policy in POLICIES:
-        try:
-            candidate = _measure_candidate(
-                torch=torch,
-                policy=policy,
-                load_model=load_model,
-                call_model=call_model,
-                project_output=project_output,
-                warmup_runs=warmup_runs,
-                measured_runs=measured_runs,
-            )
-            outputs = candidate.pop("_outputs")
-            if baseline_outputs is None:
-                baseline_outputs = outputs
-                verify_reference(outputs)
-            tolerance = tolerances[policy.name]
-            differences = {
-                name: float(np.max(np.abs(outputs[name] - reference)))
-                for name, reference in baseline_outputs.items()
-            }
-            parity = all(value <= tolerance for value in differences.values())
-            candidate["parity"] = {
-                "passed": parity,
-                "absolute_tolerance": tolerance,
-                "max_absolute_difference": differences,
-                "output_sha256": {
-                    name: sha256_array(value) for name, value in outputs.items()
-                },
-            }
-            candidate["status"] = "passed" if parity else "rejected"
-        except torch.cuda.OutOfMemoryError as error:
-            torch.cuda.empty_cache()
-            candidate = _failed_candidate(
-                policy,
-                "cuda_out_of_memory",
-                detail=sanitize_error_detail(error, evidence_roots),
-                cuda_oom=True,
-            )
-        except Exception as error:  # one failed candidate must not hide the matrix
-            candidate = _failed_candidate(
-                policy,
-                f"candidate_failed:{type(error).__name__}",
-                detail=sanitize_error_detail(error, evidence_roots),
-                cuda_oom=False,
-            )
-        candidates.append(candidate)
-        gc.collect()
-        torch.cuda.empty_cache()
-    baseline = candidates[0]
-    if baseline["status"] != "passed":
-        raise RuntimeError(
-            "FP32 optimization baseline did not pass: "
-            f"{baseline['failure_code']}: {baseline['failure_detail']}"
-        )
-    baseline_performance = baseline["performance"]
-    for candidate in candidates:
-        if candidate["name"] == "fp32":
-            candidate["promotion"] = {
-                "accepted": False,
-                "reasons": ["baseline_reference"],
-            }
-            continue
-        performance = candidate["performance"]
-        if candidate["status"] == "failed":
-            candidate["promotion"] = {
-                "accepted": False,
-                "reasons": [candidate["failure_code"]],
-            }
-            continue
-        decision = candidate_promotion(
-            baseline_p50_ms=baseline_performance["latency_ms"]["p50"],
-            baseline_throughput=baseline_performance["throughput_per_second"],
-            baseline_peak_bytes=baseline_performance["peak_reserved_bytes"],
-            candidate_p50_ms=performance["latency_ms"]["p50"],
-            candidate_throughput=performance["throughput_per_second"],
-            candidate_peak_bytes=performance["peak_reserved_bytes"],
-            parity_passed=candidate["parity"]["passed"],
-            cuda_oom=candidate["reliability"]["cuda_oom"],
-            model_switch_leak=False,
-            graph_break_count=candidate["compile"]["graph_break_count"],
-            recompilation_count=candidate["compile"]["recompilation_count"],
-        )
-        candidate["promotion"] = asdict(decision)
-    return {"baseline": "fp32", "candidates": candidates, "selected": "fp32"}
-
-
-def _measure_candidate(
-    *,
-    torch: object,
-    policy: CandidatePolicy,
-    load_model: Callable[[], tuple[object, tuple[object, ...], float]],
-    call_model: Callable[[object, tuple[object, ...]], object],
-    project_output: Callable[[object], dict[str, np.ndarray]],
-    warmup_runs: int,
-    measured_runs: int,
-) -> dict[str, object]:
-    torch.cuda.empty_cache()
-    torch.cuda.reset_peak_memory_stats("cuda:0")
-    model, inputs, load_ms = load_model()
-    compilation_ms: float | None = None
-    compilation_started: float | None = None
-    if policy.compile:
-        torch._dynamo.reset()
-        compilation_started = perf_counter()
-        model = torch.compile(model, fullgraph=True, mode="reduce-overhead")
-    torch.backends.cuda.matmul.allow_tf32 = policy.tf32
-    torch.backends.cudnn.allow_tf32 = policy.tf32
-    torch.set_float32_matmul_precision("high" if policy.tf32 else "highest")
-    dtype = getattr(torch, policy.autocast_dtype) if policy.autocast_dtype else None
-    context = (
-        torch.autocast(device_type="cuda", dtype=dtype)
-        if dtype is not None
-        else nullcontext()
-    )
-    with torch.inference_mode(), context:
-        for warmup_index in range(warmup_runs):
-            output = call_model(model, inputs)
-            if policy.compile and warmup_index == 0:
-                torch.cuda.synchronize("cuda:0")
-                compilation_ms = (perf_counter() - compilation_started) * 1_000.0
-        torch.cuda.synchronize("cuda:0")
-        measured: list[float] = []
-        for _ in range(measured_runs):
-            started = torch.cuda.Event(enable_timing=True)
-            completed = torch.cuda.Event(enable_timing=True)
-            started.record()
-            output = call_model(model, inputs)
-            completed.record()
-            torch.cuda.synchronize("cuda:0")
-            measured.append(float(started.elapsed_time(completed)))
-        projected = project_output(output)
-    distribution = _distribution(measured)
-    unique_graphs = (
-        int(torch._dynamo.utils.counters["stats"]["unique_graphs"])
-        if policy.compile
-        else 0
-    )
-    graph_breaks = (
-        sum(torch._dynamo.utils.counters["graph_break"].values())
-        if policy.compile
-        else 0
-    )
-    return {
-        "name": policy.name,
-        "status": "passed",
-        "load_ms": load_ms,
-        "parity": {"passed": False},
-        "performance": {
-            "latency_ms": distribution,
-            "throughput_per_second": 1_000.0 / statistics.mean(measured),
-            "peak_allocated_bytes": int(torch.cuda.max_memory_allocated("cuda:0")),
-            "peak_reserved_bytes": int(torch.cuda.max_memory_reserved("cuda:0")),
-        },
-        "reliability": {"cuda_oom": False, "model_switch_leak": False},
-        "compile": {
-            "enabled": policy.compile,
-            "compilation_ms": compilation_ms,
-            "recompilation_count": max(0, unique_graphs - 1),
-            "graph_break_count": graph_breaks,
-            "fullgraph_required": policy.compile,
-        },
-        "precision": policy.autocast_dtype or "float32",
-        "tf32": policy.tf32,
-        "_outputs": projected,
-    }
-
-
-def _failed_candidate(
-    policy: CandidatePolicy,
-    failure_code: str,
-    *,
-    detail: str,
-    cuda_oom: bool,
-) -> dict[str, object]:
-    return {
-        "name": policy.name,
-        "status": "failed",
-        "failure_code": failure_code,
-        "failure_detail": detail[:1_000],
-        "parity": {"passed": False},
-        "performance": {
-            "latency_ms": None,
-            "throughput_per_second": None,
-            "peak_allocated_bytes": None,
-            "peak_reserved_bytes": None,
-        },
-        "reliability": {"cuda_oom": cuda_oom, "model_switch_leak": False},
-        "compile": {
-            "enabled": policy.compile,
-            "compilation_ms": None,
-            "recompilation_count": None,
-            "graph_break_count": None,
-            "fullgraph_required": policy.compile,
-        },
-        "precision": policy.autocast_dtype or "float32",
-        "tf32": policy.tf32,
-    }
-
-
 def _classifier_inputs(path: Path) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
     with np.load(path.expanduser().resolve(), allow_pickle=False) as bundle:
         crops = np.ascontiguousarray(bundle["crops"][None, ...], dtype=np.float32)
         input_ids = np.ascontiguousarray(bundle["input_ids"], dtype=np.int64)
-        attention_mask = np.ascontiguousarray(
-            bundle["attention_mask"], dtype=np.int64
-        )
+        attention_mask = np.ascontiguousarray(bundle["attention_mask"], dtype=np.int64)
     if (
         input_ids.ndim != 2
         or input_ids.shape[0] != 1
@@ -526,45 +423,183 @@ def _numpy(value: object) -> np.ndarray:
     return np.ascontiguousarray(value.detach().float().cpu().numpy())
 
 
-def _distribution(values: list[float]) -> dict[str, float | int]:
-    ordered = sorted(values)
-    percentile = lambda p: ordered[max(0, math.ceil(p * len(ordered)) - 1)]
+def _arrays(values: Mapping[str, object]) -> dict[str, np.ndarray]:
+    if not values or any(not isinstance(value, np.ndarray) for value in values.values()):
+        raise RuntimeError("optimization outputs must be NumPy arrays")
+    return {name: value for name, value in values.items() if isinstance(value, np.ndarray)}
+
+
+def _raw_detector_records(
+    selection: ProposalSelection,
+) -> tuple[DetectorParityRecord, ...]:
+    logits = selection.raw_logits[0]
+    scores = selection.raw_scores[0]
+    boxes = selection.raw_boxes_cxcywh[0]
+    records: list[DetectorParityRecord] = []
+    for query_index in range(logits.shape[0]):
+        cxcywh = tuple(float(value) for value in boxes[query_index])
+        xyxy = _clipped_xyxy(cxcywh)
+        for class_index in range(logits.shape[1]):
+            records.append(
+                DetectorParityRecord(
+                    class_index=class_index,
+                    raw_logit=float(logits[query_index, class_index]),
+                    score=float(scores[query_index, class_index]),
+                    normalized_cxcywh=cxcywh,
+                    normalized_xyxy=xyxy,
+                )
+            )
+    return tuple(records)
+
+
+def _selected_detector_records(
+    proposals: tuple[DetectorProposal, ...],
+) -> tuple[DetectorParityRecord, ...]:
+    return tuple(
+        DetectorParityRecord(
+            class_index=proposal.class_index,
+            raw_logit=proposal.raw_logit,
+            score=proposal.score,
+            normalized_cxcywh=proposal.normalized_cxcywh,
+            normalized_xyxy=proposal.normalized_xyxy,
+        )
+        for proposal in proposals
+    )
+
+
+def _detector_stage_records(
+    selection: ProposalSelection,
+    stage: str,
+) -> tuple[DetectorParityRecord, ...]:
+    if stage == "raw":
+        return _raw_detector_records(selection)
+    if stage == "post_nms":
+        return _selected_detector_records(selection.post_nms)
+    if stage == "selected_rois":
+        return _selected_detector_records(selection.classifier_rois)
+    raise ValueError(f"unknown detector parity stage: {stage}")
+
+
+def _detector_comparison_evidence(
+    comparison: DetectorParityComparison,
+    *,
+    baseline_count: int,
+    candidate_count: int,
+) -> dict[str, object]:
     return {
-        "count": len(ordered),
-        "min": ordered[0],
-        "p50": percentile(0.50),
-        "p95": percentile(0.95),
-        "p99": percentile(0.99),
-        "max": ordered[-1],
-        "mean": statistics.mean(ordered),
-        "population_stddev": statistics.pstdev(ordered),
+        "baseline_count": baseline_count,
+        "candidate_count": candidate_count,
+        "matched_pairs": [list(pair) for pair in comparison.matched_pairs],
+        "unmatched_baseline": list(comparison.unmatched_baseline),
+        "unmatched_candidate": list(comparison.unmatched_candidate),
+        "max_score_difference": comparison.max_score_difference,
+        "max_logit_difference": comparison.max_logit_difference,
+        "max_box_coordinate_difference": (comparison.max_box_coordinate_difference),
+        "minimum_observed_iou": comparison.minimum_observed_iou,
     }
+
+
+def _clipped_xyxy(
+    cxcywh: tuple[float, float, float, float],
+) -> tuple[float, float, float, float]:
+    center_x, center_y, width, height = cxcywh
+    return (
+        min(max(center_x - width / 2.0, 0.0), 1.0),
+        min(max(center_y - height / 2.0, 0.0), 1.0),
+        min(max(center_x + width / 2.0, 0.0), 1.0),
+        min(max(center_y + height / 2.0, 0.0), 1.0),
+    )
 
 
 def _verify_single_residency_evidence(path: Path, revision: str) -> str:
     payload = load_json(path)
-    if payload.get("schema_version") != 2 or payload.get("revision") != revision:
+    if (
+        payload.get("schema_version") != 2
+        or payload.get("pipeline") != "single-residency-real-dicom-l4-fp32-v2"
+        or payload.get("revision") != revision
+    ):
         raise RuntimeError("single-residency evidence revision differs")
     cycles = payload.get("cycles")
     if not isinstance(cycles, list) or len(cycles) < 2:
         raise RuntimeError("single-residency evidence has too few cycles")
-    for cycle in cycles:
+    first_reserved: dict[str, int] = {}
+    maximum_growth = 0.0
+    for expected_cycle, cycle in enumerate(cycles, start=1):
         if (
-            cycle.get("resident_after_detector") != [DETECTOR_MODEL_ID]
+            cycle.get("cycle") != expected_cycle
+            or cycle.get("resident_after_detector") != [DETECTOR_MODEL_ID]
             or cycle.get("resident_after_classifier") != [CLASSIFIER_MODEL_ID]
+            or cycle.get("detector_prediction_sha256") != DETECTOR_PREDICTION_SHA256
+            or cycle.get("classifier_prediction_sha256") != MMBCD_PREDICTION_SHA256
         ):
             raise RuntimeError("single-residency evidence contains an invalid snapshot")
-    if payload.get("final_status", {}).get("resident_models") != [CLASSIFIER_MODEL_ID]:
+        for model_id, field in (
+            (DETECTOR_MODEL_ID, "detector_memory"),
+            (CLASSIFIER_MODEL_ID, "classifier_memory"),
+        ):
+            memory = _validated_memory_snapshot(cycle.get(field), field)
+            initial = first_reserved.setdefault(model_id, memory["reserved_bytes"])
+            maximum_growth = max(
+                maximum_growth,
+                max(
+                    0.0,
+                    (memory["reserved_bytes"] - initial) * 100.0 / initial,
+                ),
+            )
+    final_status = payload.get("final_status", {})
+    metrics = final_status.get("metrics", {})
+    expected_loads = len(cycles) * 2
+    if (
+        final_status.get("state") != "ready"
+        or final_status.get("active_model") != CLASSIFIER_MODEL_ID
+        or final_status.get("resident_models") != [CLASSIFIER_MODEL_ID]
+        or final_status.get("active_inferences") != 0
+        or metrics.get("load_count") != expected_loads
+        or metrics.get("switch_count") != expected_loads - 1
+        or metrics.get("unload_count") != expected_loads - 1
+        or metrics.get("failure_count") != 0
+    ):
         raise RuntimeError("single-residency evidence has an invalid final resident")
+    _validated_memory_snapshot(final_status.get("memory"), "final_status.memory")
+    if maximum_growth > 20.0:
+        raise RuntimeError("single-residency evidence exceeds the VRAM growth gate")
     return sha256_file(path.expanduser().resolve())
 
 
+def _validated_memory_snapshot(value: object, path: str) -> dict[str, int]:
+    if not isinstance(value, Mapping):
+        raise RuntimeError(f"{path} is missing")
+    required = {
+        "allocated_bytes",
+        "reserved_bytes",
+        "peak_allocated_bytes",
+        "peak_reserved_bytes",
+    }
+    if set(value) != required or any(
+        isinstance(item, bool) or not isinstance(item, int) or item <= 0 for item in value.values()
+    ):
+        raise RuntimeError(f"{path} is invalid")
+    result = {name: int(item) for name, item in value.items()}
+    if (
+        result["allocated_bytes"] > result["reserved_bytes"]
+        or result["allocated_bytes"] > result["peak_allocated_bytes"]
+        or result["reserved_bytes"] > result["peak_reserved_bytes"]
+        or result["peak_allocated_bytes"] > result["peak_reserved_bytes"]
+    ):
+        raise RuntimeError(f"{path} is impossible")
+    return result
+
+
 def _nvidia_value(field: str) -> str:
-    return subprocess.check_output(
-        ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
-        text=True,
-        timeout=10,
-    ).splitlines()[0].strip()
+    return (
+        subprocess.check_output(
+            ["nvidia-smi", f"--query-gpu={field}", "--format=csv,noheader,nounits"],
+            text=True,
+            timeout=10,
+        )
+        .splitlines()[0]
+        .strip()
+    )
 
 
 def _render_markdown(report: Mapping[str, object]) -> str:
@@ -573,8 +608,12 @@ def _render_markdown(report: Mapping[str, object]) -> str:
         "",
         f"Revision: `{report['revision']}`",
         "",
-        "| Model | Candidate | Status | Parity | Warm p50 ms | Peak reserved bytes | Accepted |",
-        "| --- | --- | --- | --- | ---: | ---: | --- |",
+        (
+            "| Model | Candidate | Status | Parity | Candidate release | "
+            "Repeated A→B switch | "
+            "Warm p50 ms | Peak reserved bytes | Accepted |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | ---: | ---: | --- |",
     ]
     for model_id, matrix in report["models"].items():
         for candidate in matrix["candidates"]:
@@ -588,6 +627,8 @@ def _render_markdown(report: Mapping[str, object]) -> str:
                         candidate["name"],
                         candidate["status"],
                         str(candidate["parity"]["passed"]).lower(),
+                        candidate["reliability"]["release"]["status"],
+                        report["switch_reliability"][candidate["name"]]["status"],
                         f"{latency['p50']:.3f}" if latency else "n/a",
                         str(performance["peak_reserved_bytes"] or "n/a"),
                         str(candidate["promotion"]["accepted"]).lower(),
@@ -598,7 +639,10 @@ def _render_markdown(report: Mapping[str, object]) -> str:
     lines.extend(
         (
             "",
-            "The production runtime remains eager FP32 until a candidate also passes the packaged benchmark and restart gates.",
+            (
+                "The production runtime remains eager FP32 until a candidate also "
+                "passes the packaged benchmark and restart gates."
+            ),
             "",
             str(report["validation_boundary"]),
             "",

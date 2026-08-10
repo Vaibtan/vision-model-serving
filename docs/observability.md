@@ -11,7 +11,8 @@ The same snapshot contract supplies `/readyz`, `/api/v1/models`, and the
 Redis/RQ/executor metrics described below, so those views share one observation
 of current state. Redis and executor probes have explicit timeouts. Readiness
 declares `readiness_scope: artifact_ready`; cold `unloaded` is ready when the
-artifacts, controller, device, and native operator are verified.
+manifest, telemetry collector, artifacts, controller, device, and native
+operator are available.
 `inference_warm` and `warm_model` separately describe the sole resident model.
 
 The service emits Prometheus metrics and newline-delimited JSON events without
@@ -76,7 +77,9 @@ They never serialize request bodies, clinical history, filenames, filesystem
 paths, DICOM patient/study/instance identifiers, token content, or prediction IDs.
 
 Readiness returns bounded internal reason codes such as `redis_unavailable` or
-`native_operator_unavailable`; exception text and filesystem details remain
+`native_operator_unavailable`. Manifest and collector failures similarly return
+`manifest_unavailable` or `telemetry_unavailable` with an empty inventory or
+zero-valued telemetry shape; exception text and filesystem details remain
 private. The operations snapshot and page additionally exclude prediction
-values and request identifiers. These surfaces are operational telemetry, not
-a clinical audit log or evidence of accuracy, calibration, or medical fitness.
+values and request identifiers. These surfaces are operational telemetry, not a
+clinical audit log or evidence of accuracy, calibration, or medical fitness.

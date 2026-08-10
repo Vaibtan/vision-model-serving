@@ -1,0 +1,252 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DJANGO_SETTINGS_MODULE: vision_model_serving.web.settings
+  PYTHONPATH: src
+
+jobs:
+  quality:
+    name: Quality and contracts
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.12"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.8.4"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependency-minimal environment
+        run: uv sync --locked --python 3.12 --extra gateway --extra web --group dev
+
+      - name: Run Ruff lint and static checks
+        run: >-
+          uvx --from ruff==0.14.13 ruff check
+          src tests scripts manage.py config_cfg.py main.py
+
+      - name: Check Ruff formatting on changed Python files
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+        run: |
+          set -euo pipefail
+          if [[ "$EVENT_NAME" == "pull_request" ]]; then
+            base_sha="$PR_BASE_SHA"
+          else
+            base_sha="$PUSH_BEFORE_SHA"
+          fi
+
+          empty_tree="$(git hash-object -t tree -w /dev/null)"
+          if [[ -z "$base_sha" || "$base_sha" =~ ^0+$ ]]; then
+            base_sha="$empty_tree"
+          elif ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            git fetch --no-tags origin "$base_sha"
+          fi
+
+          if [[ "$base_sha" != "$empty_tree" ]] \
+            && ! git cat-file -e "${base_sha}^{commit}" 2>/dev/null; then
+            echo "Unable to resolve the event base commit: $base_sha" >&2
+            exit 2
+          fi
+
+          mapfile -d '' changed_python < <(
+            git diff --name-only --diff-filter=ACMR -z "$base_sha" HEAD -- '*.py'
+          )
+          if (( ${#changed_python[@]} == 0 )); then
+            echo "No changed Python files require a formatting check."
+            exit 0
+          fi
+
+          printf 'Checking Ruff formatting for %s changed Python file(s).\n' \
+            "${#changed_python[@]}"
+          uvx --from ruff==0.14.13 ruff format --check -- "${changed_python[@]}"
+
+      - name: Audit all locked and TensorRT-pinned dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          locked_requirements="$RUNNER_TEMP/locked-requirements.txt"
+          source_requirements="$RUNNER_TEMP/source-requirements.txt"
+          audit_requirements="$RUNNER_TEMP/audit-requirements.txt"
+          audit_report="$RUNNER_TEMP/pip-audit.json"
+
+          uv export \
+            --locked \
+            --all-extras \
+            --all-groups \
+            --no-emit-project \
+            --no-hashes \
+            --output-file "$locked_requirements"
+
+          cp "$locked_requirements" "$source_requirements"
+          printf '\n' >> "$source_requirements"
+          cat requirements/tensorrt-l4.txt >> "$source_requirements"
+
+          # pip-audit queries PyPI advisory identities without installing packages.
+          # Strip only the CUDA local-version suffix used by the PyTorch index.
+          sed -E \
+            's/^(torch(vision)?==[0-9]+\.[0-9]+\.[0-9]+)\+cu[0-9]+/\1/' \
+            "$source_requirements" > "$audit_requirements"
+
+          set +e
+          uvx --from pip-audit==2.9.0 pip-audit \
+            --strict \
+            --no-deps \
+            --disable-pip \
+            --progress-spinner off \
+            --format json \
+            --output "$audit_report" \
+            --requirement "$audit_requirements"
+          audit_status=$?
+          set -e
+
+          if [[ ! -s "$audit_report" ]]; then
+            echo "pip-audit did not produce a report." >&2
+            exit 2
+          fi
+          if (( audit_status > 1 )); then
+            exit "$audit_status"
+          fi
+
+          uv run --no-sync python .github/scripts/verify_dependency_audit.py \
+            --report "$audit_report" \
+            --baseline .github/dependency-audit-baseline.json \
+            --requirements "$audit_requirements" \
+            --source-requirements "$source_requirements"
+
+      - name: Run Django system checks
+        run: uv run --no-sync python manage.py check
+
+      - name: Run hardened Django deployment checks
+        env:
+          VMS_ALLOWED_HOSTS: localhost,127.0.0.1
+          VMS_CSRF_COOKIE_SECURE: "true"
+          VMS_DEBUG: "false"
+          VMS_SECRET_KEY: ci-only-not-a-secret-7c103498d302428bb138039656bfb75c
+          VMS_SECURE_HSTS_INCLUDE_SUBDOMAINS: "true"
+          VMS_SECURE_HSTS_PRELOAD: "true"
+          VMS_SECURE_HSTS_SECONDS: "31536000"
+          VMS_SECURE_SSL_REDIRECT: "true"
+          VMS_SESSION_COOKIE_SECURE: "true"
+        run: uv run --no-sync python manage.py check --deploy
+
+      - name: Validate generated OpenAPI schema
+        run: >-
+          uv run --no-sync python manage.py spectacular
+          --format openapi-json
+          --file "$RUNNER_TEMP/openapi.json"
+          --validate
+          --fail-on-warn
+
+      - name: Validate every Compose profile
+        env:
+          VMS_DICOM_PATH: ${{ github.workspace }}/fixtures/cbis-ddsm/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547/1-1.dcm
+        run: docker compose --profile "*" config --quiet
+
+  unit-tests:
+    name: Unit tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: ${{ matrix.python-version }}
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version:
+          - "3.11"
+          - "3.12"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.8.4"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install dependency-minimal environment
+        run: >-
+          uv sync --locked
+          --python "${{ matrix.python-version }}"
+          --extra gateway
+          --extra web
+          --group dev
+
+      - name: Run full CPU unit suite
+        run: uv run --no-sync python -m unittest discover -s tests -v
+
+  browser-tests:
+    name: Browser interaction tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    env:
+      UV_PYTHON: "3.12"
+      VMS_BROWSER_REQUIRED: "true"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Set up Python
+        uses: actions/setup-python@a309ff8b426b58ec0e2a45f0f869d46889d02405 # v6.2.0
+        with:
+          python-version: "3.12"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@c771a70e6277c0a99b617c7a806ffedaca235ff9 # v9.0.0
+        with:
+          version: "0.8.4"
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install browser-test environment
+        run: >-
+          uv sync --locked
+          --python 3.12
+          --extra gateway
+          --extra web
+          --group browser
+          --group dev
+
+      - name: Install pinned Chromium runtime
+        run: uv run --no-sync playwright install --with-deps chromium
+
+      - name: Run browser interaction suite
+        run: uv run --no-sync python -m unittest discover -s tests/browser -v

@@ -1,0 +1,195 @@
+{
+  "schema_version": 1,
+  "reviewed_at": "2026-08-10",
+  "scope": {
+    "locked_graph": "Every dependency selected on the Ubuntu Python 3.12 runner from uv.lock with all project extras and dependency groups enabled.",
+    "tensorrt_pins": "The five exact top-level packages in requirements/tensorrt-l4.txt. That file is not a transitive lock, so this audit does not claim coverage of TensorRT-only transitive packages absent from uv.lock.",
+    "normalization": "CUDA local suffixes are removed only from torch and torchvision versions for PyPI advisory lookup; no package is installed or substituted.",
+    "decision": "These entries are temporary reviewed findings, not a claim that the pinned packages are safe or remediated. Any advisory or fix-version change fails CI.",
+    "removal_gate": "Upgrade the pinned GPU stack only with a fresh L4 parity, reliability, image-output, and TensorRT compatibility validation. Remove each entry as soon as its finding no longer applies."
+  },
+  "required_packages": {
+    "cpu_control_plane": [
+      "django",
+      "pillow"
+    ],
+    "browser": [
+      "playwright"
+    ],
+    "locked_gpu": [
+      "torch",
+      "torchvision"
+    ],
+    "tensorrt_direct_pins": [
+      "cuda-python",
+      "onnx",
+      "polygraphy",
+      "tensorrt",
+      "torch-tensorrt"
+    ]
+  },
+  "exception_packages": [
+    "onnx",
+    "torch"
+  ],
+  "reviewed_exceptions": [
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "PYSEC-2025-206",
+      "fix_versions": [
+        "2.9.0"
+      ]
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "PYSEC-2025-204",
+      "fix_versions": [
+        "2.9.0"
+      ]
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "PYSEC-2026-139",
+      "fix_versions": []
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "PYSEC-2025-203",
+      "fix_versions": [
+        "2.9.0"
+      ]
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "PYSEC-2026-2286",
+      "fix_versions": [
+        "2.10.0"
+      ]
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "GHSA-vgrw-7cvw-pwgx",
+      "fix_versions": [
+        "2.9.1"
+      ]
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "GHSA-rrmf-rvhw-rf47",
+      "fix_versions": [
+        "2.13.0"
+      ]
+    },
+    {
+      "package": "torch",
+      "locked_version": "2.8.0+cu128",
+      "audited_version": "2.8.0",
+      "id": "GHSA-qfhq-4f3w-5fph",
+      "fix_versions": [
+        "2.10.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2025-10",
+      "fix_versions": [
+        "1.16.2"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2025-148",
+      "fix_versions": []
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-103",
+      "fix_versions": [
+        "1.21.0rc1"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-104",
+      "fix_versions": [
+        "1.21.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-2240",
+      "fix_versions": [
+        "1.21.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-2241",
+      "fix_versions": [
+        "1.21.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-2239",
+      "fix_versions": [
+        "1.21.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-2689",
+      "fix_versions": [
+        "1.22.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "PYSEC-2026-3587",
+      "fix_versions": [
+        "1.22.0"
+      ]
+    },
+    {
+      "package": "onnx",
+      "locked_version": "1.16.0",
+      "audited_version": "1.16.0",
+      "id": "GHSA-q56x-g2fj-4rj6",
+      "fix_versions": [
+        "1.21.0"
+      ]
+    }
+  ]
+}

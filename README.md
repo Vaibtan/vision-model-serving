@@ -23,32 +23,47 @@ robustness, and checkpoint redistribution rights are not established.
 - scoped artifact readiness, model-specific inference-warm state, liveness,
   model inventory, OpenAPI, and safe metrics/logs;
 - pinned non-root/read-only Docker images, smoke/restart profiles, and
-  schema-v3 benchmark, optimization/TensorRT, and browser acceptance tooling; and
+  schema-v4 benchmark, optimization/TensorRT, and browser acceptance tooling; and
 - an attributed, checksum-pinned public CBIS-DDSM fixture fetcher.
 
 ## Quick verification
 
 ```powershell
-uv sync --frozen --extra gateway --extra web
+$env:UV_PYTHON = "3.12"
+uv sync --frozen --python 3.12 --extra gateway --extra web --group dev
 $env:PYTHONPATH = "src"
 uv lock --check
 uv run python -m vision_model_serving.artifacts config/model-artifacts.json
 uv run python -m unittest discover -s tests
+uvx --from ruff==0.14.13 ruff check src tests scripts manage.py config_cfg.py main.py
 uv run python manage.py check
 ```
 
-The browser lane additionally runs `uv sync --group browser`,
-`uv run playwright install chromium`, and
-`uv run --group browser python tests/browser/test_inspection_workbench.py`.
+The tracked [CI workflow](.github/workflows/ci.yml) additionally checks Ruff
+formatting only on changed Python files, audits the complete Ubuntu/Python 3.12
+`uv.lock` selection plus the direct TensorRT pins, runs `manage.py check
+--deploy` with hardened settings, validates generated OpenAPI and every Compose
+profile, and executes the browser suite on pinned Chromium. The exact PyTorch
+and ONNX findings in the reviewable
+[audit baseline](.github/dependency-audit-baseline.json) remain risks, not clean
+results; their pins require L4-compatible upgrades and renewed validation.
+TensorRT-only transitive packages are outside the claim because their
+requirements file is not a transitive lock. See
+[fresh-machine reproduction](docs/reproduction.md) for the audit command and
+boundary. The browser lane locally runs `uv sync --frozen --extra gateway
+--extra web --group dev --group browser`, `uv run --no-sync playwright install
+chromium`, and `uv run --no-sync python -m unittest discover -s tests/browser
+-v`.
 
 The unit suite validates contracts without proprietary weights. Real service
 claims require the separate Redis/DICOM or L4/Compose gates; see
 [fresh-machine reproduction](docs/reproduction.md).
 
-The current NVIDIA L4 run passed strict single residency, artifact-scoped
-readiness, the schema-v3 concurrency benchmark, destructive restart, and the
-packaged browser workflow. The optimization matrix retained eager FP32 and the
-TensorRT lane concluded a measured STOP. See the
+The previous exact-revision NVIDIA L4 run passed strict single residency,
+artifact-scoped readiness, the schema-v3 concurrency benchmark, destructive
+restart, and the packaged browser workflow. The optimization matrix retained
+eager FP32 and the TensorRT lane concluded a measured STOP. Current code and
+dependency changes require an L4 rerun; see the
 [five-finding resolution record](docs/validation/spec-resolution-l4-20260810.md).
 
 ## API surface

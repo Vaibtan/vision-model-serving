@@ -34,7 +34,7 @@ detector scores are extremely low, and the MMBCD class mapping is not confirmed
 by checkpoint metadata. Never present class `0` as "benign" or the softmax
 values as calibrated confidence.
 
-## Validated environment
+## Previously validated environment
 
 | Component | Validated value |
 | --- | --- |
@@ -51,10 +51,13 @@ values as calibrated confidence.
 | timm | 1.0.28 |
 | Transformers | 5.14.1 |
 
-The machine-readable lane is
+This table records the 2026-08-10 evidence revision. The machine-readable lane is
 [`config/l4-fp32-environment.json`](../../config/l4-fp32-environment.json). It
 pins every Python distribution, source revision, patch hash, CUDA/device fact,
-native-operator reference, and success marker used below.
+native-operator reference, and success marker used below. That lane now pins
+Pillow 12.3.0 for its security fix, so the current code must repeat the golden,
+packaged, and image-output gates before claiming L4 equivalence; the older table
+is preserved rather than relabeled as new evidence.
 
 MMBCD's released environment used PyTorch 2.1.2 and Transformers 4.37.0. The
 run below establishes serving compatibility with the newer stack through exact

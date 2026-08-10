@@ -13,6 +13,7 @@ from drf_spectacular.utils import extend_schema
 from PIL import Image
 from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, MultiPartParser
+from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
@@ -42,7 +43,13 @@ from vision_model_serving.observability import record_dicom
 from vision_model_serving.pipeline import CaseInput, PredictionMode
 from vision_model_serving.pipeline.serialization import prediction_to_dict
 
-from .errors import ClinicalHistoryRequired, EncodedDicomTooLarge, public_error
+from .errors import (
+    ClinicalHistoryRequired,
+    EncodedDicomTooLarge,
+    ErrorEnvelopeSerializer,
+    public_error,
+)
+from .renderers import PngRenderer
 from .runtime import prediction_gateway
 
 
@@ -96,15 +103,16 @@ class DicomPreviewView(APIView):
     """Return an ephemeral metadata-free rendering of canonical pixels."""
 
     parser_classes = (MultiPartParser, FormParser)
+    renderer_classes = (JSONRenderer, PngRenderer)
 
     @extend_schema(
         request=DicomPreviewSerializer,
         responses={
-            200: OpenApiTypes.BINARY,
-            400: OpenApiTypes.OBJECT,
-            413: OpenApiTypes.OBJECT,
-            415: OpenApiTypes.OBJECT,
-            422: OpenApiTypes.OBJECT,
+            (200, "image/png"): bytes,
+            400: ErrorEnvelopeSerializer,
+            413: ErrorEnvelopeSerializer,
+            415: ErrorEnvelopeSerializer,
+            422: ErrorEnvelopeSerializer,
         },
     )
     def post(self, request: Request) -> HttpResponse | Response:

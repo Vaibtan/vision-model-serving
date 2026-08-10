@@ -20,6 +20,10 @@ from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID
 
 from vision_model_serving.artifacts import ArtifactRegistryError
 from vision_model_serving.compatibility.environment import load_environment_spec
+from vision_model_serving.residency._torch_policy import (
+    TorchProcessConfigurationError,
+    configure_deterministic_torch,
+)
 
 from .adapter import (
     ClassifierAdapterError,
@@ -122,9 +126,7 @@ class TorchMmbcdRuntime:
         if not isinstance(output, tuple) or len(output) != 3:
             raise ClassifierInferenceError("classifier output contract is invalid")
         try:
-            logits, embeddings, attention = (
-                _tensor_to_numpy(value) for value in output
-            )
+            logits, embeddings, attention = (_tensor_to_numpy(value) for value in output)
         except Exception as error:
             raise ClassifierInferenceError(
                 f"classifier output transfer failed ({type(error).__name__})"
@@ -162,27 +164,16 @@ def _load_verified_mmbcd_model(
     validated_device = _validate_device(device)
     os.environ["HF_HUB_OFFLINE"] = "1"
     os.environ["TRANSFORMERS_OFFLINE"] = "1"
-    prior_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
-    workspace_config = os.environ.setdefault("CUBLAS_WORKSPACE_CONFIG", ":4096:8")
-    if workspace_config != ":4096:8":
-        raise ClassifierLoadError(
-            "classifier CUBLAS determinism configuration differs"
-        )
     try:
         import torch
     except ImportError:
         raise ClassifierLoadError(
             "PyTorch is unavailable in the pinned classifier runtime"
         ) from None
-    if (
-        validated_device.startswith("cuda")
-        and torch.cuda.is_initialized()
-        and prior_workspace_config != ":4096:8"
-    ):
-        raise ClassifierLoadError(
-            "CUBLAS determinism was configured after CUDA initialization"
-        )
-    _configure_determinism(torch)
+    try:
+        configure_deterministic_torch(torch, device=validated_device)
+    except TorchProcessConfigurationError as error:
+        raise ClassifierLoadError(f"classifier {error}") from None
     started = perf_counter()
     try:
         model = model_factory()
@@ -210,9 +201,7 @@ def _load_verified_mmbcd_model(
             f"strict classifier state load failed ({type(error).__name__})"
         ) from None
     if load_result.missing_keys or load_result.unexpected_keys:
-        raise ClassifierLoadError(
-            "strict classifier state load reported key differences"
-        )
+        raise ClassifierLoadError("strict classifier state load reported key differences")
     try:
         model = model.to(device=validated_device, dtype=torch.float32)
         model.eval()
@@ -271,10 +260,7 @@ def _load_pinned_dino_architecture(dino_root: Path) -> object:
     root = dino_root.resolve()
     module_path = root / "vision_transformer.py"
     utils_path = root / "utils.py"
-    if any(
-        not path.is_file() or path.is_symlink()
-        for path in (module_path, utils_path)
-    ):
+    if any(not path.is_file() or path.is_symlink() for path in (module_path, utils_path)):
         raise ClassifierLoadError("pinned DINO architecture source is absent")
     loaded_architecture = sys.modules.get(_PINNED_DINO_MODULE)
     if loaded_architecture is not None:
@@ -445,18 +431,14 @@ def _canonical_state_dict(raw_state: object) -> dict[str, object]:
             raise ClassifierLoadError("verified checkpoint has a non-text state key")
         normalized = key[7:] if key.startswith("module.") else key
         if normalized in canonical:
-            raise ClassifierLoadError(
-                "state key collision after approved prefix normalization"
-            )
+            raise ClassifierLoadError("state key collision after approved prefix normalization")
         canonical[normalized] = value
     return canonical
 
 
 def _verify_aliases(state: Mapping[str, object], torch: object) -> None:
     if not all(
-        left in state
-        and right in state
-        and torch.equal(state[left], state[right])
+        left in state and right in state and torch.equal(state[left], state[right])
         for left, right in _ALIASES
     ):
         raise ClassifierLoadError("classifier checkpoint aliases differ")
@@ -501,19 +483,3 @@ def _verify_git_head(root: Path, expected: str, label: str) -> None:
 def _tensor_to_numpy(tensor: Any) -> NDArray[np.float32]:
     values = tensor.detach().cpu().contiguous().numpy()
     return np.ascontiguousarray(values, dtype=np.float32)
-
-
-def _configure_determinism(torch: object) -> None:
-    try:
-        torch.manual_seed(0)
-        torch.cuda.manual_seed_all(0)
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        torch.set_float32_matmul_precision("highest")
-        torch.use_deterministic_algorithms(True, warn_only=False)
-    except Exception as error:
-        raise ClassifierLoadError(
-            f"classifier determinism setup failed ({type(error).__name__})"
-        ) from None

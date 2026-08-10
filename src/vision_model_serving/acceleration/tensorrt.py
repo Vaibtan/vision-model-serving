@@ -32,6 +32,31 @@ class TensorRtManifestError(ValueError):
 
 
 @dataclass(frozen=True, slots=True)
+class PluginRequirement:
+    """Observed plugin requirement, including an explicit not-reached state."""
+
+    status: str
+    required: bool | None
+
+
+def detector_plugin_requirement(
+    *,
+    strict_export: bool,
+    dryrun_completed: bool,
+    unsupported_operators: tuple[str, ...],
+) -> PluginRequirement:
+    """Classify only coverage that the detector experiment actually reached."""
+
+    if not strict_export:
+        return PluginRequirement(status="not_reached", required=None)
+    if unsupported_operators:
+        return PluginRequirement(status="measured", required=True)
+    if dryrun_completed:
+        return PluginRequirement(status="measured", required=False)
+    return PluginRequirement(status="undetermined", required=None)
+
+
+@dataclass(frozen=True, slots=True)
 class EngineRuntimeCompatibility:
     tensorrt: str
     cuda: str
@@ -152,9 +177,7 @@ def load_engine_manifest(
     }
     if any(builder.get(name) != value for name, value in observed_compatibility.items()):
         raise TensorRtManifestError("TensorRT runtime is incompatible with the plan")
-    if builder.get("torch") != "2.8.0+cu128" or builder.get(
-        "torch_tensorrt"
-    ) != "2.8.0":
+    if builder.get("torch") != "2.8.0+cu128" or builder.get("torch_tensorrt") != "2.8.0":
         raise TensorRtManifestError("TensorRT builder dependency lane differs")
 
     inputs = _tensor_contract(payload.get("inputs"), "inputs")
@@ -178,10 +201,7 @@ def load_engine_manifest(
         or coverage.get("require_full_compilation") is not True
         or coverage.get("pytorch_partition_count") != 0
         or coverage.get("unsupported_operators") != []
-        or _SHA256.fullmatch(
-            str(coverage.get("dry_run_report_sha256", ""))
-        )
-        is None
+        or _SHA256.fullmatch(str(coverage.get("dry_run_report_sha256", ""))) is None
     ):
         raise TensorRtManifestError("TensorRT engine contains fallback coverage")
 
@@ -214,9 +234,7 @@ def load_engine_manifest(
     )
 
 
-def _plugin_contract(
-    value: object, root: Path
-) -> tuple[Path | None, str | None]:
+def _plugin_contract(value: object, root: Path) -> tuple[Path | None, str | None]:
     if value is None:
         return None, None
     plugin = _mapping(value, "plugin")
@@ -251,8 +269,7 @@ def _tensor_contract(
         tuple[
             str,
             str,
-            tuple[int, ...]
-            | tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]],
+            tuple[int, ...] | tuple[tuple[int, ...], tuple[int, ...], tuple[int, ...]],
         ]
     ] = []
     for item in value:
@@ -270,11 +287,7 @@ def _tensor_contract(
             raise TensorRtManifestError(f"TensorRT {path} contract is incomplete")
         name = tensor.get("name")
         dtype = tensor.get("dtype")
-        if (
-            not isinstance(name, str)
-            or not name
-            or dtype not in {"float32", "int64"}
-        ):
+        if not isinstance(name, str) or not name or dtype not in {"float32", "int64"}:
             raise TensorRtManifestError(f"TensorRT {path} tensor is invalid")
         if keys == static_keys:
             shape = _shape(tensor.get("shape"), path)
@@ -295,9 +308,7 @@ def _tensor_contract(
                 )
             )
         ):
-            raise TensorRtManifestError(
-                f"TensorRT {path} dynamic profile is invalid"
-            )
+            raise TensorRtManifestError(f"TensorRT {path} dynamic profile is invalid")
         result.append((name, dtype, (minimum, optimum, maximum)))
     if len({name for name, _, _ in result}) != len(result):
         raise TensorRtManifestError(f"TensorRT {path} names must be unique")
@@ -309,9 +320,7 @@ def _shape(value: object, path: str) -> tuple[int, ...]:
         not isinstance(value, list)
         or not value
         or any(
-            isinstance(dimension, bool)
-            or not isinstance(dimension, int)
-            or dimension <= 0
+            isinstance(dimension, bool) or not isinstance(dimension, int) or dimension <= 0
             for dimension in value
         )
     ):

@@ -30,6 +30,10 @@ The model-residency correction is recorded in
   that job; the next job receives a clean child process.
 - The queue and worker use RQ's JSON serializer.
 - The only job arguments are the opaque prediction ID and storage locator.
+- Django's request-path Redis client bounds connection establishment with
+  `VMS_REDIS_CONNECT_TIMEOUT_SECONDS` and each socket operation with
+  `VMS_REDIS_SOCKET_TIMEOUT_SECONDS`; the shorter operational probe deadline is
+  configured separately.
 
 RQ retains clean work-horse failure isolation without forcing CUDA or model
 construction into every job process. The executor is deliberately not an RQ
@@ -130,5 +134,5 @@ The checked-in 2026-08-08/09 packaged records describe the superseded
 dual-resident policy and remain historical only. The standalone
 single-residency record proves real adapter unload/switch behavior but predates
 the corrected packaged topology. Run current GPU smoke, browser,
-destructive-restart, and schema-v3 benchmark gates on one clean revision before
+destructive-restart, and schema-v4 benchmark gates on one clean revision before
 claiming current packaged L4 acceptance.

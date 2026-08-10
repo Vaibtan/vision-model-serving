@@ -6,7 +6,7 @@ import secrets
 from collections.abc import Callable
 from time import perf_counter
 
-from rest_framework import status
+from rest_framework import serializers, status
 from rest_framework.exceptions import APIException, ValidationError
 from rest_framework.response import Response
 from rest_framework.views import exception_handler as drf_exception_handler
@@ -15,6 +15,17 @@ from vision_model_serving.observability import (
     record_http_exception,
     record_http_response,
 )
+
+
+class ErrorDetailSerializer(serializers.Serializer):
+    code = serializers.CharField()
+    message = serializers.CharField()
+    request_id = serializers.CharField()
+    details = serializers.JSONField()
+
+
+class ErrorEnvelopeSerializer(serializers.Serializer):
+    error = ErrorDetailSerializer()
 
 
 class ClinicalHistoryRequired(APIException):

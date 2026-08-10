@@ -14,6 +14,11 @@ from time import perf_counter
 from typing import ContextManager, Protocol
 import weakref
 
+from ._torch_policy import (
+    TorchProcessConfigurationError,
+    configure_deterministic_torch,
+)
+
 
 _SHA256 = re.compile(r"[0-9a-f]{64}")
 _GIT_COMMIT = re.compile(r"[0-9a-f]{40}")
@@ -46,6 +51,10 @@ class RuntimeUnavailableError(ResidencyRuntimeError):
 
 class UnknownModelError(ResidencyRuntimeError):
     code = "runtime_model_unknown"
+
+
+class _ResidentReachabilityError(RuntimeError):
+    pass
 
 
 class RuntimeState(str, Enum):
@@ -175,23 +184,29 @@ class RuntimeStatus:
             raise ValueError("runtime artifact and active model must change together")
         if self.state is RuntimeState.READY and not self.resident_models:
             raise ValueError("ready runtime must have one resident model")
-        if self.state in {
-            RuntimeState.UNLOADED,
-            RuntimeState.LOADING,
-            RuntimeState.FAILED,
-        } and self.resident_models:
+        if (
+            self.state
+            in {
+                RuntimeState.UNLOADED,
+                RuntimeState.LOADING,
+                RuntimeState.FAILED,
+            }
+            and self.resident_models
+        ):
             raise ValueError(f"{self.state.value} runtime cannot retain a model")
 
 
 class ResidentModel(Protocol):
     artifact: object
 
-    def warmup(self) -> None: ...
+    def warmup(self, inputs: object) -> None: ...
 
     def execute(self, inputs: object) -> object: ...
 
 
 class AcceleratorLifecycle(Protocol):
+    def prepare(self) -> None: ...
+
     def synchronize(self) -> None: ...
 
     def reset_peak_memory_stats(self) -> None: ...
@@ -211,6 +226,19 @@ class TorchCudaLifecycle:
             raise ValueError("CUDA lifecycle device is invalid")
         self._device = device
         self._torch: object | None = None
+        self._prepared = False
+
+    def prepare(self) -> None:
+        if self._prepared:
+            return
+        torch = self._import_torch()
+        try:
+            configure_deterministic_torch(torch, device=self._device)
+        except TorchProcessConfigurationError as error:
+            raise RuntimeUnavailableError(f"accelerator {error}") from None
+        if not torch.cuda.is_available():
+            raise RuntimeUnavailableError("CUDA is unavailable in the execution process")
+        self._prepared = True
 
     def synchronize(self) -> None:
         self._cuda().synchronize(self._device)
@@ -237,6 +265,10 @@ class TorchCudaLifecycle:
         return self._pytorch().cuda
 
     def _pytorch(self) -> object:
+        self.prepare()
+        return self._import_torch()
+
+    def _import_torch(self) -> object:
         if self._torch is None:
             try:
                 import torch
@@ -244,10 +276,6 @@ class TorchCudaLifecycle:
                 raise RuntimeUnavailableError(
                     "PyTorch is unavailable in the execution process"
                 ) from None
-            if not torch.cuda.is_available():
-                raise RuntimeUnavailableError(
-                    "CUDA is unavailable in the execution process"
-                )
             self._torch = torch
         return self._torch
 
@@ -259,9 +287,7 @@ class ModelBinding:
     failure_token: Callable[[], str]
 
     def __post_init__(self) -> None:
-        if not self.model_id or not callable(self.load) or not callable(
-            self.failure_token
-        ):
+        if not self.model_id or not callable(self.load) or not callable(self.failure_token):
             raise ValueError("model binding is invalid")
 
 
@@ -279,6 +305,7 @@ class SingleResidencyRuntime:
             raise ValueError("runtime model bindings must be non-empty and unique")
         self._bindings = binding_map
         self._accelerator = accelerator
+        self._accelerator.prepare()
         self._execution_lock = Lock()
         self._status_lock = Lock()
         self._resident: ResidentModel | None = None
@@ -288,6 +315,8 @@ class SingleResidencyRuntime:
         self._active_inferences = 0
         self._last_error: RuntimeFailure | None = None
         self._failed_key: tuple[str, str] | None = None
+        self._failed_resident: weakref.ReferenceType[ResidentModel] | None = None
+        self._process_failure_latched = False
         self._memory = MemorySnapshot(0, 0, 0, 0)
         self._load_count = 0
         self._reuse_count = 0
@@ -313,13 +342,8 @@ class SingleResidencyRuntime:
                 self._state = RuntimeState.DRAINING
         with self._execution_lock:
             with self._status_lock:
-                if self._state is RuntimeState.FAILED and self._failed_key == (
-                    model_id,
-                    failure_key,
-                ):
-                    raise RuntimeUnavailableError(
-                        "runtime failure cause has not changed"
-                    )
+                if self._failure_cause_is_unchanged(model_id, failure_key):
+                    raise RuntimeUnavailableError("runtime failure cause has not changed")
             reused = self._active_model == model_id and self._resident is not None
             load_ms = 0.0
             switch_ms = 0.0
@@ -332,12 +356,17 @@ class SingleResidencyRuntime:
                         self._unload()
                     except Exception as error:
                         cleanup_error = type(error).__name__
+                        process_failure = not isinstance(
+                            error,
+                            _ResidentReachabilityError,
+                        )
                         del error
                         self._record_failure(
                             model_id=model_id,
                             phase="unload",
                             code=RuntimeUnloadError.code,
                             failure_key=failure_key,
+                            process_global=process_failure,
                         )
                         raise RuntimeUnloadError(
                             f"failed resident cleanup ({cleanup_error})"
@@ -348,7 +377,7 @@ class SingleResidencyRuntime:
                 load_error: str | None = None
                 try:
                     resident = binding.load()
-                    resident.warmup()
+                    resident.warmup(inputs)
                     artifact = _artifact_identity(resident.artifact, model_id)
                     weakref.ref(resident)
                 except Exception as error:
@@ -357,9 +386,7 @@ class SingleResidencyRuntime:
                 if load_error is not None:
                     load_ms = (perf_counter() - started) * 1000.0
                     try:
-                        resident_reference = (
-                            weakref.ref(resident) if resident is not None else None
-                        )
+                        resident_reference = weakref.ref(resident) if resident is not None else None
                     except TypeError:
                         resident_reference = None
                     resident = None
@@ -376,17 +403,17 @@ class SingleResidencyRuntime:
                             phase="unload",
                             code=RuntimeUnloadError.code,
                             failure_key=failure_key,
+                            process_global=True,
                         )
                         with self._status_lock:
                             self._last_load_ms = load_ms
                         raise RuntimeUnloadError(
                             f"failed partial-load cleanup ({cleanup_error})"
                         ) from None
-                    if (
-                        resident_reference is not None
-                        and resident_reference() is not None
-                    ):
+                    if resident_reference is not None and resident_reference() is not None:
                         load_error = "ResidentReachabilityError"
+                        with self._status_lock:
+                            self._failed_resident = resident_reference
                     self._record_failure(
                         model_id=model_id,
                         phase="load",
@@ -395,9 +422,7 @@ class SingleResidencyRuntime:
                     )
                     with self._status_lock:
                         self._last_load_ms = load_ms
-                    raise RuntimeLoadError(
-                        f"model preparation failed ({load_error})"
-                    ) from None
+                    raise RuntimeLoadError(f"model preparation failed ({load_error})") from None
                 if resident is None:
                     raise RuntimeLoadError("model loader returned no resident adapter")
                 load_ms = (perf_counter() - started) * 1000.0
@@ -410,6 +435,8 @@ class SingleResidencyRuntime:
                     self._state = RuntimeState.READY
                     self._last_error = None
                     self._failed_key = None
+                    self._failed_resident = None
+                    self._process_failure_latched = False
                     if switch_started is not None:
                         switch_ms = (perf_counter() - switch_started) * 1000.0
                         self._switch_count += 1
@@ -442,25 +469,26 @@ class SingleResidencyRuntime:
                     self._unload()
                 except Exception as error:
                     cleanup_error = type(error).__name__
+                    process_failure = not isinstance(
+                        error,
+                        _ResidentReachabilityError,
+                    )
                     del error
                     self._record_failure(
                         model_id=model_id,
                         phase="unload",
                         code=RuntimeUnloadError.code,
                         failure_key=failure_key,
+                        process_global=process_failure,
                     )
-                    raise RuntimeUnloadError(
-                        f"failed resident cleanup ({cleanup_error})"
-                    ) from None
+                    raise RuntimeUnloadError(f"failed resident cleanup ({cleanup_error})") from None
                 self._record_failure(
                     model_id=model_id,
                     phase="inference",
                     code=RuntimeInferenceError.code,
                     failure_key=failure_key,
                 )
-                raise RuntimeInferenceError(
-                    f"model execution failed ({inference_error})"
-                ) from None
+                raise RuntimeInferenceError(f"model execution failed ({inference_error})") from None
             with self._status_lock:
                 self._active_inferences = 0
                 self._last_inference_ms = inference_ms
@@ -503,9 +531,7 @@ class SingleResidencyRuntime:
                     last_switch_ms=self._last_switch_ms,
                     last_unload_ms=self._last_unload_ms,
                 ),
-                resident_models=(
-                    (self._active_model,) if self._active_model is not None else ()
-                ),
+                resident_models=((self._active_model,) if self._active_model is not None else ()),
             )
 
     def close(self) -> None:
@@ -519,9 +545,7 @@ class SingleResidencyRuntime:
 
     def _unload(self) -> None:
         self._set_state(RuntimeState.UNLOADING)
-        resident_reference = (
-            weakref.ref(self._resident) if self._resident is not None else None
-        )
+        resident_reference = weakref.ref(self._resident) if self._resident is not None else None
         started = perf_counter()
         with self._status_lock:
             self._resident = None
@@ -533,8 +557,11 @@ class SingleResidencyRuntime:
             self._memory = memory
             self._last_unload_ms = unload_ms
         if resident_reference is not None and resident_reference() is not None:
-            raise RuntimeError("resident adapter remains reachable after unload")
+            with self._status_lock:
+                self._failed_resident = resident_reference
+            raise _ResidentReachabilityError("resident adapter remains reachable after unload")
         with self._status_lock:
+            self._failed_resident = None
             if resident_reference is not None:
                 self._unload_count += 1
             self._state = RuntimeState.UNLOADED
@@ -553,6 +580,7 @@ class SingleResidencyRuntime:
         phase: str,
         code: str,
         failure_key: str,
+        process_global: bool = False,
     ) -> None:
         with self._status_lock:
             self._resident = None
@@ -562,12 +590,33 @@ class SingleResidencyRuntime:
             self._state = RuntimeState.FAILED
             self._failure_count += 1
             self._failed_key = (model_id, failure_key)
+            self._process_failure_latched = self._process_failure_latched or process_global
             self._last_error = RuntimeFailure(
                 model_id=model_id,
                 phase=phase,
                 code=code,
                 cause_token_sha256=failure_key,
             )
+
+    def _failure_cause_is_unchanged(
+        self,
+        model_id: str,
+        failure_key: str,
+    ) -> bool:
+        if self._state is not RuntimeState.FAILED:
+            return False
+        if self._failed_resident is not None:
+            if self._failed_resident() is not None:
+                return True
+            self._failed_resident = None
+            self._failed_key = None
+            self._last_error = None
+            self._state = RuntimeState.UNLOADED
+            return False
+        if self._process_failure_latched:
+            return True
+        return self._failed_key == (model_id, failure_key)
+
 
 def _artifact_identity(value: object, model_id: str) -> RuntimeArtifactIdentity:
     identity = RuntimeArtifactIdentity(

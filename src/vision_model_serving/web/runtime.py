@@ -15,7 +15,11 @@ from vision_model_serving.execution.executor import GpuExecutorClient
 def prediction_gateway() -> RqGpuExecutionGateway:
     """Build the Redis/RQ adapter without importing CUDA or model modules."""
 
-    redis = Redis.from_url(settings.VMS_REDIS_URL)
+    redis = Redis.from_url(
+        settings.VMS_REDIS_URL,
+        socket_connect_timeout=settings.VMS_REDIS_CONNECT_TIMEOUT_SECONDS,
+        socket_timeout=settings.VMS_REDIS_SOCKET_TIMEOUT_SECONDS,
+    )
     return RqGpuExecutionGateway(
         redis_client=redis,
         job_root=settings.VMS_JOB_ROOT,

@@ -6,7 +6,6 @@ from ipaddress import ip_address, ip_network
 
 from django.conf import settings
 from django.http import HttpResponse
-from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from prometheus_client import (
     CONTENT_TYPE_LATEST,
@@ -14,28 +13,41 @@ from prometheus_client import (
     generate_latest,
 )
 from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
+from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
 from vision_model_serving.model_ids import MODEL_IDS
 
-from .errors import public_error
+from .errors import ErrorEnvelopeSerializer, public_error
 from .operations import (
     OperationalSnapshot,
     instrumented_metrics,
     read_operational_snapshot,
 )
+from .operational_serializers import (
+    LivenessResponseSerializer,
+    ModelInventoryResponseSerializer,
+    OperationsSnapshotSerializer,
+    ReadinessResponseSerializer,
+)
+from .renderers import PrometheusRenderer
 
 
 class LivenessView(APIView):
-    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    @extend_schema(responses={200: LivenessResponseSerializer})
     def get(self, _request: Request) -> Response:
         return Response({"status": "alive"})
 
 
 class ReadinessView(APIView):
-    @extend_schema(responses={200: OpenApiTypes.OBJECT, 503: OpenApiTypes.OBJECT})
+    @extend_schema(
+        responses={
+            200: ReadinessResponseSerializer,
+            503: ReadinessResponseSerializer,
+        }
+    )
     def get(self, _request: Request) -> Response:
         snapshot = read_operational_snapshot()
         return Response(
@@ -45,7 +57,7 @@ class ReadinessView(APIView):
 
 
 class ModelInventoryView(APIView):
-    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    @extend_schema(responses={200: ModelInventoryResponseSerializer})
     def get(self, _request: Request) -> Response:
         snapshot = read_operational_snapshot()
         executor = snapshot.executor
@@ -70,7 +82,7 @@ class ModelInventoryView(APIView):
 
 
 class OperationsSnapshotView(APIView):
-    @extend_schema(responses={200: OpenApiTypes.OBJECT})
+    @extend_schema(responses={200: OperationsSnapshotSerializer})
     def get(self, _request: Request) -> Response:
         response = Response(read_operational_snapshot().as_dict())
         response["Cache-Control"] = "no-store"
@@ -78,11 +90,13 @@ class OperationsSnapshotView(APIView):
 
 
 class MetricsIntegrationView(APIView):
+    renderer_classes = (JSONRenderer, PrometheusRenderer)
+
     @extend_schema(
         responses={
-            200: OpenApiTypes.STR,
-            403: OpenApiTypes.OBJECT,
-            503: OpenApiTypes.OBJECT,
+            (200, "text/plain"): bytes,
+            403: ErrorEnvelopeSerializer,
+            503: ErrorEnvelopeSerializer,
         }
     )
     def get(self, request: Request) -> HttpResponse | Response:
@@ -119,8 +133,7 @@ def _metrics_request_is_trusted(request: Request) -> bool:
     try:
         address = ip_address(str(request.META.get("REMOTE_ADDR", "")))
         networks = tuple(
-            ip_network(value, strict=False)
-            for value in settings.VMS_METRICS_ALLOWED_NETWORKS
+            ip_network(value, strict=False) for value in settings.VMS_METRICS_ALLOWED_NETWORKS
         )
     except ValueError:
         return False

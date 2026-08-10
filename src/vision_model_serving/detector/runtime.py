@@ -10,7 +10,6 @@ import hashlib
 import importlib
 import json
 import math
-import os
 from pathlib import Path, PurePosixPath
 import re
 import runpy
@@ -27,6 +26,10 @@ from vision_model_serving.artifacts import ArtifactRegistryError, load_manifest
 from vision_model_serving.compatibility.environment import load_environment_spec
 from vision_model_serving.compatibility.focalnet import prepare_focalnet_patches
 from vision_model_serving.dicom import CanonicalMammogram
+from vision_model_serving.residency._torch_policy import (
+    TorchProcessConfigurationError,
+    configure_deterministic_torch,
+)
 
 from .postprocessing import (
     DetectorAdapterError,
@@ -189,30 +192,14 @@ def _load_verified_detector_model(
 
     identity = _validate_artifact(artifact)
     validated_device = _validate_device(device)
-    prior_workspace_config = os.environ.get("CUBLAS_WORKSPACE_CONFIG")
-    workspace_config = os.environ.setdefault(
-        "CUBLAS_WORKSPACE_CONFIG",
-        ":4096:8",
-    )
-    if workspace_config != ":4096:8":
-        raise DetectorLoadError(
-            "detector CUBLAS determinism configuration differs"
-        )
     try:
         import torch
     except ImportError:
-        raise DetectorLoadError(
-            "PyTorch is unavailable in the pinned detector runtime"
-        ) from None
-    if (
-        validated_device.startswith("cuda")
-        and torch.cuda.is_initialized()
-        and prior_workspace_config != ":4096:8"
-    ):
-        raise DetectorLoadError(
-            "CUBLAS determinism was configured after CUDA initialization"
-        )
-    _configure_determinism(torch)
+        raise DetectorLoadError("PyTorch is unavailable in the pinned detector runtime") from None
+    try:
+        configure_deterministic_torch(torch, device=validated_device)
+    except TorchProcessConfigurationError as error:
+        raise DetectorLoadError(f"detector {error}") from None
 
     started = perf_counter()
     try:
@@ -220,9 +207,7 @@ def _load_verified_detector_model(
     except DetectorLoadError:
         raise
     except Exception as error:
-        raise DetectorLoadError(
-            f"detector construction failed ({type(error).__name__})"
-        ) from None
+        raise DetectorLoadError(f"detector construction failed ({type(error).__name__})") from None
 
     try:
         with artifact.open_checkpoint() as stream:
@@ -251,9 +236,7 @@ def _load_verified_detector_model(
             f"strict detector state load failed ({type(error).__name__})"
         ) from None
     if load_result.missing_keys or load_result.unexpected_keys:
-        raise DetectorLoadError(
-            "strict detector state load reported key differences"
-        )
+        raise DetectorLoadError("strict detector state load reported key differences")
     try:
         model = model.to(device=validated_device, dtype=torch.float32)
         model.eval()
@@ -391,22 +374,6 @@ def _tensor_to_numpy(tensor: Any) -> NDArray[np.float32]:
     return np.ascontiguousarray(values, dtype=np.float32)
 
 
-def _configure_determinism(torch: object) -> None:
-    try:
-        torch.manual_seed(0)
-        torch.cuda.manual_seed_all(0)
-        torch.backends.cudnn.benchmark = False
-        torch.backends.cudnn.deterministic = True
-        torch.backends.cuda.matmul.allow_tf32 = False
-        torch.backends.cudnn.allow_tf32 = False
-        torch.set_float32_matmul_precision("highest")
-        torch.use_deterministic_algorithms(True, warn_only=False)
-    except Exception as error:
-        raise DetectorLoadError(
-            f"detector determinism setup failed ({type(error).__name__})"
-        ) from None
-
-
 class _LocalFocalNetDinoFactory:
     """Validate local source/config identity before invoking the pinned builder."""
 
@@ -428,12 +395,8 @@ class _LocalFocalNetDinoFactory:
             environment_spec = load_environment_spec(
                 self._project_root / "config" / "l4-fp32-environment.json"
             )
-            if environment_spec.upstream_commits.get("focalnet_dino") != (
-                self._expected_revision
-            ):
-                raise DetectorLoadError(
-                    "artifact and source revision contracts do not match"
-                )
+            if environment_spec.upstream_commits.get("focalnet_dino") != (self._expected_revision):
+                raise DetectorLoadError("artifact and source revision contracts do not match")
             patch_results = prepare_focalnet_patches(
                 self._repository_root,
                 self._project_root,
@@ -446,9 +409,7 @@ class _LocalFocalNetDinoFactory:
             raise DetectorLoadError(
                 f"pinned detector source validation failed ({type(error).__name__})"
             ) from None
-        if not patch_results or any(
-            result.state != "already_applied" for result in patch_results
-        ):
+        if not patch_results or any(result.state != "already_applied" for result in patch_results):
             raise DetectorLoadError("required serving source patches are not applied")
 
         config_path = self._verified_config_path()
@@ -489,8 +450,7 @@ class _LocalFocalNetDinoFactory:
                 f"pinned detector construction failed ({type(error).__name__})"
             ) from None
         if not all(
-            callable(getattr(model, name, None))
-            for name in ("load_state_dict", "to", "eval")
+            callable(getattr(model, name, None)) for name in ("load_state_dict", "to", "eval")
         ):
             raise DetectorLoadError("pinned detector builder returned an invalid model")
         return model

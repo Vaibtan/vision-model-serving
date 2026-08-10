@@ -26,6 +26,13 @@ django.setup()
 
 from django.core.wsgi import get_wsgi_application  # noqa: E402
 from PIL import Image  # noqa: E402
+
+BROWSER_REQUIRED = os.environ.get("VMS_BROWSER_REQUIRED", "").strip().lower() in {
+    "1",
+    "true",
+    "yes",
+}
+
 try:  # Browser dependencies are an explicit CI/L4 lane.
     from playwright.sync_api import (  # noqa: E402
         Browser,
@@ -34,7 +41,9 @@ try:  # Browser dependencies are an explicit CI/L4 lane.
         Playwright,
         sync_playwright,
     )
-except ImportError:  # pragma: no cover - exercised by dependency-minimal CI
+except ImportError:  # pragma: no cover - depends on the selected dependency groups
+    if BROWSER_REQUIRED:
+        raise
     Browser = Page = Playwright = Any  # type: ignore[misc,assignment]
     PlaywrightError = RuntimeError  # type: ignore[assignment]
     sync_playwright = None
@@ -45,7 +54,12 @@ from tests.test_dicom_canonicalization import dicom_bytes  # noqa: E402
 def prediction_result() -> dict[str, object]:
     rois = [
         {
-            "canonical_xyxy": [40 + index * 30, 60 + index * 25, 180 + index * 30, 210 + index * 25],
+            "canonical_xyxy": [
+                40 + index * 30,
+                60 + index * 25,
+                180 + index * 30,
+                210 + index * 25,
+            ],
             "score": 0.95 - index * 0.04,
             "padded": False,
         }
@@ -122,6 +136,8 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
             cls.server.shutdown()
             cls.server.server_close()
             cls.server_thread.join(2)
+            if BROWSER_REQUIRED:
+                raise
             raise unittest.SkipTest("Playwright Chromium is not installed") from error
 
     @classmethod
@@ -159,6 +175,7 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
             lambda route: fulfill(route, {"result": result}),
         )
         self.page.route("**/api/v1/predictions/browser-job", status_route)
+
         def submission(route: object) -> None:
             nonlocal idempotency_key
             idempotency_key = route.request.headers.get("idempotency-key", "")
@@ -205,9 +222,9 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
             self.assertEqual(self.page.locator(".roi-card canvas").count(), 8)
             self.page.locator(".roi-card").nth(2).click()
             self.assertTrue(
-                self.page.locator(".roi-card").nth(2).evaluate(
-                    "element => element.classList.contains('is-selected')"
-                )
+                self.page.locator(".roi-card")
+                .nth(2)
+                .evaluate("element => element.classList.contains('is-selected')")
             )
             self.assertIn("R3", self.page.locator("#selected-roi-detail").inner_text())
             self.assertIn("75.0%", self.page.locator("#summary-grid").inner_text())
@@ -264,9 +281,7 @@ class InspectionWorkbenchBrowserTests(unittest.TestCase):
         self.page.route("**/api/v1/predictions", submission)
         with TemporaryDirectory() as directory:
             dicom_path = Path(directory) / "synthetic.dcm"
-            dicom_path.write_bytes(
-                dicom_bytes(np.arange(64 * 64, dtype=np.uint16).reshape(64, 64))
-            )
+            dicom_path.write_bytes(dicom_bytes(np.arange(64 * 64, dtype=np.uint16).reshape(64, 64)))
             self.page.goto(self.live_server_url)
             self.page.locator("#dicom").set_input_files(dicom_path)
             self.page.locator("#preview-image").wait_for(state="visible")

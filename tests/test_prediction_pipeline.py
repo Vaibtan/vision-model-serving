@@ -270,9 +270,7 @@ class FullRuntimeFake(RuntimeFake):
         if mammogram is not self._mammogram or len(rois) != 8:
             raise AssertionError("classifier did not receive detector-owned inputs")
         if history != "  prior   surgery  ":
-            raise AssertionError(
-                "classifier history changed before adapter normalization"
-            )
+            raise AssertionError("classifier history changed before adapter normalization")
         return ModelOutputs(
             model_id=model_id,
             value=self._classifier,
@@ -297,6 +295,9 @@ class FullRuntimeFake(RuntimeFake):
 
 
 class AcceleratorFake:
+    def prepare(self) -> None:
+        pass
+
     def synchronize(self) -> None:
         pass
 
@@ -321,7 +322,7 @@ class DetectorResidentFake:
         repository_revision=DETECTOR_REVISION,
     )
 
-    def warmup(self) -> None:
+    def warmup(self, _inputs: object) -> None:
         pass
 
     def execute(self, inputs: object) -> object:
@@ -335,7 +336,7 @@ class ClassifierResidentFake:
         repository_revision=CLASSIFIER_REVISION,
     )
 
-    def warmup(self) -> None:
+    def warmup(self, _inputs: object) -> None:
         pass
 
     def execute(self, inputs: object) -> object:
@@ -593,6 +594,7 @@ class PredictionPipelineFailureAndCleanupTests(unittest.TestCase):
         gc.collect()
 
         self.assertIsNone(decoder.pixel_reference())
+
 
 if __name__ == "__main__":
     unittest.main()

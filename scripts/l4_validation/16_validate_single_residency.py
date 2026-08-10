@@ -38,9 +38,7 @@ def main() -> None:
     if args.cycles < 2:
         raise ValueError("at least two detector-classifier cycles are required")
     if os.environ.get("CUBLAS_WORKSPACE_CONFIG") != ":4096:8":
-        raise RuntimeError(
-            "launch with CUBLAS_WORKSPACE_CONFIG=:4096:8 before Python starts"
-        )
+        raise RuntimeError("launch with CUBLAS_WORKSPACE_CONFIG=:4096:8 before Python starts")
 
     project_root = args.project_repo.expanduser().resolve()
     sys.path.insert(0, str(project_root / "src"))
@@ -80,7 +78,6 @@ def main() -> None:
     )
     detector_artifact = registry.resolve(DETECTOR_MODEL_ID)
     classifier_artifact = registry.resolve(CLASSIFIER_MODEL_ID)
-    classifier_inputs: list[tuple[object, object, str]] = []
 
     class DetectorResident:
         artifact = detector_artifact
@@ -92,8 +89,8 @@ def main() -> None:
                 project_root=project_root,
             )
 
-        def warmup(self) -> None:
-            self._adapter.predict(canonical)
+        def warmup(self, inputs: object) -> None:
+            self._adapter.predict(inputs)
 
         def execute(self, inputs: object) -> object:
             return self._adapter.predict(inputs)
@@ -110,10 +107,8 @@ def main() -> None:
                 project_root=project_root,
             )
 
-        def warmup(self) -> None:
-            if not classifier_inputs:
-                raise RuntimeError("detector proposals are unavailable for warmup")
-            self.execute(classifier_inputs[-1])
+        def warmup(self, inputs: object) -> None:
+            self.execute(inputs)
 
         def execute(self, inputs: object) -> object:
             mammogram, rois, history = inputs
@@ -125,16 +120,14 @@ def main() -> None:
                 model_id=DETECTOR_MODEL_ID,
                 load=DetectorResident,
                 failure_token=lambda: (
-                    f"{detector_artifact.sha256}:"
-                    f"{detector_artifact.repository_revision}"
+                    f"{detector_artifact.sha256}:{detector_artifact.repository_revision}"
                 ),
             ),
             ModelBinding(
                 model_id=CLASSIFIER_MODEL_ID,
                 load=ClassifierResident,
                 failure_token=lambda: (
-                    f"{classifier_artifact.sha256}:"
-                    f"{classifier_artifact.repository_revision}"
+                    f"{classifier_artifact.sha256}:{classifier_artifact.repository_revision}"
                 ),
             ),
         ),
@@ -149,9 +142,8 @@ def main() -> None:
         if detector_hash != DETECTOR_PREDICTION_SHA256:
             raise RuntimeError("detector prediction hash differs from L4 reference")
         after_detector = runtime.status()
-        if (
-            after_detector.active_model != DETECTOR_MODEL_ID
-            or after_detector.resident_models != (DETECTOR_MODEL_ID,)
+        if after_detector.active_model != DETECTOR_MODEL_ID or after_detector.resident_models != (
+            DETECTOR_MODEL_ID,
         ):
             raise RuntimeError("detector stage violated single residency")
 
@@ -160,7 +152,6 @@ def main() -> None:
             detector_result.proposals.classifier_rois,
             "",
         )
-        classifier_inputs.append(classifier_input)
         classifier_output = runtime.execute(CLASSIFIER_MODEL_ID, classifier_input)
         classifier_result = classifier_output.value
         if classifier_result.prediction_sha256 != MMBCD_PREDICTION_SHA256:
@@ -181,13 +172,9 @@ def main() -> None:
                 "classifier_timings": asdict(classifier_output.timings),
                 "classifier_memory": asdict(classifier_output.memory),
                 "resident_after_detector": list(after_detector.resident_models),
-                "resident_after_classifier": list(
-                    after_classifier.resident_models
-                ),
+                "resident_after_classifier": list(after_classifier.resident_models),
             }
         )
-        classifier_inputs.clear()
-
     status = runtime.status()
     expected_loads = args.cycles * 2
     if status.state is not RuntimeState.READY:

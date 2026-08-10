@@ -9,6 +9,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import tomllib
 import unittest
 from unittest.mock import patch
 
@@ -56,16 +57,17 @@ class L4EnvironmentTests(unittest.TestCase):
         )
 
         self.assertEqual(spec.lane_id, "lightning-l4-fp32-cu128")
-        self.assertEqual(spec.upstream_commits, {
-            "focalnet_dino": manifest["revisions"]["focalnet_dino"],
-            "mmbcd": manifest["revisions"]["mmbcd"],
-            "dino": manifest["revisions"]["dino"],
-        })
+        self.assertEqual(
+            spec.upstream_commits,
+            {
+                "focalnet_dino": manifest["revisions"]["focalnet_dino"],
+                "mmbcd": manifest["revisions"]["mmbcd"],
+                "dino": manifest["revisions"]["dino"],
+            },
+        )
 
         requirement_pins: dict[str, str] = {}
-        for line in (REPOSITORY_ROOT / spec.requirements).read_text(
-            encoding="utf-8"
-        ).splitlines():
+        for line in (REPOSITORY_ROOT / spec.requirements).read_text(encoding="utf-8").splitlines():
             line = line.strip()
             if not line or line.startswith(("#", "--")):
                 continue
@@ -74,9 +76,27 @@ class L4EnvironmentTests(unittest.TestCase):
             requirement_pins[normalized] = version
         self.assertEqual(requirement_pins, spec.packages)
 
-        for patch in spec.patches:
-            content = (REPOSITORY_ROOT / patch["path"]).read_bytes()
-            self.assertEqual(hashlib.sha256(content).hexdigest(), patch["sha256"])
+        project = tomllib.loads((REPOSITORY_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+        project_requirements = [
+            *project["project"]["dependencies"],
+            *project["project"]["optional-dependencies"]["gpu"],
+        ]
+        project_pins = {}
+        for requirement in project_requirements:
+            name, version = requirement.split("==", 1)
+            project_pins[re.sub(r"[-_.]+", "-", name).lower()] = version
+        self.assertLessEqual(set(spec.packages), set(project_pins))
+        self.assertEqual(
+            {name: project_pins[name] for name in spec.packages},
+            spec.packages,
+        )
+
+        for patch_record in spec.patches:
+            content = (REPOSITORY_ROOT / patch_record["path"]).read_bytes()
+            self.assertEqual(
+                hashlib.sha256(content).hexdigest(),
+                patch_record["sha256"],
+            )
 
     def test_exact_l4_snapshot_passes(self) -> None:
         spec = load_environment_spec(SPEC_PATH)
@@ -153,16 +173,12 @@ class L4EnvironmentTests(unittest.TestCase):
                     **base_spec.upstream_commits,
                     "focalnet_dino": commit,
                 },
-                patches=(
-                    {"path": "patches/change.patch", "sha256": patch_hash},
-                ),
+                patches=({"path": "patches/change.patch", "sha256": patch_hash},),
             )
 
             checked = prepare_focalnet_patches(repository, project, spec)
             self.assertEqual(checked[0].state, "applicable")
-            applied = prepare_focalnet_patches(
-                repository, project, spec, apply=True
-            )
+            applied = prepare_focalnet_patches(repository, project, spec, apply=True)
             self.assertEqual(applied[0].state, "applied")
             self.assertEqual(source.read_text(encoding="utf-8"), "after\n")
             checked_again = prepare_focalnet_patches(repository, project, spec)
@@ -206,9 +222,7 @@ class L4EnvironmentTests(unittest.TestCase):
             (toolkit / "bin" / "nvcc").write_text("fixture\n", encoding="utf-8")
             target = toolkit / "targets" / "x86_64-linux"
             (target / "include").mkdir(parents=True)
-            (target / "include" / "cuda_runtime_api.h").write_text(
-                "fixture\n", encoding="utf-8"
-            )
+            (target / "include" / "cuda_runtime_api.h").write_text("fixture\n", encoding="utf-8")
             (target / "lib").mkdir()
             captured: dict[str, str] = {}
 
@@ -228,15 +242,9 @@ class L4EnvironmentTests(unittest.TestCase):
                 ):
                     build_focalnet_extension(repository, spec)
 
-            self.assertEqual(
-                captured["CPATH"].split(os.pathsep)[0], str(target / "include")
-            )
-            self.assertEqual(
-                captured["LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib")
-            )
-            self.assertEqual(
-                captured["LD_LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib")
-            )
+            self.assertEqual(captured["CPATH"].split(os.pathsep)[0], str(target / "include"))
+            self.assertEqual(captured["LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib"))
+            self.assertEqual(captured["LD_LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib"))
             self.assertEqual(
                 captured["PATH"].split(os.pathsep)[0], str(Path(sys.executable).parent)
             )

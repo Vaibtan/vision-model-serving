@@ -3,10 +3,11 @@ from __future__ import annotations
 from contextlib import contextmanager
 from dataclasses import dataclass
 import inspect
+import os
 from pathlib import Path
 import sys
 from threading import Event, Lock, Thread
-from types import ModuleType
+from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
 import weakref
@@ -27,6 +28,10 @@ from vision_model_serving.residency import (  # noqa: E402
     TorchCudaLifecycle,
 )
 import vision_model_serving.residency as residency  # noqa: E402
+from vision_model_serving.residency._torch_policy import (  # noqa: E402
+    TorchProcessConfigurationError,
+    configure_deterministic_torch,
+)
 
 
 MODEL_A = "model-a"
@@ -45,11 +50,11 @@ class ResidentStub:
         self.artifact = ArtifactStub(model_id)
         self.model_id = model_id
         self.fail_execute = fail_execute
-        self.warmup_calls = 0
+        self.warmup_inputs: list[object] = []
         self.execute_calls: list[object] = []
 
-    def warmup(self) -> None:
-        self.warmup_calls += 1
+    def warmup(self, inputs: object) -> None:
+        self.warmup_inputs.append(inputs)
 
     def execute(self, inputs: object) -> object:
         self.execute_calls.append(inputs)
@@ -125,7 +130,7 @@ class WarmupFailureResident(ResidentStub):
         super().__init__(model_id)
         self._trace = trace
 
-    def warmup(self) -> None:
+    def warmup(self, _inputs: object) -> None:
         raise MemoryError("D:/patients/private/warmup-oom-secret")
 
     def __del__(self) -> None:
@@ -163,6 +168,9 @@ class BlockingLoadLoaderStub(LoaderStub):
 class AcceleratorStub:
     def __init__(self):
         self.events: list[str] = []
+
+    def prepare(self) -> None:
+        self.events.append("prepare")
 
     def synchronize(self) -> None:
         self.events.append("synchronize")
@@ -215,6 +223,17 @@ class BlockingCleanupAcceleratorStub(AcceleratorStub):
         super().synchronize()
 
 
+class FailingCleanupAcceleratorStub(AcceleratorStub):
+    def __init__(self):
+        super().__init__()
+        self.fail_cleanup = False
+
+    def synchronize(self) -> None:
+        if self.fail_cleanup:
+            raise RuntimeError("allocator cleanup failed")
+        super().synchronize()
+
+
 class RuntimeLoadTests(unittest.TestCase):
     def test_runtime_has_one_mandatory_residency_policy(self) -> None:
         self.assertNotIn("retain_models", inspect.signature(SingleResidencyRuntime).parameters)
@@ -245,7 +264,7 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertEqual(loader.loads, 1)
         resident = loader.last_resident()
         self.assertIsNotNone(resident)
-        self.assertEqual(resident.warmup_calls, 1)
+        self.assertEqual(resident.warmup_inputs, ["scan-1"])
         self.assertEqual(resident.execute_calls, ["scan-1"])
         self.assertEqual(after.state, RuntimeState.READY)
         self.assertEqual(after.active_model, MODEL_A)
@@ -327,7 +346,7 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertEqual(second.timings.load_ms, 0.0)
         self.assertEqual(loader.loads, 1)
         resident = loader.last_resident()
-        self.assertEqual(resident.warmup_calls, 1)
+        self.assertEqual(resident.warmup_inputs, ["rois-1"])
         self.assertEqual(resident.execute_calls, ["rois-1", "rois-2"])
         self.assertEqual(status.metrics.load_count, 1)
         self.assertEqual(status.metrics.reuse_count, 1)
@@ -590,11 +609,46 @@ class RuntimeLoadTests(unittest.TestCase):
         self.assertIn("empty_cache", accelerator.events)
         self.assertIsNotNone(leaked_resident)
 
+        with self.assertRaises(RuntimeUnavailableError):
+            runtime.execute(MODEL_A, "scan")
+
         del leaked_resident
-        classifier.generation = 2
         recovered = runtime.execute(MODEL_B, "rois")
         self.assertEqual(recovered.value, f"{MODEL_B}:rois")
         self.assertEqual(runtime.status().state, RuntimeState.READY)
+
+    def test_allocator_cleanup_failure_latches_the_entire_process(self) -> None:
+        detector = LoaderStub(MODEL_A)
+        classifier = LoaderStub(MODEL_B)
+        accelerator = FailingCleanupAcceleratorStub()
+        runtime = SingleResidencyRuntime(
+            bindings=(
+                ModelBinding(
+                    model_id=MODEL_A,
+                    load=detector.load,
+                    failure_token=detector.failure_token,
+                ),
+                ModelBinding(
+                    model_id=MODEL_B,
+                    load=classifier.load,
+                    failure_token=classifier.failure_token,
+                ),
+            ),
+            accelerator=accelerator,
+        )
+        runtime.execute(MODEL_A, "scan")
+        accelerator.fail_cleanup = True
+
+        with self.assertRaises(RuntimeUnloadError):
+            runtime.execute(MODEL_B, "rois")
+        with self.assertRaises(RuntimeUnavailableError):
+            runtime.execute(MODEL_A, "scan-again")
+        with self.assertRaises(RuntimeUnavailableError):
+            runtime.execute(MODEL_B, "rois-again")
+
+        self.assertEqual(detector.loads, 1)
+        self.assertEqual(classifier.loads, 0)
+        self.assertEqual(runtime.status().state, RuntimeState.FAILED)
 
     def test_status_observes_loading_and_unloading_transitions(self) -> None:
         load_entered = Event()
@@ -662,25 +716,46 @@ class RuntimeLoadTests(unittest.TestCase):
 
 
 class TorchCudaLifecycleTests(unittest.TestCase):
+    def test_late_cuda_policy_failure_does_not_mutate_the_retry_condition(self) -> None:
+        fake_torch = SimpleNamespace(
+            cuda=SimpleNamespace(is_initialized=lambda: True),
+        )
+        with patch.dict(os.environ):
+            os.environ.pop("CUBLAS_WORKSPACE_CONFIG", None)
+
+            for _ in range(2):
+                with self.assertRaises(TorchProcessConfigurationError):
+                    configure_deterministic_torch(fake_torch, device="cuda:0")
+                self.assertNotIn("CUBLAS_WORKSPACE_CONFIG", os.environ)
+
     def test_cuda_initialization_is_lazy_with_distinct_memory_metrics(self) -> None:
         events: list[tuple[str, object]] = []
         fake_torch = ModuleType("torch")
+        fake_torch.manual_seed = lambda seed: events.append(("manual_seed", seed))
+        fake_torch.set_float32_matmul_precision = lambda value: events.append(
+            ("matmul_precision", value)
+        )
+        fake_torch.use_deterministic_algorithms = lambda value, **kwargs: events.append(
+            ("deterministic_algorithms", (value, kwargs))
+        )
+        fake_torch.backends = SimpleNamespace(
+            cudnn=SimpleNamespace(benchmark=True, deterministic=False, allow_tf32=True),
+            cuda=SimpleNamespace(matmul=SimpleNamespace(allow_tf32=True)),
+        )
         fake_torch.cuda = type(
             "CudaStub",
             (),
             {
-                "is_available": staticmethod(
-                    lambda: events.append(("is_available", None)) or True
+                "is_available": staticmethod(lambda: events.append(("is_available", None)) or True),
+                "is_initialized": staticmethod(lambda: False),
+                "manual_seed_all": staticmethod(
+                    lambda seed: events.append(("manual_seed_all", seed))
                 ),
-                "synchronize": staticmethod(
-                    lambda device: events.append(("synchronize", device))
-                ),
+                "synchronize": staticmethod(lambda device: events.append(("synchronize", device))),
                 "reset_peak_memory_stats": staticmethod(
                     lambda device: events.append(("reset_peak", device))
                 ),
-                "empty_cache": staticmethod(
-                    lambda: events.append(("empty_cache", None))
-                ),
+                "empty_cache": staticmethod(lambda: events.append(("empty_cache", None))),
                 "memory_allocated": staticmethod(lambda device: 101),
                 "memory_reserved": staticmethod(lambda device: 202),
                 "max_memory_allocated": staticmethod(lambda device: 303),
@@ -703,6 +778,10 @@ class TorchCudaLifecycleTests(unittest.TestCase):
         self.assertEqual(
             events,
             [
+                ("manual_seed", 0),
+                ("manual_seed_all", 0),
+                ("matmul_precision", "highest"),
+                ("deterministic_algorithms", (True, {"warn_only": False})),
                 ("is_available", None),
                 ("reset_peak", "cuda:0"),
                 ("synchronize", "cuda:0"),

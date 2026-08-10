@@ -33,6 +33,7 @@ Web alone also joins a no-masquerade edge bridge for the loopback HTTP port.
 | `execution` | Private job storage, capacity/idempotency, RQ state, socket protocol, persistent executor | HTTP parsing or medical interpretation |
 | `web` | Multipart validation, inspection/operations UIs, submission/poll/result endpoints, one bounded operational snapshot, readiness/inventory/OpenAPI | CUDA import, model objects, or checkpoint paths |
 | `observability` | Bounded Prometheus labels and structured safe events | Clinical audit logs or request payload logging |
+| `validation` | Packaged acceptance, exact environment binding, benchmark/optimization/TensorRT evidence contracts, and fail-closed promotion | CLI parsing, HTTP transport ownership, or fabricated GPU measurements |
 
 These are deep interfaces: callers exchange immutable host-side contracts,
 not PyTorch modules, CUDA tensors, DICOM datasets, or filesystem paths.
@@ -98,13 +99,14 @@ The complete mapping from failures to HTTP behavior is in
 `/livez` proves only the web process. `/readyz` is scoped to
 `artifact_ready`: it requires Redis, an RQ worker, the initialized executor,
 verified artifacts, an L4 device, and the functional native operator. It may
-be HTTP 200 while the runtime is unloaded. `inference_warm` and `warm_model`
-report model-specific warmth. `/api/v1/models` exposes manifest identity and sanitized runtime
-state without paths. `/api/v1/operations` is the shared bounded snapshot behind
-readiness, model inventory, the `/monitoring` console, and the queue/executor
-portion of Prometheus export, preventing those surfaces from disagreeing about
-live state. The `/metrics` export is disabled by default and, when enabled, is
-restricted to configured trusted networks.
+be HTTP 200 while the runtime is unloaded. The repository manifest and telemetry
+collector are also fail-closed readiness checks. `inference_warm` and
+`warm_model` report model-specific warmth. `/api/v1/models` exposes manifest
+identity and sanitized runtime state without paths. `/api/v1/operations` is the
+shared bounded snapshot behind readiness, model inventory, the `/monitoring`
+console, and the queue/executor portion of Prometheus export, preventing those
+surfaces from disagreeing about live state. The `/metrics` export is disabled by
+default and, when enabled, is restricted to configured trusted networks.
 
 Structured logs and metrics use bounded repository-owned labels. They exclude
 request/prediction IDs from executor events, clinical history, filenames,

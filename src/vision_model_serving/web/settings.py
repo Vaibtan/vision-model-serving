@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import math
 import os
 from pathlib import Path
 
 
 def _environment_bool(name: str, default: bool = False) -> bool:
     return os.environ.get(name, str(default)).strip().lower() == "true"
+
+
+def _environment_positive_float(name: str, default: str) -> float:
+    value = float(os.environ.get(name, default))
+    if not math.isfinite(value) or value <= 0:
+        raise ValueError(f"{name} must be a positive finite number")
+    return value
 
 
 BASE_DIR = Path(__file__).resolve().parents[3]
@@ -72,6 +80,14 @@ SPECTACULAR_SETTINGS = {
 }
 
 VMS_REDIS_URL = os.environ.get("VMS_REDIS_URL", "redis://127.0.0.1:6379/0")
+VMS_REDIS_CONNECT_TIMEOUT_SECONDS = _environment_positive_float(
+    "VMS_REDIS_CONNECT_TIMEOUT_SECONDS",
+    "1.0",
+)
+VMS_REDIS_SOCKET_TIMEOUT_SECONDS = _environment_positive_float(
+    "VMS_REDIS_SOCKET_TIMEOUT_SECONDS",
+    "5.0",
+)
 VMS_JOB_ROOT = Path(os.environ.get("VMS_JOB_ROOT", BASE_DIR / ".jobs")).resolve()
 VMS_QUEUE_NAME = os.environ.get("VMS_QUEUE_NAME", "gpu-inference")
 VMS_KEY_PREFIX = os.environ.get(

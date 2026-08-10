@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from threading import RLock
 from time import perf_counter
 
 from vision_model_serving.artifacts import ArtifactRegistry
@@ -18,7 +17,6 @@ from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_I
 from vision_model_serving.pipeline import PredictionPipeline
 from vision_model_serving.residency import (
     ModelBinding,
-    ModelOutputs,
     SingleResidencyRuntime,
     TorchCudaLifecycle,
 )
@@ -58,50 +56,6 @@ class ExecutorComposition:
     runtime_initialization_ms: float
 
 
-class _WarmupInputs:
-    def __init__(self) -> None:
-        self._current: dict[str, object] = {}
-
-    def set(self, model_id: str, inputs: object) -> None:
-        self._current[model_id] = inputs
-
-    def get(self, model_id: str) -> object:
-        try:
-            return self._current[model_id]
-        except KeyError:
-            raise RuntimeError("model warmup input is unavailable") from None
-
-    def clear(self, model_id: str) -> None:
-        self._current.pop(model_id, None)
-
-
-class _InputAwareRuntime:
-    """Keep warmup inputs reachable only for one serialized execution."""
-
-    def __init__(
-        self,
-        runtime: SingleResidencyRuntime,
-        warmup_inputs: _WarmupInputs,
-    ):
-        self._runtime = runtime
-        self._warmup_inputs = warmup_inputs
-        self._lock = RLock()
-
-    def execute(self, model_id: str, inputs: object) -> ModelOutputs:
-        with self._lock:
-            self._warmup_inputs.set(model_id, inputs)
-            try:
-                return self._runtime.execute(model_id, inputs)
-            finally:
-                self._warmup_inputs.clear(model_id)
-
-    def status(self) -> object:
-        return self._runtime.status()
-
-    def close(self) -> None:
-        self._runtime.close()
-
-
 def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorComposition:
     """Verify local assets and compose the executor's fixed CUDA pipeline."""
 
@@ -126,7 +80,6 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
     verified = {artifact.id: artifact for artifact in report.verified_artifacts}
     detector_artifact = verified[DETECTOR_MODEL_ID]
     classifier_artifact = verified[CLASSIFIER_MODEL_ID]
-    warmup_inputs = _WarmupInputs()
 
     class DetectorResident:
         def __init__(self) -> None:
@@ -138,8 +91,8 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
                 device=config.device,
             )
 
-        def warmup(self) -> None:
-            self._adapter.predict(warmup_inputs.get(DETECTOR_MODEL_ID))
+        def warmup(self, inputs: object) -> None:
+            self._adapter.predict(inputs)
 
         def execute(self, inputs: object) -> object:
             return self._adapter.predict(inputs)
@@ -156,8 +109,8 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
                 device=config.device,
             )
 
-        def warmup(self) -> None:
-            self.execute(warmup_inputs.get(CLASSIFIER_MODEL_ID))
+        def warmup(self, inputs: object) -> None:
+            self.execute(inputs)
 
         def execute(self, inputs: object) -> object:
             mammogram, rois, history = inputs
@@ -169,16 +122,14 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
                 model_id=DETECTOR_MODEL_ID,
                 load=DetectorResident,
                 failure_token=lambda: (
-                    f"{detector_artifact.sha256}:"
-                    f"{detector_artifact.repository_revision}"
+                    f"{detector_artifact.sha256}:{detector_artifact.repository_revision}"
                 ),
             ),
             ModelBinding(
                 model_id=CLASSIFIER_MODEL_ID,
                 load=ClassifierResident,
                 failure_token=lambda: (
-                    f"{classifier_artifact.sha256}:"
-                    f"{classifier_artifact.repository_revision}"
+                    f"{classifier_artifact.sha256}:{classifier_artifact.repository_revision}"
                 ),
             ),
         ),
@@ -186,7 +137,7 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
     )
     pipeline = PredictionPipeline(
         decoder=DicomCanonicalizer(),
-        runtime=_InputAwareRuntime(runtime, warmup_inputs),
+        runtime=runtime,
     )
     return ExecutorComposition(
         pipeline=pipeline,

@@ -12,17 +12,16 @@ from time import monotonic, sleep
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
 from vision_model_serving.validation.acceptance_contract import (
     PACKAGED_ACCEPTANCE_HISTORY,
+    PUBLIC_DICOM_SHA256,
+    SERVED_CLASSIFIER_OUTPUT_SHA256,
+    SERVED_DETECTOR_OUTPUT_SHA256,
 )
 
-EXPECTED_DICOM_SHA256 = (
-    "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"
-)
-EXPECTED_DETECTOR_SHA256 = (
-    "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5"
-)
-EXPECTED_CLASSIFIER_SHA256 = (
-    "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3"
-)
+EXPECTED_DICOM_SHA256 = PUBLIC_DICOM_SHA256
+EXPECTED_DETECTOR_SHA256 = SERVED_DETECTOR_OUTPUT_SHA256
+EXPECTED_CLASSIFIER_SHA256 = SERVED_CLASSIFIER_OUTPUT_SHA256
+
+
 def main() -> int:
     redis_url = _required_environment("VMS_TEST_REDIS_URL")
     job_root = Path(_required_environment("VMS_TEST_JOB_ROOT")).resolve()
@@ -94,10 +93,7 @@ def main() -> int:
     cold_detection_result = cold_detection.json()["result"]
     if cold_detection_result["classification"] is not None:
         raise AssertionError("detection mode unexpectedly ran the classifier")
-    if (
-        cold_detection_result["detector"]["prediction_sha256"]
-        != EXPECTED_DETECTOR_SHA256
-    ):
+    if cold_detection_result["detector"]["prediction_sha256"] != EXPECTED_DETECTOR_SHA256:
         raise AssertionError("cold HTTP detector result differs from the L4 golden")
     if cold_detection_result["timings"]["detector"]["runtime"]["reused"]:
         raise AssertionError("cold detection unexpectedly reused a detector")
@@ -107,9 +103,7 @@ def main() -> int:
         200,
         after_cold_detection.content,
     )
-    if after_cold_detection.json()["runtime"]["resident_models"] != [
-        DETECTOR_MODEL_ID
-    ]:
+    if after_cold_detection.json()["runtime"]["resident_models"] != [DETECTOR_MODEL_ID]:
         raise AssertionError("cold detection violated single residency")
 
     warm_started = monotonic()
@@ -198,20 +192,11 @@ def main() -> int:
         raise AssertionError(f"operations executor state is invalid: {executor!r}")
     telemetry = operations["telemetry"]
     predictions = telemetry["traffic"]["predictions"]
-    if (
-        predictions["full"]["succeeded"] < 1
-        or predictions["detection"]["succeeded"] < 1
-    ):
+    if predictions["full"]["succeeded"] < 1 or predictions["detection"]["succeeded"] < 1:
         raise AssertionError("operations snapshot omitted completed predictions")
     pipeline_latency = telemetry["latency_seconds"]["pipeline_total"]
-    if (
-        pipeline_latency["count"] < 3
-        or not pipeline_latency["p50"]
-        or not pipeline_latency["p95"]
-    ):
-        raise AssertionError(
-            f"operations latency is incomplete: {pipeline_latency!r}"
-        )
+    if pipeline_latency["count"] < 3 or not pipeline_latency["p50"] or not pipeline_latency["p95"]:
+        raise AssertionError(f"operations latency is incomplete: {pipeline_latency!r}")
     cuda = telemetry["memory_bytes"]["cuda"]
     if any(
         cuda[model][kind] <= 0
@@ -239,10 +224,7 @@ def main() -> int:
             raise AssertionError("private request content leaked into operations")
 
     broker = b"".join(redis.dump(key) or b"" for key in redis.scan_iter("*"))
-    if (
-        dicom[128:256] in broker
-        or PACKAGED_ACCEPTANCE_HISTORY.encode("utf-8") in broker
-    ):
+    if dicom[128:256] in broker or PACKAGED_ACCEPTANCE_HISTORY.encode("utf-8") in broker:
         raise AssertionError("private request content leaked into Redis")
 
     metrics = client.get("/metrics", REMOTE_ADDR="127.0.0.1")
@@ -290,14 +272,10 @@ def main() -> int:
         if line.startswith("{")
     ]
     prediction_events = [
-        event
-        for event in structured_events
-        if event.get("event") == "prediction_completed"
+        event for event in structured_events if event.get("event") == "prediction_completed"
     ]
     if len(prediction_events) != 3:
-        raise AssertionError(
-            "executor did not emit one structured event per prediction"
-        )
+        raise AssertionError("executor did not emit one structured event per prediction")
     for field in (
         "detector_lifecycle",
         "detector_cuda_allocated_bytes",
@@ -321,9 +299,7 @@ def main() -> int:
         for line in rq_worker_log.read_text(encoding="utf-8").splitlines()
         if line.startswith("{") and '"event":"queue_started"' in line
     ]
-    if len(queue_events) != 3 or any(
-        "queue_wait_ms" not in event for event in queue_events
-    ):
+    if len(queue_events) != 3 or any("queue_wait_ms" not in event for event in queue_events):
         raise AssertionError("RQ did not emit bounded queue-wait events")
     serialized_queue_events = json.dumps(queue_events, sort_keys=True)
     if (

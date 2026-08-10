@@ -5,7 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import math
-from typing import Any
 
 from django.conf import settings
 from prometheus_client import REGISTRY, CollectorRegistry, generate_latest, multiprocess
@@ -26,7 +25,7 @@ class OperationalSnapshot:
     reasons: tuple[str, ...]
     queue: dict[str, object]
     executor: dict[str, object]
-    manifest_id: str
+    manifest_id: str | None
     models: tuple[dict[str, object], ...]
     telemetry: dict[str, object]
 
@@ -81,39 +80,48 @@ def read_operational_snapshot() -> OperationalSnapshot:
     except Exception:  # noqa: BLE001 - operational state is fail-closed and bounded
         pass
 
+    manifest_available, manifest_id, models = _manifest_payload()
+    telemetry_available, telemetry = _telemetry_snapshot()
     checks = {
         "redis": redis_ready,
         "rq_worker": worker_ready,
-        "executor_artifact_ready": (
-            executor.artifact_ready if executor is not None else False
-        ),
-        "verified_artifacts": (
-            executor.verified_artifacts if executor is not None else False
-        ),
-        "runtime_initialized": (
-            executor.runtime_initialized if executor is not None else False
-        ),
-        "device_available": (
-            executor.device_available if executor is not None else False
-        ),
+        "executor_artifact_ready": (executor.artifact_ready if executor is not None else False),
+        "verified_artifacts": (executor.verified_artifacts if executor is not None else False),
+        "runtime_initialized": (executor.runtime_initialized if executor is not None else False),
+        "device_available": (executor.device_available if executor is not None else False),
         "native_operator_available": (
             executor.native_operator_available if executor is not None else False
         ),
+        "manifest_available": manifest_available,
+        "telemetry_available": telemetry_available,
     }
     ready = all(checks.values())
-    manifest = load_manifest(settings.BASE_DIR / "config" / "model-artifacts.json")
-    samples = _metric_samples(instrumented_metrics())
     return OperationalSnapshot(
         captured_at=datetime.now(UTC).isoformat(),
         status="ready" if ready else "not_ready",
         checks=checks,
-        reasons=tuple(
-            f"{name}_unavailable" for name, passed in checks.items() if not passed
-        ),
+        reasons=tuple(_unavailable_reason(name) for name, passed in checks.items() if not passed),
         queue=_queue_payload(observations),
         executor=_executor_payload(executor),
-        manifest_id=manifest.manifest_id,
-        models=tuple(
+        manifest_id=manifest_id,
+        models=models,
+        telemetry=telemetry,
+    )
+
+
+def _manifest_payload() -> tuple[
+    bool,
+    str | None,
+    tuple[dict[str, object], ...],
+]:
+    try:
+        manifest = load_manifest(settings.BASE_DIR / "config" / "model-artifacts.json")
+    except Exception:  # noqa: BLE001 - readiness exposes only a bounded reason
+        return False, None, ()
+    return (
+        True,
+        manifest.manifest_id,
+        tuple(
             {
                 "id": artifact.id,
                 "role": artifact.role,
@@ -121,16 +129,26 @@ def read_operational_snapshot() -> OperationalSnapshot:
                 "strict_load_verified": artifact.strict_load_verified,
                 "semantics_status": artifact.semantics_status,
                 "class_names": (
-                    list(artifact.class_names)
-                    if artifact.class_names is not None
-                    else None
+                    list(artifact.class_names) if artifact.class_names is not None else None
                 ),
                 "decision_threshold": artifact.decision_threshold,
             }
             for artifact in manifest.artifacts
         ),
-        telemetry=_telemetry_payload(samples),
     )
+
+
+def _telemetry_snapshot() -> tuple[bool, dict[str, object]]:
+    try:
+        return True, _telemetry_payload(_metric_samples(instrumented_metrics()))
+    except Exception:  # noqa: BLE001 - readiness exposes only a bounded reason
+        return False, _telemetry_payload(())
+
+
+def _unavailable_reason(check_name: str) -> str:
+    if check_name in {"manifest_available", "telemetry_available"}:
+        return f"{check_name.removesuffix('_available')}_unavailable"
+    return f"{check_name}_unavailable"
 
 
 def instrumented_metrics() -> bytes:
@@ -152,9 +170,7 @@ def _broker_readiness() -> tuple[bool, bool]:
             socket_timeout=settings.VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS,
         )
         redis_ready = bool(redis.ping())
-        worker_ready = bool(
-            Worker.all(queue=Queue(settings.VMS_QUEUE_NAME, connection=redis))
-        )
+        worker_ready = bool(Worker.all(queue=Queue(settings.VMS_QUEUE_NAME, connection=redis)))
         return redis_ready, worker_ready
     except Exception:  # noqa: BLE001 - no exception detail crosses this seam
         return False, False
@@ -186,10 +202,7 @@ def _queue_payload(observations: object | None) -> dict[str, object]:
         "succeeded_total": int(getattr(observations, "succeeded_total")),
         "failed_total": int(getattr(observations, "failed_total")),
         "worker_lost_total": int(getattr(observations, "worker_lost_total")),
-        "wait_accumulated_seconds": float(
-            getattr(observations, "queue_wait_ms_total")
-        )
-        / 1_000.0,
+        "wait_accumulated_seconds": float(getattr(observations, "queue_wait_ms_total")) / 1_000.0,
     }
 
 
@@ -225,9 +238,7 @@ def _executor_payload(executor: object | None) -> dict[str, object]:
         "device": str(getattr(executor, "device_name")),
         "device_available": bool(getattr(executor, "device_available")),
         "artifacts_verified": bool(getattr(executor, "verified_artifacts")),
-        "native_operator_available": bool(
-            getattr(executor, "native_operator_available")
-        ),
+        "native_operator_available": bool(getattr(executor, "native_operator_available")),
         "startup": {
             "artifact_verification_seconds": (
                 getattr(executor, "startup").artifact_verification_ms / 1_000.0
@@ -236,8 +247,7 @@ def _executor_payload(executor: object | None) -> dict[str, object]:
                 getattr(executor, "startup").runtime_initialization_ms / 1_000.0
             ),
             "process_start_to_artifact_ready_seconds": (
-                getattr(executor, "startup").process_start_to_artifact_ready_ms
-                / 1_000.0
+                getattr(executor, "startup").process_start_to_artifact_ready_ms / 1_000.0
             ),
         },
         "failure_code": getattr(executor, "last_error"),
@@ -258,9 +268,7 @@ def _telemetry_payload(samples: tuple[object, ...]) -> dict[str, object]:
         "scope": "cumulative_since_process_start",
         "traffic": {
             "http": {
-                outcome: int(
-                    _sample_sum(samples, "vms_http_requests_total", {"outcome": outcome})
-                )
+                outcome: int(_sample_sum(samples, "vms_http_requests_total", {"outcome": outcome}))
                 for outcome in ("success", "client_error", "server_error")
             },
             "predictions": {
@@ -343,9 +351,7 @@ def _telemetry_payload(samples: tuple[object, ...]) -> dict[str, object]:
         },
         "events": {
             "cuda_oom_total": int(_sample_sum(samples, "vms_cuda_oom_total")),
-            "roi_fallbacks_total": int(
-                _sample_sum(samples, "vms_roi_fallbacks_total")
-            ),
+            "roi_fallbacks_total": int(_sample_sum(samples, "vms_roi_fallbacks_total")),
             "lifecycle": {
                 model: {
                     event: int(
@@ -389,9 +395,7 @@ def _histogram(
     }
 
 
-def _bucket_quantile(
-    buckets: dict[float, float], count: float, quantile: float
-) -> float | None:
+def _bucket_quantile(buckets: dict[float, float], count: float, quantile: float) -> float | None:
     if count <= 0 or not buckets:
         return None
     target = count * quantile

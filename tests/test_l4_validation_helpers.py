@@ -8,6 +8,10 @@ import unittest
 
 import numpy as np
 
+from vision_model_serving.validation.tensorrt_experiment import (
+    load_classifier_inputs,
+)
+
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "scripts" / "l4_validation"))
@@ -56,14 +60,6 @@ class L4ValidationHelperTests(unittest.TestCase):
         self.assertEqual(attention_mask.shape, (1, 5))
 
     def test_tensorrt_inputs_preserve_pinned_token_width(self) -> None:
-        module = runpy.run_path(
-            str(
-                REPOSITORY_ROOT
-                / "scripts"
-                / "l4_validation"
-                / "18_build_tensorrt_candidate.py"
-            )
-        )
         with TemporaryDirectory() as directory:
             path = Path(directory) / "inputs.npz"
             np.savez_compressed(
@@ -73,7 +69,7 @@ class L4ValidationHelperTests(unittest.TestCase):
                 attention_mask=np.ones((1, 5), dtype=np.int64),
             )
 
-            _, input_ids, attention_mask = module["_classifier_inputs"](path)
+            _, input_ids, attention_mask = load_classifier_inputs(path)
 
         self.assertEqual(input_ids.shape, (1, 5))
         self.assertEqual(attention_mask.shape, (1, 5))

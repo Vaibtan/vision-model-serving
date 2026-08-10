@@ -14,10 +14,13 @@ production-promotable profile.
   ran through the PyTorch-free verifier, passed output parity, and improved warm
   p50 by 27.8%. The required token-width 2-through-90 profile failed strict
   export, so the diagnostic plan was deleted and the model decision is STOP.
-- **FocalNet-DINO requires a TensorRT plugin or separately proven
-  decomposition.** Its `MultiScaleDeformableAttention` PyBind C++/CUDA path
-  failed strict coverage before an engine could be built. No PyTorch partition
-  or silent fallback was accepted.
+- **FocalNet-DINO failed strict capture before TensorRT analysis.** The measured
+  exception occurred earlier in the upstream `NestedTensor` constructor when a
+  traced tensor-like mask was compared with the string `"auto"`. After that
+  capture boundary is corrected, `MultiScaleDeformableAttention` remains the
+  expected next blocker because its PyBind C++/CUDA path has no TensorRT plugin
+  or separately proven decomposition. No PyTorch partition or silent fallback
+  was accepted.
 - **The production path remains fail closed.** Promotion still requires strict
   export, zero unsupported operations, `require_full_compilation=True`, a raw
   serialized plan, a TensorRT-only runtime smoke test, and the packaged
@@ -29,6 +32,8 @@ production-promotable profile.
 The generated reports are indexed in the
 [Spec-resolution record](../validation/spec-resolution-l4-20260810.md). The
 correct decision is **implementation complete, production promotion STOP**.
+The exact measured-versus-expected failure distinction and report-ready wording
+are preserved in the [failure analysis](../validation/tensorrt-l4-20260810/failure-analysis.md).
 
 This is intentionally a single TensorRT deployment path, not a chain of optional execution fallbacks. ONNX and Polygraphy are diagnostic and comparison tools unless the ONNX parser route is explicitly selected as the sole production builder.
 
@@ -161,10 +166,10 @@ that dimension would change the model result.
 Use exactly batch 1 and eight 224-by-224 crops. Preserve the tokenizer's real
 sequence width and admit only a tied `input_ids`/`attention_mask` TensorRT
 profile from 2 through 90 tokens, with the pinned public request's width 5 as
-the optimization point. Padding that request to width 90 was rejected on L4:
-it changed the fused-embedding golden even with the attention mask present.
-The exact-version strict exporter also rejected the bounded dynamic profile on
-its generated SDPA stride guard. A static width-5 engine is useful only as a
+the optimization point. Padding to width 90 is unmeasured in the checked-in
+evidence and cannot be selected without corpus-level parity measurements. The
+exact-version strict exporter rejected the bounded dynamic profile on its
+generated SDPA stride guard. A static width-5 engine is useful only as a
 converter/runtime diagnostic and must never be promoted as service coverage.
 
 ### Detector

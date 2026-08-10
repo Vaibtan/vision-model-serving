@@ -88,4 +88,6 @@ def main() -> None:
         print("Peak allocated GiB:", round(torch.cuda.max_memory_allocated() / 1024**3, 3))
     print("FOCALNET STRICT LOAD PASSED")
 
-if __name__ == "__main__": main()
+
+if __name__ == "__main__":
+    main()
