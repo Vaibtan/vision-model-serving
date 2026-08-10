@@ -294,7 +294,7 @@ services:
       - python
       - scripts/validate_browser_workbench.py
       - --base-url
-      - http://web:8000
+      - http://127.0.0.1:8000
       - --dicom
       - /fixtures/input.dcm
       - --expected-detector-sha256
@@ -302,8 +302,7 @@ services:
       - --expected-classifier-sha256
       - f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
     <<: *hardened
-    networks:
-      - backend
+    network_mode: service:web
     depends_on:
       web:
         condition: service_healthy

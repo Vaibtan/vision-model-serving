@@ -60,6 +60,33 @@ class ComposeTopologyTests(unittest.TestCase):
             "false",
         )
 
+    @unittest.skipUnless(shutil.which("docker"), "Docker CLI is unavailable")
+    def test_browser_uses_the_web_loopback_namespace(self) -> None:
+        environment = os.environ.copy()
+        environment["VMS_DICOM_PATH"] = str(
+            (REPOSITORY_ROOT / "ASSIGNMENT.md").resolve()
+        )
+        completed = subprocess.run(
+            [
+                "docker",
+                "compose",
+                "--profile",
+                "browser",
+                "config",
+                "--format",
+                "json",
+            ],
+            cwd=REPOSITORY_ROOT,
+            env=environment,
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        browser = json.loads(completed.stdout)["services"]["browser-acceptance"]
+        self.assertEqual(browser["network_mode"], "service:web")
+        self.assertIn("http://127.0.0.1:8000", browser["command"])
+        self.assertNotIn("networks", browser)
+
 
 if __name__ == "__main__":
     unittest.main()
