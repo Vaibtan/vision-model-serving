@@ -373,38 +373,49 @@ def _run_sample(
         )
     timings = result["timings"]
     detector_stage = timings["detector"]
+    detector_adapter = detector_stage["adapter"]
     classifier_stage = timings["classifier"]
     stages: dict[str, float | None] = {
         "dicom_decode": timings["decode_ms"] / 1_000.0,
         "pipeline_total": timings["total_ms"] / 1_000.0,
-        "detector_preprocess": detector_stage["preprocess_ms"] / 1_000.0,
+        "detector_adapter_load": detector_adapter["load_ms"] / 1_000.0,
+        "detector_preprocess": detector_adapter["preprocess_ms"] / 1_000.0,
         "detector_load_warmup": detector_stage["runtime"]["load_ms"] / 1_000.0,
-        "detector_inference": detector_stage["runtime"]["inference_ms"] / 1_000.0,
-        "detector_postprocess": detector_stage["postprocess_ms"] / 1_000.0,
+        "detector_runtime_execute": detector_stage["runtime"]["inference_ms"]
+        / 1_000.0,
+        "detector_inference": detector_adapter["inference_ms"] / 1_000.0,
+        "detector_postprocess": detector_adapter["postprocess_ms"] / 1_000.0,
         "detector_switch": detector_stage["runtime"]["switch_ms"] / 1_000.0,
+        "classifier_adapter_load": None,
         "classifier_crop_preprocess": None,
         "classifier_tokenization": None,
         "classifier_load_warmup": None,
+        "classifier_runtime_execute": None,
         "classifier_inference": None,
         "classifier_result": None,
         "classifier_switch": None,
     }
     if classifier_stage is not None:
+        classifier_adapter = classifier_stage["adapter"]
         stages.update(
             {
-                "classifier_crop_preprocess": classifier_stage[
+                "classifier_adapter_load": classifier_adapter["load_ms"]
+                / 1_000.0,
+                "classifier_crop_preprocess": classifier_adapter[
                     "crop_preprocess_ms"
                 ]
                 / 1_000.0,
-                "classifier_tokenization": classifier_stage["tokenization_ms"]
+                "classifier_tokenization": classifier_adapter["tokenization_ms"]
                 / 1_000.0,
                 "classifier_load_warmup": classifier_stage["runtime"]["load_ms"]
                 / 1_000.0,
-                "classifier_inference": classifier_stage["runtime"][
+                "classifier_runtime_execute": classifier_stage["runtime"][
                     "inference_ms"
                 ]
                 / 1_000.0,
-                "classifier_result": classifier_stage["result_ms"] / 1_000.0,
+                "classifier_inference": classifier_adapter["inference_ms"]
+                / 1_000.0,
+                "classifier_result": classifier_adapter["result_ms"] / 1_000.0,
                 "classifier_switch": classifier_stage["runtime"]["switch_ms"]
                 / 1_000.0,
             }

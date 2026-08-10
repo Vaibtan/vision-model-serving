@@ -5,6 +5,7 @@ import math
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 
@@ -103,6 +104,71 @@ def valid_record() -> dict[str, object]:
 
 
 class BenchmarkStatisticsTests(unittest.TestCase):
+    def test_sample_preserves_nested_runtime_and_adapter_timings(self) -> None:
+        result = {
+            "detector": {"prediction_sha256": "d" * 64},
+            "classification": {"prediction_sha256": "c" * 64},
+            "timings": {
+                "decode_ms": 1.0,
+                "total_ms": 100.0,
+                "detector": {
+                    "runtime": {
+                        "reused": False,
+                        "load_ms": 2.0,
+                        "inference_ms": 30.0,
+                        "switch_ms": 0.0,
+                    },
+                    "adapter": {
+                        "load_ms": 3.0,
+                        "preprocess_ms": 4.0,
+                        "inference_ms": 5.0,
+                        "postprocess_ms": 6.0,
+                    },
+                    "memory": {"peak_reserved_bytes": 100},
+                },
+                "classifier": {
+                    "runtime": {
+                        "reused": False,
+                        "load_ms": 7.0,
+                        "inference_ms": 40.0,
+                        "switch_ms": 8.0,
+                    },
+                    "adapter": {
+                        "load_ms": 9.0,
+                        "crop_preprocess_ms": 10.0,
+                        "tokenization_ms": 11.0,
+                        "inference_ms": 12.0,
+                        "result_ms": 13.0,
+                    },
+                    "memory": {"peak_reserved_bytes": 200},
+                },
+            },
+        }
+        client = SimpleNamespace(
+            predict_observed=lambda *_args, **_kwargs: SimpleNamespace(
+                result=result,
+                wall_seconds=0.2,
+                queue_wait_seconds=0.01,
+                states=("queued", "started", "succeeded"),
+            )
+        )
+
+        observed = benchmark_api._run_sample(
+            client,
+            b"dicom",
+            mode=benchmark_api.PredictionMode.FULL,
+            expected_detector_sha256="d" * 64,
+            expected_classifier_sha256="c" * 64,
+        )
+
+        stages = observed["stages_seconds"]
+        self.assertEqual(stages["detector_runtime_execute"], 0.03)
+        self.assertEqual(stages["detector_inference"], 0.005)
+        self.assertEqual(stages["classifier_runtime_execute"], 0.04)
+        self.assertEqual(stages["classifier_inference"], 0.012)
+        self.assertEqual(stages["classifier_adapter_load"], 0.009)
+        self.assertEqual(observed["peak_reserved_bytes"], 200)
+
     def test_environment_identity_accepts_the_real_packages_mapping(self) -> None:
         evidence = {
             "status": "passed",
