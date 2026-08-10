@@ -44,7 +44,6 @@ from vision_model_serving.validation.revision import (
 
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _SHA256 = re.compile(r"(?:sha256:)?[0-9a-f]{64}")
-_REPOSITORY_DIGEST = re.compile(r"[^@\s]+@sha256:[0-9a-f]{64}")
 
 
 def main() -> int:
@@ -58,7 +57,6 @@ def main() -> int:
     parser.add_argument("--revision", required=True)
     parser.add_argument("--environment-evidence", type=Path, required=True)
     parser.add_argument("--executor-image-id", required=True)
-    parser.add_argument("--executor-image-digest", required=True)
     parser.add_argument("--expected-detector-sha256", required=True)
     parser.add_argument("--expected-classifier-sha256", required=True)
     parser.add_argument("--resource-sample-interval-ms", type=int, default=200)
@@ -74,8 +72,6 @@ def main() -> int:
             parser.error(f"--{name.replace('_', '-')} must be a SHA-256 digest")
     if _SHA256.fullmatch(args.executor_image_id) is None:
         parser.error("--executor-image-id must be a SHA-256 image id")
-    if _REPOSITORY_DIGEST.fullmatch(args.executor_image_digest) is None:
-        parser.error("--executor-image-digest must be a repository digest")
 
     project_root = PROJECT_ROOT
     _verify_clean_revision(project_root, args.revision)
@@ -84,7 +80,6 @@ def main() -> int:
         project_root,
         args.environment_evidence,
         executor_image_id=args.executor_image_id,
-        executor_image_digest=args.executor_image_digest,
     )
     identity = _benchmark_identity(project_root, dicom)
     client = PackagedPredictionClient(
@@ -562,7 +557,6 @@ def _environment_identity(
     evidence_path: Path,
     *,
     executor_image_id: str,
-    executor_image_digest: str,
 ) -> dict[str, object]:
     evidence = _json_object(evidence_path)
     if evidence.get("status") != "passed" or evidence.get("gpu_gate") != "passed":
@@ -608,7 +602,6 @@ def _environment_identity(
         },
         "container": {
             "executor_image_id": executor_image_id,
-            "executor_image_digest": executor_image_digest,
             "executor_dockerfile_sha256": hashlib.sha256(
                 dockerfile.read_bytes()
             ).hexdigest(),

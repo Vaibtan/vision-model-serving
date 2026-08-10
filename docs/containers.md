@@ -120,7 +120,6 @@ docker compose --profile benchmark up --build -d redis executor rq-worker web
 
 REVISION="$(git rev-parse HEAD)"
 IMAGE_ID="$(docker image inspect vision-model-serving-executor:local --format '{{.Id}}')"
-IMAGE_DIGEST="$(docker image inspect vision-model-serving-executor:local --format '{{index .RepoDigests 0}}')"
 uv run --extra gateway --extra web python scripts/benchmark_api.py \
   --base-url http://127.0.0.1:8000 \
   --dicom "$VMS_DICOM_PATH" \
@@ -128,9 +127,8 @@ uv run --extra gateway --extra web python scripts/benchmark_api.py \
   --markdown-output benchmark-results/benchmark.md \
   --runs 20 \
   --revision "$REVISION" \
-  --environment-evidence config/l4-fp32-environment.json \
+  --environment-evidence /tmp/l4-environment.json \
   --executor-image-id "$IMAGE_ID" \
-  --executor-image-digest "$IMAGE_DIGEST" \
   --expected-detector-sha256 4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5 \
   --expected-classifier-sha256 f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3
 ```
@@ -139,8 +137,9 @@ The harness requires a clean exact revision and a fresh unloaded executor.
 Schema v3 records cold full, switch-to-detection, compatible warm detections,
 full-after-detection, repeated switch-bound full requests, concurrency 1/2/4,
 failure accounting, stage distributions, startup timing, runtime/compiler/
-container identity, utilization, memory/OOM state, and max-one residency. It
-writes both JSON and Markdown or fails.
+container identity (the content-addressed local image ID plus pinned base-image
+digests), utilization, memory/OOM state, and max-one residency. It writes both
+JSON and Markdown or fails.
 
 ## Browser acceptance profile
 
