@@ -576,7 +576,10 @@ def _environment_identity(
         "compiler",
         "driver",
     )
-    if any(snapshot.get(name) in {None, ""} for name in required):
+    if any(
+        snapshot.get(name) is None or snapshot.get(name) == ""
+        for name in required
+    ):
         raise BenchmarkContractError("L4 runtime/compiler identity is incomplete")
     lane = _json_object(project_root / "config" / "l4-fp32-environment.json")
     dockerfile = project_root / "docker" / "executor.Dockerfile"

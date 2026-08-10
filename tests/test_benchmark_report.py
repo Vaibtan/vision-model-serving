@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import math
 from pathlib import Path
 import sys
+from tempfile import TemporaryDirectory
 import unittest
 
 
@@ -17,6 +19,7 @@ from vision_model_serving.validation.benchmark import (  # noqa: E402
     render_benchmark_markdown,
     validate_benchmark_record,
 )
+from scripts import benchmark_api  # noqa: E402
 
 
 def valid_record() -> dict[str, object]:
@@ -100,6 +103,42 @@ def valid_record() -> dict[str, object]:
 
 
 class BenchmarkStatisticsTests(unittest.TestCase):
+    def test_environment_identity_accepts_the_real_packages_mapping(self) -> None:
+        evidence = {
+            "status": "passed",
+            "gpu_gate": "passed",
+            "snapshot": {
+                "collection_errors": [],
+                "python": "3.12.11",
+                "packages": {
+                    "torch": "2.8.0+cu128",
+                    "torchvision": "0.23.0+cu128",
+                },
+                "torch_cuda": "12.8",
+                "device_name": "NVIDIA L4",
+                "compute_capability": "8.9",
+                "total_device_memory_bytes": 23_659_151_360,
+                "cudnn_version": "91002",
+                "nvcc_release": "12.8",
+                "compiler": "c++ 13.3.0",
+                "driver": "580.173.02",
+            },
+        }
+        with TemporaryDirectory() as directory:
+            evidence_path = Path(directory) / "environment.json"
+            evidence_path.write_text(json.dumps(evidence), encoding="utf-8")
+            observed = benchmark_api._environment_identity(
+                REPOSITORY_ROOT,
+                evidence_path,
+                executor_image_id="sha256:" + "a" * 64,
+            )
+
+        self.assertEqual(observed["software"]["torch"], "2.8.0+cu128")
+        self.assertEqual(
+            observed["container"]["executor_image_id"],
+            "sha256:" + "a" * 64,
+        )
+
     def test_distribution_includes_every_required_statistic(self) -> None:
         observed = latency_distribution([1.0, 2.0, 3.0, 4.0, 5.0])
 
