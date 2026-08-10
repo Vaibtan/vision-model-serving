@@ -50,14 +50,14 @@ def manifest(plan: bytes) -> dict[str, object]:
             {
                 "name": "input_ids",
                 "dtype": "int64",
-                "min_shape": [1, 1],
+                "min_shape": [1, 2],
                 "opt_shape": [1, 5],
                 "max_shape": [1, 90],
             },
             {
                 "name": "attention_mask",
                 "dtype": "int64",
-                "min_shape": [1, 1],
+                "min_shape": [1, 2],
                 "opt_shape": [1, 5],
                 "max_shape": [1, 90],
             },

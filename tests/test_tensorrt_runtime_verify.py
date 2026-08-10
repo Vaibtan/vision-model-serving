@@ -32,12 +32,12 @@ class _Engine:
         return self.profile
 
     def get_tensor_shape(self, name: str) -> tuple[int, ...]:
-        return (1, -1)
+        return self.profile[1]
 
 
 class _Context:
-    def __init__(self) -> None:
-        self.shape = (1, -1)
+    def __init__(self, shape: tuple[int, ...] = (1, 5)) -> None:
+        self.shape = shape
 
     def set_input_shape(self, name: str, shape: tuple[int, ...]) -> bool:
         self.shape = shape
@@ -54,8 +54,8 @@ class _TensorRt:
 
 
 class TensorRtRuntimeVerifyTests(unittest.TestCase):
-    def test_exact_dynamic_profile_binds_observed_width(self) -> None:
-        profile = ((1, 1), (1, 5), (1, 90))
+    def test_exact_static_fixture_profile_is_accepted(self) -> None:
+        profile = ((1, 5), (1, 5), (1, 5))
         context = _Context()
 
         MODULE["_verify_input_contract"](
@@ -70,11 +70,11 @@ class TensorRtRuntimeVerifyTests(unittest.TestCase):
 
         self.assertEqual(context.shape, (1, 5))
 
-    def test_engine_with_wider_profile_is_rejected(self) -> None:
-        expected = ((1, 1), (1, 5), (1, 90))
+    def test_engine_with_dynamic_profile_is_rejected(self) -> None:
+        expected = ((1, 5), (1, 5), (1, 5))
         with self.assertRaises(RuntimeError):
             MODULE["_verify_input_contract"](
-                _Engine(((1, 1), (1, 5), (1, 128))),
+                _Engine(((1, 2), (1, 5), (1, 90))),
                 _Context(),
                 "input_ids",
                 np.dtype(np.int64),

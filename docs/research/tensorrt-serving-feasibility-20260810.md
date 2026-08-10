@@ -95,12 +95,16 @@ The first MMBCD engine contract should be:
 
 ```text
 roi_crops:       float32 [1, 8, 3, 224, 224]
-input_ids:       int64   [1, 90]
-attention_mask:  int64   [1, 90]
+input_ids:       int64   [1, 2..90] (optimization point 5)
+attention_mask:  int64   [1, 2..90] (tied to input_ids)
 logits:          float32 [1, 2]
 ```
 
-The repository already fixes eight crops and 224-by-224 images, but its tokenizer currently uses `padding=True`; token width therefore varies from 1 through 90. The TensorRT lane must instead make width 90 a public backend contract, tokenize with max-length padding, and reject any nonconforming tensor before enqueue. The eager reference used for parity must use the same padded inputs. Masked padding should preserve semantics, but that is a testable expectation, not permission to skip golden and corpus comparison.
+The repository already fixes eight crops and 224-by-224 images. Its tokenizer
+does not pad to the 90-token limit, so the TensorRT lane must preserve the
+observed width. RoBERTa's special tokens make 2 the smallest realizable width;
+the backend therefore admits 2 through 90 and rejects every other shape before
+enqueue. The eager parity reference must use the identical unpadded tokens.
 
 If strict export or full compilation fails, record the exact unsupported operator and stop. Do not turn on eager fallback. A narrowly scoped converter is acceptable only when it has unit-level shape/type tests and end-to-end parity evidence.
 
@@ -140,9 +144,12 @@ that dimension would change the model result.
 
 Use exactly batch 1 and eight 224-by-224 crops. Preserve the tokenizer's real
 sequence width and admit only a tied `input_ids`/`attention_mask` TensorRT
-profile from 1 through 90 tokens, with the pinned public request's width 5 as
+profile from 2 through 90 tokens, with the pinned public request's width 5 as
 the optimization point. Padding that request to width 90 was rejected on L4:
 it changed the fused-embedding golden even with the attention mask present.
+The exact-version strict exporter also rejected the bounded dynamic profile on
+its generated SDPA stride guard. A static width-5 engine is useful only as a
+converter/runtime diagnostic and must never be promoted as service coverage.
 
 ### Detector
 
@@ -314,7 +321,7 @@ A model is **GO for TensorRT production** only when all are true:
 The project is **PARTIAL** when MMBCD passes every gate but the detector remains blocked on its custom plugin, or when only a fixed detector shape is validated. In that state it may accurately claim:
 
 > The MMBCD classifier uses a strict full TensorRT engine for the validated
-> fixed image/ROI and dynamic 1-through-90 token-width contract.
+> fixed image/ROI and dynamic 2-through-90 token-width contract.
 
 It may not claim that the whole pipeline uses TensorRT. The runtime must report the backend per stage, and the TensorRT-backed stage still has no eager fallback. Whether a mixed eager-detector/TensorRT-classifier release satisfies the assignment is a product decision, not something the runtime should conceal.
 
@@ -355,7 +362,7 @@ The existing eager FP32 L4 validation remains valuable baseline evidence. It doe
 ## 11. Recommended implementation order
 
 1. Add the exact acceleration-tool pins to a separate locked builder/validation dependency group and record every resolved version.
-2. Preserve MMBCD token width, bind both token tensors to the same 1-through-90
+2. Preserve MMBCD token width, bind both token tensors to the same 2-through-90
    dynamic profile, and reject every shape outside that profile.
 3. Create an inference-only MMBCD tensor wrapper; run strict export and archive its first unsupported-operator report.
 4. If coverage is complete, build the FP32/TF32-disabled raw plan on L4 and run TensorRT-only, parity, endpoint, residency, and performance gates.

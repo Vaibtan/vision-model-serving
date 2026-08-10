@@ -21,8 +21,8 @@ INPUT_CONTRACT = (
         (1, 8, 3, 224, 224),
         (1, 8, 3, 224, 224),
     ),
-    ("input_ids", np.dtype(np.int64), (1, 1), (1, 5), (1, 90)),
-    ("attention_mask", np.dtype(np.int64), (1, 1), (1, 5), (1, 90)),
+    ("input_ids", np.dtype(np.int64), (1, 5), (1, 5), (1, 5)),
+    ("attention_mask", np.dtype(np.int64), (1, 5), (1, 5), (1, 5)),
 )
 OUTPUT_CONTRACT = (
     ("logits", np.dtype(np.float32), (1, 2)),
@@ -172,7 +172,7 @@ def main() -> int:
         },
         "gates": {
             "deserialized": True,
-            "dynamic_io_contract": True,
+            "static_fixture_io_contract": True,
             "executed": True,
             "pytorch_absent": not forbidden.intersection(sys.modules),
         },
@@ -209,8 +209,7 @@ def _token_input(values: np.ndarray) -> np.ndarray:
     if (
         values.ndim != 2
         or values.shape[0] != 1
-        or values.shape[1] < 1
-        or values.shape[1] > 90
+        or values.shape[1] != 5
     ):
         raise RuntimeError("TensorRT token input is invalid")
     return np.ascontiguousarray(values, dtype=np.int64)

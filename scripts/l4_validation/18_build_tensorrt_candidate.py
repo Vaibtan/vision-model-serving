@@ -227,9 +227,10 @@ def main() -> int:
             ),
         },
         "validation_boundary": (
-            "FP32/TF32-disabled TensorRT feasibility with fixed batch, ROI, and "
-            "image shapes plus token width 1..90 on one NVIDIA L4 and one public "
-            "DICOM. It is not clinical or cross-hardware evidence."
+            "FP32/TF32-disabled TensorRT feasibility with a static token-width-5 "
+            "diagnostic engine and a separately gated 2..90 production profile "
+            "on one NVIDIA L4 and one public DICOM. It is not clinical or "
+            "cross-hardware evidence."
         ),
     }
     write_json_atomic(output_dir / "tensorrt-spike.json", report)
@@ -365,14 +366,35 @@ def _build_classifier(
         raise RuntimeError("MMBCD TensorRT baseline differs from the L4 golden")
 
     capture = StringIO()
+    dynamic_report_path = output_dir / "mmbcd-dynamic-export.txt"
+    try:
+        token_width = torch.export.Dim("token_width", min=2, max=90)
+        torch.export.export(
+            loaded.model,
+            inputs,
+            dynamic_shapes=({}, {1: token_width}, {1: token_width}),
+            strict=True,
+        )
+        dynamic_export = {
+            "passed": True,
+            "failure_code": None,
+        }
+        dynamic_report_path.write_text(
+            "strict dynamic export passed\n",
+            encoding="utf-8",
+        )
+    except Exception as error:
+        dynamic_export = {
+            "passed": False,
+            "failure_code": f"dynamic_export_failed:{type(error).__name__}",
+        }
+        dynamic_report_path.write_text(
+            _sanitize_error(error, project_root, dino_root, mmbcd_root),
+            encoding="utf-8",
+        )
+    dynamic_export["report_sha256"] = sha256_file(dynamic_report_path)
     export_started = perf_counter()
-    token_width = torch.export.Dim("token_width", min=1, max=90)
-    exported = torch.export.export(
-        loaded.model,
-        inputs,
-        dynamic_shapes=({}, {1: token_width}, {1: token_width}),
-        strict=True,
-    )
+    exported = torch.export.export(loaded.model, inputs, strict=True)
     export_ms = (perf_counter() - export_started) * 1_000.0
     with torch.inference_mode():
         exported_outputs = exported.module()(*inputs)
@@ -389,16 +411,12 @@ def _build_classifier(
             name="roi_crops",
         ),
         torch_tensorrt.Input(
-            min_shape=(1, 1),
-            opt_shape=tuple(inputs[1].shape),
-            max_shape=(1, 90),
+            shape=tuple(inputs[1].shape),
             dtype=torch.int64,
             name="input_ids",
         ),
         torch_tensorrt.Input(
-            min_shape=(1, 1),
-            opt_shape=tuple(inputs[2].shape),
-            max_shape=(1, 90),
+            shape=tuple(inputs[2].shape),
             dtype=torch.int64,
             name="attention_mask",
         ),
@@ -434,7 +452,7 @@ def _build_classifier(
     subprocess.run(
         [
             sys.executable,
-            str(project_root / "scripts" / "tensorrt_runtime_verify.py"),
+            str(PROJECT_ROOT / "scripts" / "tensorrt_runtime_verify.py"),
             "--plan",
             str(candidate_plan),
             "--input-bundle",
@@ -488,84 +506,30 @@ def _build_classifier(
         "warm_p50_improvement_percent": (1.0 - trt_p50 / eager_p50) * 100.0,
         "promotion_threshold_passed": performance_passed,
         "scope": (
-            "classifier forward only at the token-width-5 optimization point "
-            "of the admitted 1..90 dynamic profile"
+            "classifier forward only for the exact static token-width-5 public "
+            "fixture; it is not production shape coverage"
         ),
     }
     performance_path = output_dir / "mmbcd-tensorrt-performance.json"
     write_json_atomic(performance_path, performance)
-    decision = "go" if parity_passed and performance_passed else "stop"
-    plan_path = output_dir / "mmbcd-fp32.plan"
-    if decision == "go":
-        candidate_plan.replace(plan_path)
-        manifest = {
-            "schema_version": 1,
-            "model": {
-                "id": CLASSIFIER_MODEL_ID,
-                "checkpoint_sha256": artifact.sha256,
-                "repository_revision": artifact.repository_revision,
-                "wrapper_contract_version": 1,
-            },
-            "engine": {
-                "filename": plan_path.name,
-                "sha256": sha256_file(plan_path),
-                "precision": "float32",
-                "tf32": False,
-            },
-            "builder": {
-                "torch": torch.__version__,
-                "torch_tensorrt": metadata.version("torch-tensorrt"),
-                "tensorrt": trt.__version__,
-                "cuda": torch.version.cuda,
-                "gpu_name": torch.cuda.get_device_name("cuda:0"),
-                "compute_capability": ".".join(
-                    str(value)
-                    for value in torch.cuda.get_device_capability("cuda:0")
-                ),
-            },
-            "inputs": [
-                {"name": "roi_crops", "dtype": "float32", "shape": [1, 8, 3, 224, 224]},
-                {
-                    "name": "input_ids",
-                    "dtype": "int64",
-                    "min_shape": [1, 1],
-                    "opt_shape": [1, 5],
-                    "max_shape": [1, 90],
-                },
-                {
-                    "name": "attention_mask",
-                    "dtype": "int64",
-                    "min_shape": [1, 1],
-                    "opt_shape": [1, 5],
-                    "max_shape": [1, 90],
-                },
-            ],
-            "outputs": [
-                {"name": "logits", "dtype": "float32", "shape": [1, 2]},
-                {"name": "fused_embeddings", "dtype": "float32", "shape": [1, 768]},
-                {"name": "roi_attention", "dtype": "float32", "shape": [1, 1, 8]},
-            ],
-            "coverage": {
-                "strict_export": True,
-                "require_full_compilation": True,
-                "pytorch_partition_count": 0,
-                "unsupported_operators": [],
-                "dry_run_report_sha256": sha256_file(dryrun_path),
-            },
-            "plugin": None,
-            "parity": {
-                "passed": True,
-                "report_sha256": sha256_file(parity_path),
-            },
-            "performance": {
-                "promotion_threshold_passed": True,
-                "report_sha256": sha256_file(performance_path),
-            },
-            "decision": "go",
-        }
-        write_json_atomic(output_dir / "mmbcd-tensorrt-manifest.json", manifest)
-    else:
-        candidate_plan.unlink()
+    fixture_engine_sha256 = sha256_file(candidate_plan)
+    candidate_plan.unlink()
+    shape_coverage = {
+        "passed": False,
+        "required_profile": {
+            "min_token_width": 2,
+            "opt_token_width": 5,
+            "max_token_width": 90,
+        },
+        "static_fixture_token_width": 5,
+        "dynamic_strict_export": dynamic_export,
+        "failure_code": (
+            "dynamic_profile_engine_not_built"
+            if dynamic_export["passed"]
+            else dynamic_export["failure_code"]
+        ),
+    }
+    decision = "stop"
     return {
         "strict_export": True,
         "export_ms": export_ms,
@@ -577,14 +541,16 @@ def _build_classifier(
         "dryrun_report_sha256": sha256_file(dryrun_path),
         "engine_built": True,
         "engine_build_ms": build_ms,
+        "static_fixture_engine_sha256": fixture_engine_sha256,
         "tensorrt_only_runtime_passed": all(runtime["gates"].values()),
         "runtime_report_sha256": sha256_file(runtime_report),
         "parity": parity,
         "performance": performance,
+        "shape_coverage": shape_coverage,
         "decision": decision,
         "promotion_boundary": (
-            "Engine GO permits the immutable plan to be considered by a later "
-            "packaged endpoint experiment; it does not select production TensorRT."
+            "The static diagnostic plan is always deleted. Production requires "
+            "one strict 2..90 token profile with the same parity/performance gates."
         ),
     }
 
@@ -603,7 +569,7 @@ def _token_input(values: np.ndarray) -> np.ndarray:
     if (
         values.ndim != 2
         or values.shape[0] != 1
-        or values.shape[1] < 1
+        or values.shape[1] < 2
         or values.shape[1] > 90
     ):
         raise RuntimeError("MMBCD token input is outside the TensorRT profile")

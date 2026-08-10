@@ -45,8 +45,9 @@ docker build -f docker/tensorrt.Dockerfile \
 Run the builder on the target L4 with the same read-only model/source mounts.
 It performs:
 
-1. strict MMBCD `torch.export` at `[1,8,3,224,224]` with a tied dynamic
-   token-width profile of 1 through 90 (optimization point 5);
+1. strict MMBCD `torch.export` at `[1,8,3,224,224]`, first probing the
+   production token-width profile of 2 through 90 and then building one exact
+   static-width-5 diagnostic engine for the pinned fixture;
 2. Torch-TensorRT dry-run analysis with full compilation required;
 3. raw serialized FP32 plan build with TF32 disabled;
 4. execution in a fresh verifier that imports TensorRT/CUDA Python/NumPy but
@@ -64,13 +65,11 @@ uv run python scripts/l4_validation/18_build_tensorrt_candidate.py \
   --revision "$REVISION"
 ```
 
-The classifier plan is kept only when strict coverage, TensorRT-only execution,
-parity, and performance all pass; failed candidate plans are removed. The
-detector reports STOP unless it truly reaches full coverage. A classifier GO
-plus detector STOP is PARTIAL, not a claim that the whole pipeline uses
-TensorRT. Even a valid classifier engine is not selected by the executor until
-the packaged single-residency endpoint passes same-revision parity, restart,
-and end-to-end performance gates.
+The static classifier plan is always removed after the TensorRT-only, parity,
+and performance measurements because it accepts only the public fixture's
+token width. Production remains STOP until one strict 2-through-90 engine
+passes the same gates. The detector likewise reports STOP unless it reaches
+full coverage. No result changes the executor or enables an eager fallback.
 
 The detailed compatibility and plugin rationale is in
 [`research/tensorrt-serving-feasibility-20260810.md`](research/tensorrt-serving-feasibility-20260810.md).

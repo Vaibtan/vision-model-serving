@@ -17,8 +17,8 @@ _SHA256 = re.compile(r"[0-9a-f]{64}")
 _COMMIT = re.compile(r"[0-9a-f]{40}")
 _CLASSIFIER_INPUTS = (
     ("roi_crops", "float32", (1, 8, 3, 224, 224)),
-    ("input_ids", "int64", ((1, 1), (1, 5), (1, 90))),
-    ("attention_mask", "int64", ((1, 1), (1, 5), (1, 90))),
+    ("input_ids", "int64", ((1, 2), (1, 5), (1, 90))),
+    ("attention_mask", "int64", ((1, 2), (1, 5), (1, 90))),
 )
 _CLASSIFIER_OUTPUTS = (
     ("logits", "float32", (1, 2)),
