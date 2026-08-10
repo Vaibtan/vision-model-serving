@@ -188,7 +188,9 @@ docker compose --profile validation down --volumes --remove-orphans
 - RQ's standard worker reserves no batch or prefetched jobs and processes one
   job at a time. Queue capacity is one and automatic retry is disabled.
 - The shared job store is a 1 GiB tmpfs volume by default; override only with
-  `VMS_JOBS_SIZE`. Socket and metrics tmpfs volumes are separately bounded.
+  `VMS_JOBS_SIZE`. The web upload scratch tmpfs is 256 MiB so four concurrent
+  copies of the pinned 50.5 MB acceptance DICOM fit within the declared
+  benchmark boundary. Socket and metrics tmpfs volumes are separately bounded.
 - Every service is non-root, drops all Linux capabilities, uses
   `no-new-privileges`, and has a read-only root filesystem.
 - Only `127.0.0.1:8000` is published through the web-only no-masquerade edge

@@ -59,6 +59,10 @@ class ComposeTopologyTests(unittest.TestCase):
             ["com.docker.network.bridge.enable_ip_masquerade"],
             "false",
         )
+        self.assertEqual(
+            services["web"]["tmpfs"],
+            ["/tmp:size=256m,mode=0700,uid=10001,gid=10001"],
+        )
 
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is unavailable")
     def test_browser_uses_the_web_loopback_namespace(self) -> None:

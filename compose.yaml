@@ -183,7 +183,7 @@ services:
       - jobs:/var/lib/vms/jobs
       - metrics:/run/vms/metrics
     tmpfs:
-      - /tmp:size=64m,mode=0700,uid=10001,gid=10001
+      - /tmp:size=256m,mode=0700,uid=10001,gid=10001
     healthcheck:
       test:
         - CMD
