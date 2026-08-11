@@ -51,15 +51,18 @@ not PyTorch modules, CUDA tensors, DICOM datasets, or filesystem paths.
 5. Detection mode ends. Full mode crops the same eight ROIs, formats the
    label-free `Indication:` prompt, tokenizes from the pinned offline snapshot,
    and runs MMBCD.
-6. The result contains finite host values, provenance, timings, warnings, and
-   original/canonical coordinates. It excludes pixels, history, prompt text,
-   DICOM identifiers, model objects, and invented medical semantics.
+6. The result contains finite host values, provenance, timings, warnings,
+   original/canonical coordinates, and the source-file SHA-256. It excludes
+   pixels, history, prompt text, DICOM metadata identifiers, model objects, and
+   invented medical semantics, but the stable hash keeps the JSON sensitive.
 
 The local workbench at `/` uses these same public resources. Its preview route
-canonicalizes the selected DICOM into a metadata-free grayscale PNG, marks the
-response `no-store`, and retains nothing. ROI crops and overlays are derived in
-the browser from that preview plus canonical result coordinates; no second
-inference path or server-side image history exists.
+canonicalizes the selected DICOM into a grayscale PNG without copying DICOM
+metadata, marks the response `no-store`, and retains nothing. It does not detect
+or redact burned-in pixel annotations, so the preview and browser-derived ROI/
+overlay exports remain sensitive and are not certified de-identified. ROI crops
+and overlays are derived in the browser from that preview plus canonical result
+coordinates; no second inference path or server-side image history exists.
 
 ## GPU lifecycle: strict single residency
 
@@ -73,8 +76,9 @@ unloads MMBCD before reloading the detector. Stable status is empty or exactly
 The process remains persistent for RQ isolation and artifact/device
 verification, while model residency follows the assignment literally.
 [`ADR 0003`](adr/0003-enforce-single-model-residency.md) supersedes only the
-dual-residency portion of ADR 0002. Historical 2026-08-08/09 records describe
-the former topology and are not current lifecycle evidence.
+dual-residency portion of ADR 0002. The explicitly dual-resident 2026-08-08/09
+packaged records describe the former topology; direct and corrected 2026-08-10
+single-residency records remain valid only for their embedded revisions.
 
 ## Queue and failure semantics
 
@@ -97,9 +101,12 @@ The complete mapping from failures to HTTP behavior is in
 ## Health and observability
 
 `/livez` proves only the web process. `/readyz` is scoped to
-`artifact_ready`: it requires Redis, an RQ worker, the initialized executor,
-verified artifacts, an L4 device, and the functional native operator. It may
-be HTTP 200 while the runtime is unloaded. The repository manifest and telemetry
+`artifact_ready`: it requires Redis, a registered RQ worker, the initialized
+executor, verified artifact structure, an L4 device, and native-operator import/
+CUDA-allocation probes. It does not construct, strict-load, warm, or execute
+both models, and the RQ registration check can briefly outlive a dead worker.
+It may therefore be HTTP 200 while the runtime is unloaded or a first inference
+would fail. The repository manifest and telemetry
 collector are also fail-closed readiness checks. `inference_warm` and
 `warm_model` report model-specific warmth. `/api/v1/models` exposes manifest
 identity and sanitized runtime state without paths. `/api/v1/operations` is the
@@ -116,14 +123,19 @@ messages. Details are in [`observability.md`](observability.md).
 ## Security, trust, and retention
 
 - The API binds to `127.0.0.1` by default. It has no authentication layer; add
-  authenticated TLS ingress before any remote or multi-user exposure.
+  authenticated TLS ingress before any remote or multi-user exposure. The DRF
+  API views do not enforce CSRF, so loopback binding alone does not prevent a
+  hostile web page from issuing cross-site multipart POST workloads.
 - Containers run non-root, read-only, with all capabilities dropped and
   `no-new-privileges`. Model and source mounts are read-only.
 - Checkpoints are authorized only by manifest identity and restricted CPU
   inspection. User-supplied model upload/registration is not an API feature.
-- Request DICOM/history files are removed after execution. Bounded results live
-  in the jobs tmpfs only for the result TTL; Redis persistence is disabled.
-  Complete stack teardown with `--volumes` removes socket, jobs, and metrics.
+- Request DICOM/history files are removed after normal execution. API result
+  expiry is logical; physical cleanup of expired, abandoned, corrupt, or
+  worker-lost job directories currently runs only when gateway/processor
+  objects start. A long-lived stack can therefore retain data beyond the TTL
+  and fill the 1 GiB jobs tmpfs. Redis persistence is disabled, and complete
+  stack teardown with `--volumes` removes socket, jobs, and metrics.
 - Checkpoint redistribution rights and MMBCD licensing remain unresolved.
   Images and Git history contain no weights.
 
@@ -137,3 +149,28 @@ coverage, accuracy, calibration, robustness, class semantics, or clinical
 utility. PyTorch optimization and TensorRT are implemented as isolated,
 fail-closed L4 evidence lanes. Eager FP32 remains the selected backend until
 same-revision parity and performance evidence passes.
+
+## Current operational limitations
+
+- Django now validates only DICOM structure (`validate_header`, no pixel
+  decode) before admission; pixels are decoded once, in the executor.
+  Pixel-level failures on accepted uploads therefore surface asynchronously as
+  terminal `prediction_case_failed` states. `total_ms` still measures only the
+  executor pipeline rather than upload, queue, IPC, persistence, or polling.
+- Cold loads no longer run the patient case twice: the composition-root warmup
+  hook is a no-op and the cold request's own forward pass is the warm pass.
+- The timeout hierarchy is strict (socket wait 170 s < RQ job timeout 180 s <
+  worker grace 190 s < executor grace 210 s). A killed work-horse can still
+  release Redis capacity while uncancelled executor work finishes, but the
+  executor fails fast with a retryable busy signal on overlap, and expired
+  requests fail closed at `load_request`.
+- RQ work-horses no longer write Prometheus multiprocess files (queue-wait
+  accounting lives in Redis); a gunicorn `child_exit` hook reaps dead
+  web-worker shards. Telemetry writes are exception-guarded so a full metrics
+  volume degrades observability instead of failing requests, and readiness no
+  longer depends on the telemetry collector.
+- Concurrency one is a Compose topology assumption. The worker healthcheck now
+  requires a local worker with a fresh heartbeat, and the runtime serializes
+  model calls rather than a complete detector-to-classifier transaction.
+- These closures are validated by the CPU suite; the same-revision packaged L4
+  acceptance rerun remains outstanding.

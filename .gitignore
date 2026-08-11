@@ -1,10 +1,9 @@
 .agents/
-
+.claude/
+.venv/
 __pycache__/
 *.py[cod]
-
-# Model and validation artifacts stay outside Git. Their hashes and manifests
-# are tracked under docs/validation instead.
+*.egg-info/
 *.pt
 *.pth
 *.so

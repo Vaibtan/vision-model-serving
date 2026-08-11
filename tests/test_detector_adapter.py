@@ -85,13 +85,13 @@ class DetectorPreprocessorTests(unittest.TestCase):
 
 
 class DetectorPostprocessorTests(unittest.TestCase):
-    def test_conversion_clipping_and_geometry_mapping_are_explicit(self) -> None:
+    def test_conversion_and_geometry_mapping_keep_boxes_unclipped(self) -> None:
         logits = np.array([[4.0], [3.0], [2.0]], dtype=np.float32)
         boxes = np.array(
             [
                 [0.5, 0.5, 0.4, 0.2],
                 [0.0, 0.5, 0.4, 0.2],
-                [1.5, 0.5, 0.2, 0.2],
+                [1.5, 0.5, 0.0, 0.2],
             ],
             dtype=np.float32,
         )
@@ -101,7 +101,7 @@ class DetectorPostprocessorTests(unittest.TestCase):
             roi_count=2,
         ).process(logits, boxes, geometry())
 
-        first, clipped = result.top_candidates
+        first, overhang = result.top_candidates
         np.testing.assert_allclose(
             first.normalized_xyxy,
             (0.3, 0.4, 0.7, 0.6),
@@ -120,11 +120,19 @@ class DetectorPostprocessorTests(unittest.TestCase):
             rtol=0,
             atol=1e-4,
         )
+        # Reference MMBCD keeps border-overhanging boxes unclipped; the
+        # classifier zero-pads the outside pixels at crop time.
         np.testing.assert_allclose(
-            clipped.normalized_xyxy,
-            (0.0, 0.4, 0.2, 0.6),
+            overhang.normalized_xyxy,
+            (-0.2, 0.4, 0.2, 0.6),
             rtol=0,
             atol=1e-7,
+        )
+        np.testing.assert_allclose(
+            overhang.canonical_xyxy,
+            (-204.8, 409.6, 204.8, 614.4),
+            rtol=0,
+            atol=1e-4,
         )
         self.assertEqual(
             {warning.code for warning in result.warnings},
@@ -216,7 +224,7 @@ class DetectorPostprocessorTests(unittest.TestCase):
         boxes = np.array(
             [
                 [0.5, 0.5, 0.0, 0.2],
-                [2.0, 2.0, 0.1, 0.1],
+                [2.0, 2.0, 0.1, 0.0],
             ],
             dtype=np.float32,
         )

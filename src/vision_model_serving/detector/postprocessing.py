@@ -33,6 +33,9 @@ class DetectorOutputError(DetectorAdapterError):
 
 class NoValidProposalsError(DetectorAdapterError):
     code = "detector_no_valid_proposals"
+    # Data-dependent: this case has no usable proposals, but the model and
+    # runtime are healthy. Must never latch the residency runtime FAILED.
+    case_input_error = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -189,7 +192,11 @@ class DetectorPostprocessor:
             query_index = flat_index // class_count
             class_index = flat_index % class_count
             cxcywh = tuple(float(value) for value in query_boxes[query_index])
-            xyxy = _clipped_xyxy(cxcywh)
+            # Reference MMBCD behavior keeps boxes unclipped: NMS runs over
+            # raw normalized coordinates and border-overhanging crops are
+            # zero-padded downstream, so clamping here would change both the
+            # surviving proposal set and the classifier crop content.
+            xyxy = _xyxy(cxcywh)
             if xyxy[2] <= xyxy[0] or xyxy[3] <= xyxy[1]:
                 rejected += 1
                 continue
@@ -218,12 +225,12 @@ class DetectorPostprocessor:
             warnings.append(
                 DetectorWarning(
                     "degenerate_proposals_rejected",
-                    "one or more top-ranked proposals were invalid after bounds clipping",
+                    "one or more top-ranked proposals had no positive extent",
                 )
             )
         if not candidates:
             raise NoValidProposalsError(
-                "no non-degenerate proposal remained after bounds clipping"
+                "no proposal with positive extent remained"
             )
 
         candidate_boxes = np.asarray(
@@ -343,15 +350,15 @@ def _sigmoid(values: NDArray[np.float32]) -> NDArray[np.float32]:
     return result
 
 
-def _clipped_xyxy(
+def _xyxy(
     cxcywh: tuple[float, float, float, float],
 ) -> tuple[float, float, float, float]:
     center_x, center_y, width, height = cxcywh
     return (
-        min(max(center_x - width / 2.0, 0.0), 1.0),
-        min(max(center_y - height / 2.0, 0.0), 1.0),
-        min(max(center_x + width / 2.0, 0.0), 1.0),
-        min(max(center_y + height / 2.0, 0.0), 1.0),
+        center_x - width / 2.0,
+        center_y - height / 2.0,
+        center_x + width / 2.0,
+        center_y + height / 2.0,
     )
 
 

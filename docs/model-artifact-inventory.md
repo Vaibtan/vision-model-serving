@@ -3,11 +3,15 @@
 The source of truth is
 [`config/model-artifacts.json`](../config/model-artifacts.json). It records
 the exact evaluator-supplied checkpoints, repository assets, tokenizer files,
-source revisions, and the detector-to-classifier handoff validated on an NVIDIA
-L4 on 2026-08-07.
+source revisions, and the repository-defined detector-to-classifier handoff
+exercised deterministically on an NVIDIA L4 on 2026-08-07.
 
 This inventory is evidence about artifact identity and serving compatibility.
 It is not evidence of medical accuracy, calibration, or clinical fitness.
+The released source does not include the author proposal generator or an
+inference-realistic golden text/proposal/logit bundle, so the handoff and
+label-free prompt remain provisional repository contracts rather than proven
+equivalence to the authors' complete inference path.
 
 ## Verification
 

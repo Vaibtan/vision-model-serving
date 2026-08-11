@@ -50,6 +50,7 @@ class PredictionPipelineError(RuntimeError):
 
 class PredictionInputError(PredictionPipelineError):
     code = "prediction_input_invalid"
+    case_input_error = True
 
 
 class PredictionContractError(PredictionPipelineError):
@@ -284,6 +285,7 @@ def _classification_prediction(result: MmbcdResult) -> ClassificationPrediction:
         input=ClassifierInputSummary(
             label_information_used=summary.label_information_used,
             token_count=summary.token_count,
+            clinical_text_truncated=summary.clinical_text_truncated,
             crop_tensor_sha256=summary.crop_tensor_sha256,
             input_ids_sha256=summary.input_ids_sha256,
             attention_mask_sha256=summary.attention_mask_sha256,

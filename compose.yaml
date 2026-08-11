@@ -29,15 +29,27 @@ x-app-environment: &app-environment
   VMS_QUEUE_CAPACITY: "${VMS_QUEUE_CAPACITY:-1}"
   VMS_QUEUE_NAME: gpu-inference
   VMS_REDIS_URL: redis://redis:6379/0
-  VMS_RESULT_TTL_SECONDS: "900"
+  VMS_RESULT_TTL_SECONDS: "${VMS_RESULT_TTL_SECONDS:-900}"
   VMS_STATUS_TTL_SECONDS: "1200"
 
 services:
   redis:
     image: redis:7.4.10-bookworm@sha256:e9b2e45ecd47fbb69b877cf8d045d5cccaaaed52524b6e098b4abe8212994f73
-    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    command:
+      - redis-server
+      - --save
+      - ""
+      - --appendonly
+      - "no"
+      - --maxmemory
+      - 192mb
+      - --maxmemory-policy
+      - noeviction
     <<: *hardened
+    restart: unless-stopped
     user: "999:999"
+    mem_limit: 256m
+    pids_limit: 64
     networks:
       - backend
     tmpfs:
@@ -55,12 +67,40 @@ services:
     build:
       context: .
       dockerfile: docker/executor.Dockerfile
+    # Mirrors the image CMD except that the result TTL interpolates the same
+    # VMS_RESULT_TTL_SECONDS default the web environment reads, so both sides
+    # share one source. A bare `docker run` of the image keeps the CMD default.
+    command:
+      - python
+      - -m
+      - vision_model_serving.execution.executor
+      - --socket-path
+      - /run/vms/executor.sock
+      - --job-root
+      - /var/lib/vms/jobs
+      - --result-ttl-seconds
+      - "${VMS_RESULT_TTL_SECONDS:-900}"
+      - --project-root
+      - /app
+      - --artifact-root
+      - /models
+      - --tokenizer-root
+      - /assets/tokenizer
+      - --focalnet-root
+      - /opt/focalnet
+      - --mmbcd-root
+      - /sources/MMBCD
+      - --dino-root
+      - /sources/dino
     <<: *hardened
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 210s
+    mem_limit: 24g
+    pids_limit: 256
     environment:
       PROMETHEUS_MULTIPROC_DIR: /run/vms/metrics
       VMS_METRICS_DIR: /run/vms/metrics
+      VMS_RESULT_TTL_SECONDS: "${VMS_RESULT_TTL_SECONDS:-900}"
     deploy:
       resources:
         reservations:
@@ -103,7 +143,7 @@ services:
           raise SystemExit(0 if s.artifact_ready else 1)
       interval: 5s
       timeout: 3s
-      start_period: 90s
+      start_period: 240s
       retries: 12
 
   rq-worker:
@@ -123,10 +163,13 @@ services:
       - --executor-socket
       - /run/vms/executor.sock
       - --executor-timeout-seconds
-      - "180"
+      - "170"
     <<: *hardened
     restart: unless-stopped
     stop_grace_period: 190s
+    mem_limit: 1g
+    cpus: 1
+    pids_limit: 128
     environment: *app-environment
     networks:
       - backend
@@ -147,11 +190,18 @@ services:
         - python
         - -c
         - >-
+          import socket; from datetime import datetime, timezone;
           from redis import Redis; from rq import Queue, Worker;
-          r=Redis.from_url('redis://redis:6379/0'); q=Queue('gpu-inference', connection=r);
-          raise SystemExit(0 if r.ping() and Worker.all(queue=q) else 1)
+          r=Redis.from_url('redis://redis:6379/0', socket_timeout=2, socket_connect_timeout=2);
+          q=Queue('gpu-inference', connection=r);
+          now=datetime.now(timezone.utc); host=socket.gethostname();
+          live=[w for w in Worker.all(queue=q) if w.hostname == host
+          and w.last_heartbeat is not None
+          and (now - (w.last_heartbeat if w.last_heartbeat.tzinfo
+          else w.last_heartbeat.replace(tzinfo=timezone.utc))).total_seconds() < 60];
+          raise SystemExit(0 if r.ping() and live else 1)
       interval: 5s
-      timeout: 3s
+      timeout: 5s
       retries: 12
 
   web:
@@ -162,11 +212,15 @@ services:
       target: runtime
     <<: *hardened
     restart: unless-stopped
-    stop_grace_period: 30s
+    stop_grace_period: 45s
+    mem_limit: 6g
+    cpus: 2
+    pids_limit: 256
     environment:
       <<: *app-environment
       VMS_ALLOWED_HOSTS: localhost,127.0.0.1,web
-      VMS_SECRET_KEY: ${VMS_SECRET_KEY:-local-assessment-key-change-before-deployment}
+      VMS_JOB_TIMEOUT_SECONDS: "180"
+      VMS_SECRET_KEY: ${VMS_SECRET_KEY:?set VMS_SECRET_KEY before starting the stack}
       VMS_SYNC_WAIT_SECONDS: "5"
     networks:
       - backend

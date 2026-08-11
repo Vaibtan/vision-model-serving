@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 import sys
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 from unittest.mock import patch
 
@@ -21,7 +22,35 @@ django.setup()
 
 from django.test import Client, override_settings  # noqa: E402
 
+from vision_model_serving import observability  # noqa: E402
+from vision_model_serving.web import operations  # noqa: E402
 from vision_model_serving.web.runtime import prediction_gateway  # noqa: E402
+
+
+def _reset_telemetry_cache() -> None:
+    operations._telemetry_cache = None
+
+
+def _ready_executor_status() -> SimpleNamespace:
+    return SimpleNamespace(
+        artifact_ready=True,
+        verified_artifacts=True,
+        runtime_initialized=True,
+        device_available=True,
+        native_operator_available=True,
+        inference_warm=True,
+        warm_model="detector",
+        runtime_state="warm",
+        active_model="detector",
+        resident_models=("detector",),
+        device_name="cuda:0",
+        startup=SimpleNamespace(
+            artifact_verification_ms=1.0,
+            runtime_initialization_ms=1.0,
+            process_start_to_artifact_ready_ms=1.0,
+        ),
+        last_error=None,
+    )
 
 
 class RequestPathRedisDeadlineTests(unittest.TestCase):
@@ -53,6 +82,10 @@ class RequestPathRedisDeadlineTests(unittest.TestCase):
 class OperationalFailureTests(unittest.TestCase):
     client = Client()
 
+    def setUp(self) -> None:
+        # The snapshot cache would otherwise replay telemetry patched by an earlier test.
+        _reset_telemetry_cache()
+
     def test_missing_manifest_is_a_bounded_not_ready_response(self) -> None:
         with (
             patch(
@@ -81,6 +114,8 @@ class OperationalFailureTests(unittest.TestCase):
         self.assertIn("manifest_unavailable", payload["reasons"])
 
     def test_broken_telemetry_is_a_bounded_not_ready_response(self) -> None:
+        # The 503 here comes from the broker and executor being down; telemetry
+        # unavailability is reported as informational and no longer gates readiness.
         with (
             patch(
                 "vision_model_serving.web.operations._broker_readiness",
@@ -102,6 +137,114 @@ class OperationalFailureTests(unittest.TestCase):
         self.assertTrue(payload["checks"]["manifest_available"])
         self.assertFalse(payload["checks"]["telemetry_available"])
         self.assertIn("telemetry_unavailable", payload["reasons"])
+
+    def test_readiness_does_not_gate_on_telemetry(self) -> None:
+        executor_status = _ready_executor_status()
+        with (
+            patch(
+                "vision_model_serving.web.operations._broker_readiness",
+                return_value=(True, True),
+            ),
+            patch(
+                "vision_model_serving.web.operations.prediction_gateway",
+                side_effect=RuntimeError("gateway unavailable"),
+            ),
+            patch(
+                "vision_model_serving.web.operations.executor_client",
+                return_value=SimpleNamespace(status=lambda: executor_status),
+            ),
+            patch(
+                "vision_model_serving.web.operations.instrumented_metrics",
+                side_effect=RuntimeError("collector unavailable"),
+            ),
+        ):
+            response = self.client.get("/readyz", HTTP_HOST="localhost")
+
+        self.assertEqual(response.status_code, 200)
+        payload = response.json()
+        self.assertEqual(payload["status"], "ready")
+        self.assertFalse(payload["checks"]["telemetry_available"])
+        self.assertIn("telemetry_unavailable", payload["reasons"])
+
+
+class TelemetrySnapshotCacheTests(unittest.TestCase):
+    def setUp(self) -> None:
+        _reset_telemetry_cache()
+
+    def tearDown(self) -> None:
+        _reset_telemetry_cache()
+
+    def test_immediate_snapshots_collect_metrics_once(self) -> None:
+        with (
+            patch(
+                "vision_model_serving.web.operations._broker_readiness",
+                return_value=(False, False),
+            ),
+            patch(
+                "vision_model_serving.web.operations.executor_client",
+                side_effect=OSError("executor unavailable"),
+            ),
+            patch(
+                "vision_model_serving.web.operations.instrumented_metrics",
+                return_value=b"",
+            ) as collector,
+        ):
+            first = operations.read_operational_snapshot()
+            second = operations.read_operational_snapshot()
+
+        self.assertEqual(collector.call_count, 1)
+        self.assertEqual(first.telemetry, second.telemetry)
+
+    def test_expired_cache_collects_metrics_again(self) -> None:
+        with (
+            patch(
+                "vision_model_serving.web.operations._broker_readiness",
+                return_value=(False, False),
+            ),
+            patch(
+                "vision_model_serving.web.operations.executor_client",
+                side_effect=OSError("executor unavailable"),
+            ),
+            patch(
+                "vision_model_serving.web.operations.instrumented_metrics",
+                return_value=b"",
+            ) as collector,
+        ):
+            operations.read_operational_snapshot()
+            cached_at, cached_value = operations._telemetry_cache
+            operations._telemetry_cache = (
+                cached_at - operations._TELEMETRY_CACHE_SECONDS,
+                cached_value,
+            )
+            operations.read_operational_snapshot()
+
+        self.assertEqual(collector.call_count, 2)
+
+
+class TelemetryWriteGuardTests(unittest.TestCase):
+    def test_http_response_metric_failure_does_not_propagate(self) -> None:
+        # Simulates ENOSPC on the multiprocess metrics tmpfs: the middleware calls
+        # record_http_response unguarded, so it must swallow the failure itself.
+        with patch.object(
+            observability._HTTP_REQUESTS,
+            "labels",
+            side_effect=OSError(28, "No space left on device"),
+        ):
+            self.assertIsNone(
+                observability.record_http_response(
+                    SimpleNamespace(method="GET"),
+                    status_code=200,
+                    duration_seconds=0.01,
+                )
+            )
+
+    def test_dicom_metric_failure_does_not_propagate(self) -> None:
+        with patch.object(
+            observability._DICOM,
+            "labels",
+            side_effect=OSError(28, "No space left on device"),
+        ):
+            self.assertIsNone(observability.record_dicom("accepted"))
 
 
 class MediaNegotiationTests(unittest.TestCase):

@@ -56,17 +56,18 @@ _PIPELINE_STAGE = Histogram(
     "Pipeline duration by bounded stage.",
     ("stage",),
 )
+# mostrecent presents the current reading; max would freeze a permanent high-water mark.
 _CUDA_MEMORY = Gauge(
     "vms_cuda_memory_bytes",
     "CUDA allocator bytes by model and bounded memory kind.",
     ("model", "kind"),
-    multiprocess_mode="max",
+    multiprocess_mode="mostrecent",
 )
 _CPU_RSS = Gauge(
     "vms_process_rss_bytes",
     "Resident memory by bounded process role.",
     ("process",),
-    multiprocess_mode="max",
+    multiprocess_mode="mostrecent",
 )
 _CLASSIFIER_ROIS = Histogram(
     "vms_classifier_rois",
@@ -115,53 +116,77 @@ def record_http_response(
     duration_seconds: float,
     exception_class: str | None = None,
 ) -> None:
-    route = getattr(getattr(request, "resolver_match", None), "url_name", None)
-    route = route if route in _ROUTES else "unmatched"
-    method = str(getattr(request, "method", "OTHER")).upper()
-    method = method if method in {"GET", "POST"} else "OTHER"
-    outcome = _http_outcome(status_code)
-    _HTTP_REQUESTS.labels(route, method, outcome).inc()
-    _HTTP_DURATION.labels(route, method).observe(max(0.0, duration_seconds))
-    _CPU_RSS.labels("web").set(_rss_bytes())
-    if (
-        route in {"prediction-status", "operations-snapshot"}
-        and outcome == "success"
-    ):
-        return
-    _event(
-        "http_response",
-        route=route,
-        method=method,
-        outcome=outcome,
-        status_code=status_code,
-        duration_ms=round(max(0.0, duration_seconds) * 1_000.0, 3),
-        request_id=str(getattr(request, "request_id", "unavailable")),
-        exception_class=exception_class,
-    )
+    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    try:
+        route = getattr(getattr(request, "resolver_match", None), "url_name", None)
+        route = route if route in _ROUTES else "unmatched"
+        method = str(getattr(request, "method", "OTHER")).upper()
+        method = method if method in {"GET", "POST"} else "OTHER"
+        outcome = _http_outcome(status_code)
+        _HTTP_REQUESTS.labels(route, method, outcome).inc()
+        _HTTP_DURATION.labels(route, method).observe(max(0.0, duration_seconds))
+        _CPU_RSS.labels("web").set(_rss_bytes())
+        if (
+            route in {"prediction-status", "operations-snapshot"}
+            and outcome == "success"
+        ):
+            return
+        _event(
+            "http_response",
+            route=route,
+            method=method,
+            outcome=outcome,
+            status_code=status_code,
+            duration_ms=round(max(0.0, duration_seconds) * 1_000.0, 3),
+            request_id=str(getattr(request, "request_id", "unavailable")),
+            exception_class=exception_class,
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
 
 
 def record_http_exception(error: Exception) -> None:
     """Record only the bounded exception type at the DRF sanitization boundary."""
 
-    _event("http_exception", exception_class=type(error).__name__)
+    # Telemetry must never fail a request.
+    try:
+        _event("http_exception", exception_class=type(error).__name__)
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
 
 
 def record_dicom(outcome: str) -> None:
-    _DICOM.labels(outcome if outcome in {"accepted", "rejected"} else "rejected").inc()
+    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    try:
+        _DICOM.labels(outcome if outcome in {"accepted", "rejected"} else "rejected").inc()
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
 
 
 def record_queue_wait(wait_seconds: float) -> None:
-    _QUEUE_WAIT.observe(max(0.0, wait_seconds))
-    _CPU_RSS.labels("worker").set(_rss_bytes())
-    _event(
-        "queue_started",
-        outcome="started",
-        queue_wait_ms=round(max(0.0, wait_seconds) * 1_000.0, 3),
-        rss_bytes=_rss_bytes(),
-    )
+    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    try:
+        _QUEUE_WAIT.observe(max(0.0, wait_seconds))
+        _CPU_RSS.labels("worker").set(_rss_bytes())
+        _event(
+            "queue_started",
+            outcome="started",
+            queue_wait_ms=round(max(0.0, wait_seconds) * 1_000.0, 3),
+            rss_bytes=_rss_bytes(),
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
 
 
 def record_prediction_success(result: PredictionResult) -> None:
+    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    try:
+        _record_prediction_success(result)
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
+
+
+def _record_prediction_success(result: PredictionResult) -> None:
     mode = _mode(result.mode)
     _PREDICTIONS.labels(mode, "succeeded").inc()
     _CPU_RSS.labels("executor").set(_rss_bytes())
@@ -235,30 +260,38 @@ def record_prediction_failure(
     mode: PredictionMode | None,
     error: Exception,
 ) -> None:
-    exception_class = type(error).__name__
-    _PREDICTIONS.labels(_mode(mode), "failed").inc()
-    _LIFECYCLE.labels("unknown", "failure").inc()
-    if "outofmemory" in f"{exception_class}{error}".replace("_", "").lower():
-        _OOM.inc()
-    _CPU_RSS.labels("executor").set(_rss_bytes())
-    _event(
-        "prediction_completed",
-        mode=_mode(mode),
-        outcome="failed",
-        exception_class=exception_class,
-        rss_bytes=_rss_bytes(),
-    )
+    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    try:
+        exception_class = type(error).__name__
+        _PREDICTIONS.labels(_mode(mode), "failed").inc()
+        _LIFECYCLE.labels("unknown", "failure").inc()
+        if "outofmemory" in f"{exception_class}{error}".replace("_", "").lower():
+            _OOM.inc()
+        _CPU_RSS.labels("executor").set(_rss_bytes())
+        _event(
+            "prediction_completed",
+            mode=_mode(mode),
+            outcome="failed",
+            exception_class=exception_class,
+            rss_bytes=_rss_bytes(),
+        )
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
 
 
 def record_executor_cleanup(resident_models: tuple[str, ...]) -> None:
-    cleaned = 0
-    for model_id in resident_models:
-        model = MODEL_STAGE_BY_ID.get(model_id)
-        if model is not None:
-            _LIFECYCLE.labels(model, "unload").inc()
-            _LIFECYCLE.labels(model, "cleanup").inc()
-            cleaned += 1
-    _event("executor_cleanup", outcome="succeeded", resident_models=cleaned)
+    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    try:
+        cleaned = 0
+        for model_id in resident_models:
+            model = MODEL_STAGE_BY_ID.get(model_id)
+            if model is not None:
+                _LIFECYCLE.labels(model, "unload").inc()
+                _LIFECYCLE.labels(model, "cleanup").inc()
+                cleaned += 1
+        _event("executor_cleanup", outcome="succeeded", resident_models=cleaned)
+    except Exception:  # noqa: BLE001 - telemetry must never fail a request
+        pass
 
 
 def _http_outcome(status_code: int) -> str:

@@ -13,8 +13,9 @@ localhost:8000 -> Gunicorn/Django -> Redis -> standard RQ worker
                                       persistent L4 executor
 ```
 
-The web and RQ services share the roughly 424 MB CPU image. The executor uses
-the CUDA image and is the only service with an NVIDIA device, checkpoints,
+The last recorded 2026-08-09 build put the shared web/RQ CPU image at roughly
+424 MB; rebuild and inspect before treating that size as current. The executor
+uses the CUDA image and is the only service with an NVIDIA device, checkpoints,
 tokenizer, or model-source mounts. Redis is reachable only on the internal
 backend network and runs with RDB and AOF persistence disabled. Web also joins
 a no-masquerade edge bridge so Docker can publish only `127.0.0.1:8000`; no
@@ -76,7 +77,10 @@ export VMS_METRICS_ALLOWED_NETWORKS="${TRUSTED_SCRAPER_CIDRS:?set trusted scrape
 ```
 
 Set `TRUSTED_SCRAPER_CIDRS` to the comma-separated exact scraper CIDRs for the
-deployment. Compose passes that allowlist to the web process.
+deployment. Compose passes that allowlist to the web process. Forked RQ
+work-horses no longer write multiprocess shards (queue-wait accounting lives
+in Redis), and gunicorn's `child_exit` hook reaps shards from respawned web
+workers, so the bounded metrics volume no longer grows with job churn.
 
 ## L4 smoke profile
 
@@ -167,9 +171,11 @@ docker compose --profile browser down --volumes --remove-orphans
 ```
 
 The browser image contains no CUDA/model dependencies and shares the web
-service network namespace so Chromium reaches the trustworthy
-`http://127.0.0.1:8000` origin without weakening Django's browser-security
-headers. The public DICOM is mounted read-only.
+service network namespace so Chromium reaches `http://127.0.0.1:8000` without
+weakening Django's browser-security headers. The public DICOM is mounted
+read-only. The public DRF POST views reject cross-site browser requests via
+`Sec-Fetch-Site`/`Origin` enforcement and are rate-limited; authentication and
+TLS ingress are still required before multi-user or remote use.
 
 ## Destructive-restart validation profile
 
@@ -203,12 +209,22 @@ docker compose --profile validation down --volumes --remove-orphans
   `VMS_JOBS_SIZE`. The web upload scratch tmpfs is 256 MiB so four concurrent
   copies of the pinned 50.5 MB acceptance DICOM fit within the declared
   benchmark boundary. Socket and metrics tmpfs volumes are separately bounded.
+  Result expiry is enforced physically: expired requests fail closed and are
+  deleted at load, expired results are deleted on access, and a rate-limited
+  janitor (running on status polls and after every executor job) reclaims
+  expired and orphaned `.tmp-*` directories.
 - Every service is non-root, drops all Linux capabilities, uses
-  `no-new-privileges`, and has a read-only root filesystem.
+  `no-new-privileges`, has a read-only root filesystem, and now carries
+  explicit memory/PID (and where appropriate CPU) limits so a misbehaving
+  tier is contained instead of invoking the host OOM killer against the
+  executor.
 - Only `127.0.0.1:8000` is published through the web-only no-masquerade edge
-  bridge. Redis and the executor socket are never published.
-- Shutdown gives the RQ work-horse 190 seconds and the executor/Gunicorn 30
-  seconds to finish cleanup.
+  bridge. Redis (now `restart: unless-stopped` with `maxmemory 192mb
+  noeviction`) and the executor socket are never published.
+- The shutdown hierarchy is strict: executor socket wait 170 s < RQ job
+  timeout 180 s < RQ worker grace 190 s < executor grace 210 s. On SIGTERM the
+  executor stops accepting work, finishes the in-flight case, and latches its
+  runtime closed; Docker's 210 s grace bounds that drain.
 
 Inspect the built images without starting the model:
 
@@ -226,8 +242,10 @@ Image history and files must contain neither checkpoint filename, public input
 hash, clinical text, evidence-archive name, nor a mounted host path. Native
 `.so` files are expected; model `.pt` and `.pth` files are not.
 
-The existing clean-build, profile-isolation, golden-smoke, benchmark,
-image-inspection, and cleanup results are historical dual-resident evidence in the
-[bounded L4 validation record](validation/container-l4-20260809.json). The
-historical two-lifecycle public-DICOM proof is captured separately in the
-[destructive-restart validation record](validation/compose-restart-l4-20260809.json).
+The older 2026-08-09 image-size record remains historical dual-resident
+evidence. Corrected single-residency packaged benchmark and restart evidence is
+captured in the exact-revision
+[2026-08-10 resolution record](validation/spec-resolution-l4-20260810.md) and
+[destructive-restart record](validation/compose-restart-l4-20260810.json).
+Those records do not prove current HEAD; current image and L4 acceptance require
+a fresh clean-revision run.

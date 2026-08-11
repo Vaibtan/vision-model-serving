@@ -37,6 +37,9 @@ _SUPPORTED_COMPRESSED_TRANSFER_SYNTAXES = frozenset(
 class DicomCanonicalizationError(RuntimeError):
     """Base class for stable, non-identifying DICOM failures."""
 
+    # Data-dependent: a bad upload must fail the case, never the runtime.
+    case_input_error = True
+
     code = "dicom_canonicalization_failed"
 
     def __init__(self, detail: str):
@@ -242,18 +245,32 @@ class DicomCanonicalizer:
         self._crop_threshold = crop_threshold
         self._crop_padding = crop_padding
 
-    def decode(self, stream: BinaryIO) -> CanonicalMammogram:
-        """Return a canonical image without persisting input or derived data."""
+    def validate_header(self, stream: BinaryIO) -> None:
+        """Cheaply reject structurally unsupported DICOM without pixel decode.
+
+        This runs the same structural gates as decode() (parseability,
+        transfer syntax, photometric interpretation, frame count, and
+        declared-dimension limits) but never touches PixelData, so the web
+        tier can validate before admission without paying for a full decode.
+        """
 
         encoded = self._read_bounded(stream)
-        source_sha256 = hashlib.sha256(encoded).hexdigest()
         try:
-            dataset = pydicom.dcmread(BytesIO(encoded), force=False)
+            dataset = pydicom.dcmread(
+                BytesIO(encoded),
+                force=False,
+                stop_before_pixels=True,
+            )
         except (PydicomInvalidDicomError, EOFError, OSError, ValueError) as error:
             raise InvalidDicomError(
                 f"DICOM parsing failed ({type(error).__name__})"
             ) from None
+        self._validate_structure(dataset)
 
+    def _validate_structure(
+        self,
+        dataset: pydicom.dataset.Dataset,
+    ) -> tuple[object, str, str, int, int, int]:
         transfer_syntax = dataset.file_meta.get("TransferSyntaxUID")
         if transfer_syntax is None:
             raise InvalidDicomError("DICOM file meta has no Transfer Syntax UID")
@@ -284,6 +301,35 @@ class DicomCanonicalizer:
             raise DicomPixelLimitError(
                 "declared decoded pixel count exceeds configured limits"
             )
+        return (
+            transfer_syntax,
+            photometric,
+            presentation_lut_shape,
+            rows,
+            columns,
+            frames,
+        )
+
+    def decode(self, stream: BinaryIO) -> CanonicalMammogram:
+        """Return a canonical image without persisting input or derived data."""
+
+        encoded = self._read_bounded(stream)
+        source_sha256 = hashlib.sha256(encoded).hexdigest()
+        try:
+            dataset = pydicom.dcmread(BytesIO(encoded), force=False)
+        except (PydicomInvalidDicomError, EOFError, OSError, ValueError) as error:
+            raise InvalidDicomError(
+                f"DICOM parsing failed ({type(error).__name__})"
+            ) from None
+
+        (
+            transfer_syntax,
+            photometric,
+            presentation_lut_shape,
+            rows,
+            columns,
+            frames,
+        ) = self._validate_structure(dataset)
 
         try:
             raw = dataset.pixel_array
@@ -445,10 +491,13 @@ class DicomCanonicalizer:
             raise NoForegroundError("no foreground contour exceeds the crop threshold")
         x, y, width, height = cv2.boundingRect(max(contours, key=cv2.contourArea))
         image_height, image_width = image.shape
+        # Reference MMBCD crop semantics: clamp the origin, then extend by the
+        # full 2*padding so an edge-flush contour (the chest-wall side of a
+        # real mammogram) keeps the same crop extent as an interior one.
         x0 = max(0, x - self._crop_padding)
         y0 = max(0, y - self._crop_padding)
-        x1 = min(image_width, x + width + self._crop_padding)
-        y1 = min(image_height, y + height + self._crop_padding)
+        x1 = min(image_width, x0 + width + 2 * self._crop_padding)
+        y1 = min(image_height, y0 + height + 2 * self._crop_padding)
         return x0, y0, x1, y1
 
 
@@ -463,16 +512,27 @@ def _normalize(
         raise PixelDataError("transformed pixels contain non-finite values")
     if valid_mask.shape != numeric.shape or not valid_mask.any():
         raise PixelDataError("no non-padding pixels remain")
-    valid_values = numeric[valid_mask]
+    # Boolean fancy indexing copies the full float64 frame, so the common
+    # all-valid case reduces over the array directly and the arithmetic runs
+    # in place; at the 80-megapixel limit this is the difference between a
+    # ~1.4 GB and a ~4 GB peak working set. The operation order (subtract,
+    # divide, scale) is preserved exactly so output values are unchanged.
+    all_valid = bool(valid_mask.all())
     if inverted:
-        shifted = np.max(valid_values) - numeric
+        reference = float(np.max(numeric) if all_valid else np.max(numeric[valid_mask]))
+        shifted = reference - numeric
     else:
-        shifted = numeric - np.min(valid_values)
-    maximum = float(np.max(shifted[valid_mask]))
+        reference = float(np.min(numeric) if all_valid else np.min(numeric[valid_mask]))
+        shifted = numeric - reference
+    maximum = float(np.max(shifted) if all_valid else np.max(shifted[valid_mask]))
     if maximum <= 0:
         raise ConstantPixelDataError("transformed pixel range is zero")
-    normalized = np.clip((shifted / maximum) * 255, 0, 255).astype(np.uint8)
-    normalized[~valid_mask] = 0
+    shifted /= maximum
+    shifted *= 255
+    np.clip(shifted, 0, 255, out=shifted)
+    normalized = shifted.astype(np.uint8)
+    if not all_valid:
+        normalized[~valid_mask] = 0
     return normalized
 
 
@@ -483,12 +543,24 @@ def _pixel_padding_mask(
     value = dataset.get("PixelPaddingValue")
     if value is None:
         return np.zeros(raw.shape, dtype=np.bool_)
-    padding_value = int(value)
+    signed = int(dataset.get("PixelRepresentation", 0) or 0) == 1
+    padding_value = _padding_tag_value(value, signed=signed)
     range_limit = dataset.get("PixelPaddingRangeLimit")
     if range_limit is None:
         return np.asarray(raw == padding_value, dtype=np.bool_)
-    lower, upper = sorted((padding_value, int(range_limit)))
+    lower, upper = sorted(
+        (padding_value, _padding_tag_value(range_limit, signed=signed))
+    )
     return np.asarray((raw >= lower) & (raw <= upper), dtype=np.bool_)
+
+
+def _padding_tag_value(value: object, *, signed: bool) -> int:
+    """Interpret the US/SS-ambiguous padding tags per PixelRepresentation."""
+
+    numeric = int(value)
+    if signed and numeric > 32_767:
+        numeric -= 65_536
+    return numeric
 
 
 def _has_multiple_voi_alternatives(dataset: pydicom.dataset.Dataset) -> bool:

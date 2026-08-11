@@ -11,6 +11,7 @@ from django.urls import reverse
 from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from PIL import Image
+import pydicom
 from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.renderers import JSONRenderer
@@ -49,6 +50,7 @@ from .errors import (
     ErrorEnvelopeSerializer,
     public_error,
 )
+from .protection import browser_origin_rejection
 from .renderers import PngRenderer
 from .runtime import prediction_gateway
 
@@ -99,11 +101,48 @@ class DicomPreviewSerializer(serializers.Serializer):
         return upload
 
 
-class DicomPreviewView(APIView):
+class PredictionFailureSerializer(serializers.Serializer):
+    code = serializers.CharField(read_only=True)
+    message = serializers.CharField(read_only=True)
+    retryable = serializers.BooleanField(read_only=True)
+
+
+class PredictionHandleSerializer(serializers.Serializer):
+    prediction_id = serializers.CharField(read_only=True)
+    state = serializers.CharField(read_only=True)
+    submitted_at = serializers.DateTimeField(read_only=True)
+    expires_at = serializers.DateTimeField(read_only=True)
+    status_url = serializers.CharField(read_only=True)
+    result_url = serializers.CharField(read_only=True)
+    idempotent_replay = serializers.BooleanField(read_only=True)
+
+
+class PredictionStatusSerializer(serializers.Serializer):
+    prediction_id = serializers.CharField(read_only=True)
+    state = serializers.CharField(read_only=True)
+    submitted_at = serializers.DateTimeField(read_only=True)
+    started_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    completed_at = serializers.DateTimeField(read_only=True, allow_null=True)
+    expires_at = serializers.DateTimeField(read_only=True)
+    queue_wait_ms = serializers.FloatField(read_only=True, allow_null=True)
+    failure = PredictionFailureSerializer(read_only=True, allow_null=True)
+
+
+class NoStoreResponseMixin:
+    """Prediction payloads carry medical data; forbid caching on every response."""
+
+    def finalize_response(self, request, response, *args, **kwargs):
+        response = super().finalize_response(request, response, *args, **kwargs)
+        response["Cache-Control"] = "no-store"
+        return response
+
+
+class DicomPreviewView(NoStoreResponseMixin, APIView):
     """Return an ephemeral metadata-free rendering of canonical pixels."""
 
     parser_classes = (MultiPartParser, FormParser)
     renderer_classes = (JSONRenderer, PngRenderer)
+    throttle_scope = "preview"
 
     @extend_schema(
         request=DicomPreviewSerializer,
@@ -116,6 +155,9 @@ class DicomPreviewView(APIView):
         },
     )
     def post(self, request: Request) -> HttpResponse | Response:
+        rejection = browser_origin_rejection(request)
+        if rejection is not None:
+            return rejection
         serializer = DicomPreviewSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         upload = serializer.validated_data["dicom"]
@@ -140,14 +182,15 @@ class DicomPreviewView(APIView):
         return response
 
 
-class PredictionCollectionView(APIView):
+class PredictionCollectionView(NoStoreResponseMixin, APIView):
     parser_classes = (MultiPartParser, FormParser)
+    throttle_scope = "predictions"
 
     @extend_schema(
         request=PredictionSubmissionSerializer,
         responses={
             200: OpenApiTypes.OBJECT,
-            202: OpenApiTypes.OBJECT,
+            202: PredictionHandleSerializer,
             400: OpenApiTypes.OBJECT,
             409: OpenApiTypes.OBJECT,
             410: OpenApiTypes.OBJECT,
@@ -161,6 +204,9 @@ class PredictionCollectionView(APIView):
         },
     )
     def post(self, request: Request) -> Response:
+        rejection = browser_origin_rejection(request)
+        if rejection is not None:
+            return rejection
         serializer = PredictionSubmissionSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
         values = serializer.validated_data
@@ -182,10 +228,16 @@ class PredictionCollectionView(APIView):
                 400,
             )
         try:
-            DicomCanonicalizer().decode(BytesIO(payload))
+            # Structural gate only: pixel decode happens once, in the GPU
+            # executor; pixel-level failures surface as async case failures.
+            DicomCanonicalizer().validate_header(BytesIO(payload))
         except DicomCanonicalizationError as error:
             record_dicom("rejected")
             return _dicom_error(request, error)
+        modality_rejection = _modality_rejection(request, payload)
+        if modality_rejection is not None:
+            record_dicom("rejected")
+            return modality_rejection
         record_dicom("accepted")
         prediction_request = PredictionRequest(
             case=CaseInput(
@@ -220,8 +272,14 @@ class PredictionCollectionView(APIView):
                 "Prediction submission is temporarily unavailable.",
                 503,
             )
+        request_echo = {
+            "detector_score_threshold": values.get("detector_score_threshold"),
+        }
         if request.headers.get("Prefer", "").strip().lower() == "respond-async":
-            return Response(_handle_payload(handle), status=status.HTTP_202_ACCEPTED)
+            return Response(
+                {**_handle_payload(handle), "request": request_echo},
+                status=status.HTTP_202_ACCEPTED,
+            )
         try:
             completed = gateway.wait(
                 handle.prediction_id,
@@ -236,20 +294,26 @@ class PredictionCollectionView(APIView):
         ) as error:
             return _completion_error(request, error)
         if isinstance(completed, PredictionHandle):
-            return Response(_handle_payload(completed), status=status.HTTP_202_ACCEPTED)
+            return Response(
+                {**_handle_payload(completed), "request": request_echo},
+                status=status.HTTP_202_ACCEPTED,
+            )
         return Response(
             {
                 "prediction_id": str(handle.prediction_id),
                 "result": prediction_to_dict(completed),
+                "request": request_echo,
             },
             status=status.HTTP_200_OK,
         )
 
 
-class PredictionStatusView(APIView):
+class PredictionStatusView(NoStoreResponseMixin, APIView):
+    throttle_scope = "polling"
+
     @extend_schema(
         responses={
-            200: OpenApiTypes.OBJECT,
+            200: PredictionStatusSerializer,
             404: OpenApiTypes.OBJECT,
             503: OpenApiTypes.OBJECT,
         }
@@ -293,7 +357,9 @@ class PredictionStatusView(APIView):
         )
 
 
-class PredictionResultView(APIView):
+class PredictionResultView(NoStoreResponseMixin, APIView):
+    throttle_scope = "polling"
+
     @extend_schema(
         responses={
             200: OpenApiTypes.OBJECT,
@@ -369,6 +435,27 @@ def _timestamp(value: float) -> str:
 
 def _optional_timestamp(value: float | None) -> str | None:
     return None if value is None else _timestamp(value)
+
+
+def _modality_rejection(request: Request, payload: bytes) -> Response | None:
+    allowed = tuple(getattr(settings, "VMS_ALLOWED_MODALITIES", ()) or ())
+    if not allowed:
+        return None
+    try:
+        dataset = pydicom.dcmread(BytesIO(payload), stop_before_pixels=True)
+        modality = str(dataset.get("Modality", ""))
+    except Exception:
+        # validate_header already parsed this payload; a parse failure here
+        # must reject rather than crash the request.
+        modality = ""
+    if modality.strip().upper() in allowed:
+        return None
+    return public_error(
+        request,
+        "dicom_modality_rejected",
+        "The DICOM modality is not accepted by this deployment.",
+        422,
+    )
 
 
 def _dicom_error(request: Request, error: DicomCanonicalizationError) -> Response:

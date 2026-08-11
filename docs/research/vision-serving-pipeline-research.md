@@ -1,6 +1,10 @@
 # Vision Model Serving Pipeline: Technical Research and Planning Inputs
 
-**Status:** research complete; implementation not started
+**Status:** Historical pre-implementation research snapshot from 2026-08-03.
+Statements about missing implementation or unresolved execution gates describe
+that snapshot, not the current repository. Use [`README.md`](../../README.md),
+[`docs/architecture.md`](../architecture.md), and
+[`docs/traceability.md`](../traceability.md) for current behavior and evidence.
 **Scope:** assignment requirements, supplied detector configuration, official MMBCD/FocalNet-DINO source, DICOM handling, GPU inference, export/acceleration, serving, observability, and benchmarking
 
 ## Executive finding
@@ -12,7 +16,8 @@ The assignment is a **sequential two-stage medical-image inference pipeline**:
 
 That interpretation is supported by the MMBCD paper, which describes FocalNet-DINO as the ROI extractor and then applies ViT-DINO, RoBERTa, max pooling, cross-attention, and a final classifier to the selected regions ([MMBCD paper, Sections 3.1-3.3](https://papers.miccai.org/miccai-2024/paper/1311_paper.pdf)). It is also reflected in the released source: MMBCD loads detector proposals from text files, crops the image, encodes the crops and text, and returns two logits ([MMBCD data path](https://github.com/adsbansal/MMBCD/blob/14ac5e099c79253b01e0885d2ebefa6f86cfd8f0/code/data.py), [MMBCD model](https://github.com/adsbansal/MMBCD/blob/14ac5e099c79253b01e0885d2ebefa6f86cfd8f0/code/model.py)).
 
-The task is conceptually small, but a credible implementation is currently blocked from real inference by missing artifact and contract evidence:
+At the time of this research snapshot, credible implementation was blocked from
+real inference by missing artifact and contract evidence:
 
 - This repository contains the detector config but **no detector checkpoint and no MMBCD classifier checkpoint**.
 - The upstream MMBCD release documents the detector proposal file shape only by example; it does not include the code that produces those files.
@@ -347,9 +352,12 @@ The paper visualizes cross-attention over ROIs, so surfacing those weights is fa
 11. **Frontend visualization** — upload/history form, stage state, overlay, attention, model metadata, disclaimer.
 12. **Optimization ladder** — activation-checkpoint removal, AMP, compile, then ONNX Runtime/TensorRT feasibility with promotion gates.
 
-## 11. Evidence boundaries
+## 11. Evidence boundaries at the time of research
 
-- No checkpoint was present, so no model was loaded and no numerical output, VRAM use, latency, compilation compatibility, ONNX export, or TensorRT result has been validated.
+- No checkpoint was present in this checkout at the time, so this research run
+  loaded no model and validated no numerical output, VRAM use, latency,
+  compilation compatibility, ONNX export, or TensorRT result. Later
+  revision-bound L4 evidence is indexed in `docs/traceability.md`.
 - File presence and source inspection establish the intended pipeline, not that the released checkpoints are compatible with a modern runtime.
 - The exact detector proposal generation path remains an inference until a golden artifact or missing author script is obtained.
 - The MMBCD paper's reported metrics are results on private in-house datasets; they must not be presented as reproduced or as clinical validation of this service.

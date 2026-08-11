@@ -106,6 +106,15 @@ class FailingPipelineStub:
         raise RuntimeError(r"C:\patients\Alice\scan.dcm")
 
 
+class _CaseRejection(RuntimeError):
+    case_input_error = True
+
+
+class CaseFailingPipelineStub:
+    def infer(self, case: CaseInput, mode: PredictionMode) -> object:
+        raise _CaseRejection("no valid proposals in this scan")
+
+
 class RqGatewayTests(unittest.TestCase):
     def test_submission_enqueues_only_opaque_job_tokens(self) -> None:
         clock = FakeClock()
@@ -340,6 +349,55 @@ class RqGatewayTests(unittest.TestCase):
         self.assertEqual(observations.active_jobs, 0)
         self.assertEqual(observations.failed_total, 1)
 
+    def test_case_rejection_is_reported_as_a_case_failure(self) -> None:
+        redis = fakeredis.FakeRedis()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            processor = StoredPredictionProcessor(
+                job_root=root,
+                pipeline=CaseFailingPipelineStub(),
+                result_ttl_seconds=60,
+            )
+            gateway = RqGpuExecutionGateway(
+                redis_client=redis,
+                job_root=root,
+                config=RqExecutionConfig(
+                    capacity=1,
+                    reservation_ttl_seconds=30,
+                    job_timeout_seconds=600,
+                    result_ttl_seconds=60,
+                    status_ttl_seconds=90,
+                ),
+            )
+            with patch(
+                "vision_model_serving.execution.rq_worker.GpuExecutorClient",
+                return_value=processor,
+            ):
+                create_prediction_rq_worker(
+                    redis_client=redis,
+                    queue_name="gpu-inference",
+                    executor_socket_path=root / "executor.sock",
+                    executor_timeout_seconds=60,
+                )
+                handle = gateway.submit(request())
+                queue = Queue(
+                    "gpu-inference",
+                    connection=redis,
+                    serializer=JSONSerializer,
+                )
+                WindowsSimpleWorker(
+                    [queue],
+                    connection=redis,
+                    serializer=JSONSerializer,
+                ).work(burst=True, logging_level="CRITICAL")
+
+                status = gateway.status(handle.prediction_id)
+
+        self.assertEqual(status.state, PredictionJobState.FAILED)
+        self.assertEqual(status.failure.code, "prediction_case_failed")
+        self.assertFalse(status.failure.retryable)
+        self.assertNotIn("proposals", status.failure.detail)
+
     def test_expired_result_is_reported_and_releases_idempotency(self) -> None:
         redis = fakeredis.FakeRedis()
         clock = FakeClock(time())
@@ -517,6 +575,145 @@ class RqGatewayTests(unittest.TestCase):
         self.assertEqual(observations.queued_jobs, 1)
         self.assertEqual(observations.admitted_total, 1)
         self.assertEqual(observations.rejected_total, 1)
+
+    def test_queued_prediction_reports_no_start_timestamp(self) -> None:
+        redis = fakeredis.FakeRedis()
+        with TemporaryDirectory() as directory:
+            gateway = RqGpuExecutionGateway(
+                redis_client=redis,
+                job_root=Path(directory),
+                config=RqExecutionConfig(
+                    capacity=1,
+                    reservation_ttl_seconds=30,
+                    job_timeout_seconds=600,
+                    result_ttl_seconds=60,
+                    status_ttl_seconds=90,
+                ),
+            )
+            submitted = gateway.submit(request())
+            status = gateway.status(submitted.prediction_id)
+
+        self.assertEqual(status.state, PredictionJobState.QUEUED)
+        self.assertIsNone(status.started_at)
+        self.assertIsNone(status.queue_wait_ms)
+        self.assertGreater(status.submitted_at, 1_000_000_000.0)
+
+    def test_expired_reservation_is_terminal_and_reclaims_the_payload(self) -> None:
+        redis = fakeredis.FakeRedis()
+        clock = FakeClock(time())
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            gateway = RqGpuExecutionGateway(
+                redis_client=redis,
+                job_root=root,
+                config=RqExecutionConfig(
+                    capacity=1,
+                    reservation_ttl_seconds=30,
+                    job_timeout_seconds=600,
+                    result_ttl_seconds=60,
+                    status_ttl_seconds=90,
+                ),
+                clock=clock,
+            )
+            submitted = gateway.submit(request())
+            job_directories = [
+                entry
+                for entry in root.iterdir()
+                if entry.is_dir() and not entry.name.startswith(".")
+            ]
+            self.assertEqual(len(job_directories), 1)
+            clock.advance(31)
+
+            first = gateway.status(submitted.prediction_id)
+            second = gateway.status(submitted.prediction_id)
+
+            self.assertEqual(first.state, PredictionJobState.FAILED)
+            self.assertEqual(
+                first.failure.code,
+                "prediction_reservation_expired",
+            )
+            self.assertEqual(second.state, PredictionJobState.FAILED)
+            self.assertEqual(
+                second.failure.code,
+                "prediction_reservation_expired",
+            )
+            self.assertFalse(job_directories[0].exists())
+            self.assertEqual(redis.llen("rq:queue:gpu-inference"), 0)
+
+            # The terminal state must survive the RQ job hash disappearing.
+            job = Job.fetch(
+                str(submitted.prediction_id),
+                connection=redis,
+                serializer=JSONSerializer,
+            )
+            job.delete()
+            after_deletion = gateway.status(submitted.prediction_id)
+            self.assertEqual(after_deletion.state, PredictionJobState.FAILED)
+            self.assertEqual(
+                after_deletion.failure.code,
+                "prediction_reservation_expired",
+            )
+
+    def test_worker_loss_handler_records_a_terminal_marker(self) -> None:
+        redis = fakeredis.FakeRedis()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            gateway = RqGpuExecutionGateway(
+                redis_client=redis,
+                job_root=root,
+                config=RqExecutionConfig(
+                    capacity=1,
+                    reservation_ttl_seconds=30,
+                    job_timeout_seconds=600,
+                    result_ttl_seconds=60,
+                    status_ttl_seconds=90,
+                ),
+            )
+            worker = create_prediction_rq_worker(
+                redis_client=redis,
+                queue_name="gpu-inference",
+                executor_socket_path=root / "executor.sock",
+                executor_timeout_seconds=60,
+            )
+            submitted = gateway.submit(request())
+            job = Job.fetch(
+                str(submitted.prediction_id),
+                connection=redis,
+                serializer=JSONSerializer,
+            )
+            job.set_status("failed")
+
+            worker._work_horse_killed_handler(job)
+            status = gateway.status(submitted.prediction_id)
+
+        self.assertEqual(status.state, PredictionJobState.FAILED)
+        self.assertEqual(status.failure.code, "prediction_runtime_unavailable")
+        self.assertTrue(status.failure.retryable)
+        self.assertEqual(
+            redis.zcard("vision-model-serving:predictions:active"),
+            0,
+        )
+
+    def test_worker_loss_handler_never_raises_on_redis_failure(self) -> None:
+        class JobStub:
+            id = "x" * 32
+            meta = {"key_prefix": "vision-model-serving:predictions"}
+            enqueued_at = None
+
+        redis = fakeredis.FakeRedis()
+        with TemporaryDirectory() as directory:
+            worker = create_prediction_rq_worker(
+                redis_client=redis,
+                queue_name="gpu-inference",
+                executor_socket_path=Path(directory) / "executor.sock",
+                executor_timeout_seconds=60,
+            )
+            with patch.object(
+                redis,
+                "set",
+                side_effect=ConnectionError("redis is down"),
+            ):
+                worker._work_horse_killed_handler(JobStub())
 
 
 if __name__ == "__main__":

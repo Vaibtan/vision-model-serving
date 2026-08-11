@@ -35,7 +35,12 @@ The adapter requires exactly eight proposals in detector order. Each proposal's
 canonical-pixel XYXY box must be finite, non-degenerate, and inside the 1024 by
 1024 canonical image. For every proposal, the adapter:
 
-1. crops the canonical unsigned 8-bit grayscale image;
+1. crops the canonical unsigned 8-bit grayscale image using unclipped
+   integer-truncated box corners; pixels outside the frame are zero-padded by
+   the crop (the archived MMBCD reference behavior), a border overhang adds a
+   `roi_extends_beyond_canonical_image_zero_padded` warning, and a sub-pixel
+   box is expanded to one pixel with a `roi_expanded_to_minimum_extent`
+   warning instead of failing the case;
 2. converts it to RGB;
 3. resizes directly to 224 by 224 with Pillow bilinear interpolation;
 4. converts it to contiguous CHW float32 in the range zero to one; and
@@ -51,6 +56,11 @@ Clinical history is whitespace-normalized and formatted as
 pathology, target class, or other ground-truth field is accepted by the public
 prediction method. The pinned local RoBERTa snapshot tokenizes with padding,
 truncation, and a maximum length of 90.
+
+The HTTP layer accepts up to 4,000 characters while the tokenizer keeps at
+most 90 tokens. The result now reports `clinical_text_truncated` in the
+classifier input summary and adds a `clinical_text_truncated` warning whenever
+tail text was discarded, so callers can detect the loss.
 
 ## Offline model and tokenizer loading
 
@@ -117,12 +127,10 @@ output bundle and reproduce prediction SHA-256
 `43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b`
 from its logits and fused embedding.
 
-The checkpoint is intentionally outside this checkout. The sibling read-only
-artifact directory contains `mmbcd_best.pt` at exactly 587,689,457 bytes, and
-its SHA-256 was rechecked as
+The checkpoint is intentionally outside this checkout. The manifest requires
+`mmbcd_best.pt` at 587,689,457 bytes with SHA-256
 `2264351216f9fb4945af35e300459ff4ce2e7f5445519348024f3bf1eec721a4`.
-This workstation still cannot perform a fresh classifier forward pass because
-it does not contain:
+A fresh classifier forward pass requires all of these external inputs together:
 
 - a DINO checkout at
   `7c446df5b9f45747937fb0d72314eb9f7b66930a`;
@@ -136,11 +144,12 @@ reproduction are not a fresh model run. Once the external checkpoint, pinned
 sources, and L4 environment are mounted together, the success gate remains
 `REAL DICOM MMBCD INFERENCE PASSED` with an exact prediction-hash match.
 
-That gate passed on an NVIDIA L4 on 2026-08-08 as part of two complete
-detector-to-classifier residency cycles. The committed runtime evidence is
-`docs/validation/single-residency-l4-20260808.json`. This proves serving-path
-execution and exact output parity for the one checksum-pinned public fixture;
-it is not medical-performance or clinical validation.
+That gate passed on an NVIDIA L4 in archived revision-bound records. The latest
+corrected topology is indexed by the
+[`2026-08-10 resolution record`](validation/spec-resolution-l4-20260810.md).
+This proves serving-path execution and exact output parity for one
+checksum-pinned public fixture at the embedded revisions; it is not current-HEAD
+or medical-performance/clinical validation.
 
 Run locally available coverage with:
 

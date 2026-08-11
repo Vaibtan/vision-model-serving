@@ -358,38 +358,36 @@ Stop promotion when any of these occurs:
 - the engine exceeds the single-residency/VRAM envelope, is nondeterministic beyond the contract, or is not materially faster end to end;
 - evidence exists only on a non-L4 GPU.
 
-## 10. What can and cannot be claimed now
+## 10. What the completed 2026-08-10 run supports
 
-### Supported now by primary sources and repository inspection
+- The pinned Torch-TensorRT/TensorRT/CUDA lane executed on the target L4.
+- A static token-width-5 MMBCD diagnostic compiled without PyTorch partitions,
+  passed TensorRT-only runtime verification and parity, and measured a 27.8%
+  warm-p50 improvement for that diagnostic shape.
+- The required tied token-width 2-through-90 MMBCD profile failed strict export;
+  its plan was deleted and classifier promotion stopped.
+- FocalNet-DINO failed strict capture in the upstream `NestedTensor` path before
+  converter coverage. `MultiScaleDeformableAttention` remains an expected next
+  blocker, not the measured first failure.
+- No TensorRT engine is deployed. Eager FP32 with TF32 disabled remains the only
+  selected production backend for the archived revision.
 
-- Torch-TensorRT 2.8 is the official matching line for PyTorch 2.8 and TensorRT 10.12.
-- TensorRT 10.12 supports the repository's CUDA 12.8 lane and L4 compute capability.
-- MMBCD is the rational first compilation target, subject to an actual strict coverage report.
-- FocalNet-DINO contains an opaque custom deformable-attention CUDA operation with no upstream export/plugin registration, so plugin work is the expected blocker.
-- fixed image/ROI shapes, a bounded tied token-width profile, strict full compilation, raw-plan execution, and the validation gates above are an implementable design.
+The run does not establish a dynamic MMBCD engine, any detector engine, FP16
+safety, engine portability, current-HEAD parity/performance, or an accelerated
+Django endpoint. The eager FP32 L4 baseline does not transfer to a different
+compiler, kernel set, precision policy, engine artifact, or runtime.
 
-### Not supported until a target-L4 run with the real artifacts
+## 11. Remaining work after STOP
 
-- that either actual checkpoint exports or builds successfully;
-- that either model is 100 percent TensorRT with no fallback;
-- that the deformable-attention plugin is correct, required in exactly the predicted form, or faster than a decomposition;
-- that FP32 TensorRT meets numerical tolerance, or that FP16 is safe;
-- any latency, throughput, speedup, cold-load, memory, or determinism number;
-- that a plan built elsewhere is portable to L4;
-- that the Django endpoint is TensorRT accelerated or production ready.
+1. Fix and strictly revalidate the tied 2-through-90 MMBCD dynamic token profile.
+2. Correct the measured detector `NestedTensor` capture failure, then obtain the
+   next strict unsupported-operation report.
+3. Only after capture succeeds, implement/prove a deformable-attention
+   decomposition or TensorRT plugin with fixed-shape parity and ABI checks.
+4. Rerun TensorRT-only, parity, endpoint, residency, restart, and performance
+   gates on one clean current revision; retain an engine only if every fail-
+   closed promotion gate passes.
+5. Evaluate FP16 only as a separately manifested artifact after FP32 coverage is
+   accepted.
 
-The existing eager FP32 L4 validation remains valuable baseline evidence. It does not transfer to a different graph compiler, kernel set, precision policy, engine artifact, or runtime.
-
-## 11. Recommended implementation order
-
-1. Add the exact acceleration-tool pins to a separate locked builder/validation dependency group and record every resolved version.
-2. Preserve MMBCD token width, bind both token tensors to the same 2-through-90
-   dynamic profile, and reject every shape outside that profile.
-3. Create an inference-only MMBCD tensor wrapper; run strict export and archive its first unsupported-operator report.
-4. If coverage is complete, build the FP32/TF32-disabled raw plan on L4 and run TensorRT-only, parity, endpoint, residency, and performance gates.
-5. Run the same strict detector export solely to capture the exact custom-operator failure and graph context.
-6. Implement and unit-validate the deformable-attention custom operator plus `IPluginV3`/converter; then repeat fixed-golden-shape detector gates on L4.
-7. Decide static buckets versus bounded dynamic profiles only after the fixed detector plan passes.
-8. Evaluate FP16 only as new, separately manifested artifacts after both FP32 paths are accepted.
-
-This sequence can yield a defensible MMBCD TensorRT result early while keeping the detector plugin work measurable and preventing silent fallback from being mistaken for acceleration.
+Until those steps pass, the technically correct conclusion remains STOP.

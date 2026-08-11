@@ -49,6 +49,13 @@ class RuntimeUnavailableError(ResidencyRuntimeError):
     code = "runtime_cause_unchanged"
 
 
+class RuntimeCaseInputError(ResidencyRuntimeError):
+    """The resident model rejected this case; the runtime itself is healthy."""
+
+    code = "runtime_case_input_invalid"
+    case_input_error = True
+
+
 class UnknownModelError(ResidencyRuntimeError):
     code = "runtime_model_unknown"
 
@@ -317,6 +324,7 @@ class SingleResidencyRuntime:
         self._failed_key: tuple[str, str] | None = None
         self._failed_resident: weakref.ReferenceType[ResidentModel] | None = None
         self._process_failure_latched = False
+        self._closed = False
         self._memory = MemorySnapshot(0, 0, 0, 0)
         self._load_count = 0
         self._reuse_count = 0
@@ -334,6 +342,8 @@ class SingleResidencyRuntime:
             raise UnknownModelError("model id is not registered")
         failure_key = _failure_key(binding)
         with self._status_lock:
+            if self._closed:
+                raise RuntimeUnavailableError("runtime is closed")
             if (
                 self._active_model is not None
                 and self._active_model != model_id
@@ -342,6 +352,10 @@ class SingleResidencyRuntime:
                 self._state = RuntimeState.DRAINING
         with self._execution_lock:
             with self._status_lock:
+                if self._closed:
+                    # A caller that queued behind close() must not reload a
+                    # model into a process that is shutting down.
+                    raise RuntimeUnavailableError("runtime is closed")
                 if self._failure_cause_is_unchanged(model_id, failure_key):
                     raise RuntimeUnavailableError("runtime failure cause has not changed")
             reused = self._active_model == model_id and self._resident is not None
@@ -448,6 +462,7 @@ class SingleResidencyRuntime:
 
             inference_started = perf_counter()
             inference_error: str | None = None
+            case_input_rejected = False
             try:
                 self._accelerator.reset_peak_memory_stats()
                 self._accelerator.synchronize()
@@ -459,8 +474,19 @@ class SingleResidencyRuntime:
                 memory = self._accelerator.memory_snapshot()
             except Exception as error:
                 inference_error = type(error).__name__
+                case_input_rejected = getattr(error, "case_input_error", False) is True
                 del error
             inference_ms = (perf_counter() - inference_started) * 1000.0
+            if case_input_rejected:
+                # A data-dependent rejection says nothing about the artifact
+                # or the accelerator: the model stays resident and the
+                # runtime stays READY for the next case.
+                with self._status_lock:
+                    self._active_inferences = 0
+                    self._last_inference_ms = inference_ms
+                raise RuntimeCaseInputError(
+                    f"model rejected the case input ({inference_error})"
+                ) from None
             if inference_error is not None:
                 with self._status_lock:
                     self._active_inferences = 0
@@ -535,6 +561,8 @@ class SingleResidencyRuntime:
             )
 
     def close(self) -> None:
+        with self._status_lock:
+            self._closed = True
         with self._execution_lock:
             if self._resident is not None:
                 self._unload()

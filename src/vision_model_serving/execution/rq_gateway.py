@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -164,15 +165,24 @@ class RqGpuExecutionGateway:
         )
 
     def status(self, prediction_id: PredictionId) -> PredictionStatus:
-        job = self._job(prediction_id)
+        self._store.maybe_cleanup()
+        try:
+            job = self._job(prediction_id)
+        except PredictionNotFound:
+            marker = self._terminal_marker(prediction_id)
+            if marker is None:
+                raise
+            return self._status_from_marker(prediction_id, marker)
         try:
             status = _text(job.get_status(refresh=True))
         except Exception:  # noqa: BLE001 - sanitize the RQ status boundary
             raise GatewayUnavailable("prediction status is unavailable") from None
+        now = self._clock()
         submitted_at = _timestamp(job.enqueued_at) or _timestamp(job.created_at)
+        if submitted_at is None:
+            submitted_at = now
         started_at = _timestamp(job.started_at)
         completed_at = _timestamp(job.ended_at)
-        now = self._clock()
         failure = None
         if status in {"queued", "deferred", "scheduled", "rate_limited"}:
             state = PredictionJobState.QUEUED
@@ -182,6 +192,12 @@ class RqGpuExecutionGateway:
                 failure = PredictionFailure(
                     "prediction_reservation_expired",
                     "prediction reservation expired",
+                )
+                self._abandon_expired_reservation(
+                    job,
+                    prediction_id,
+                    submitted_at=submitted_at,
+                    now=now,
                 )
         elif status == "started":
             state = PredictionJobState.RUNNING
@@ -196,42 +212,7 @@ class RqGpuExecutionGateway:
         elif status in {"failed", "stopped", "canceled"}:
             state = PredictionJobState.FAILED
             expires_at = (completed_at or now) + self._config.status_ttl_seconds
-            try:
-                latest_result = job.latest_result()
-            except Exception:  # noqa: BLE001 - sanitize the RQ result boundary
-                raise GatewayUnavailable("prediction status is unavailable") from None
-            failure_text = getattr(latest_result, "exc_string", "") or ""
-            timed_out = any(
-                marker in failure_text
-                for marker in (
-                    "JobTimeoutException",
-                    "maximum timeout value",
-                )
-            )
-            runtime_unavailable = "GpuExecutorUnavailable" in failure_text
-            worker_lost = any(
-                marker in failure_text
-                for marker in (
-                    "AbandonedJobError",
-                    "Work-horse terminated unexpectedly",
-                )
-            )
-            if timed_out:
-                failure = PredictionFailure(
-                    "prediction_timeout",
-                    "prediction execution timed out",
-                )
-            elif runtime_unavailable or worker_lost:
-                failure = PredictionFailure(
-                    "prediction_runtime_unavailable",
-                    "prediction runtime was unavailable",
-                    retryable=True,
-                )
-            else:
-                failure = PredictionFailure(
-                    "prediction_execution_failed",
-                    "prediction execution failed",
-                )
+            failure = self._classify_failure(job, prediction_id)
         else:
             raise PredictionNotFound("prediction job is unavailable")
         queue_wait_ms = None
@@ -247,6 +228,151 @@ class RqGpuExecutionGateway:
             failure=failure,
             queue_wait_ms=queue_wait_ms,
         )
+
+    def _classify_failure(
+        self,
+        job: object,
+        prediction_id: PredictionId,
+    ) -> PredictionFailure:
+        marker = self._terminal_marker(prediction_id)
+        if marker is not None:
+            return PredictionFailure(
+                marker["code"],
+                marker["detail"],
+                retryable=marker["retryable"],
+            )
+        try:
+            latest_result = job.latest_result()
+        except Exception:  # noqa: BLE001 - sanitize the RQ result boundary
+            raise GatewayUnavailable("prediction status is unavailable") from None
+        failure_text = getattr(latest_result, "exc_string", "") or ""
+        timed_out = any(
+            marker_text in failure_text
+            for marker_text in (
+                "JobTimeoutException",
+                "maximum timeout value",
+            )
+        )
+        runtime_unavailable = (
+            "GpuExecutorUnavailable" in failure_text
+            or "GpuExecutorBusy" in failure_text
+        )
+        worker_lost = any(
+            marker_text in failure_text
+            for marker_text in (
+                "AbandonedJobError",
+                "Work-horse terminated unexpectedly",
+            )
+        )
+        if (
+            "GpuExecutorCaseFailed" in failure_text
+            or "StoredPredictionCaseError" in failure_text
+        ):
+            return PredictionFailure(
+                "prediction_case_failed",
+                "the submitted case could not be processed",
+            )
+        if timed_out:
+            return PredictionFailure(
+                "prediction_timeout",
+                "prediction execution timed out",
+            )
+        if runtime_unavailable or worker_lost:
+            return PredictionFailure(
+                "prediction_runtime_unavailable",
+                "prediction runtime was unavailable",
+                retryable=True,
+            )
+        return PredictionFailure(
+            "prediction_execution_failed",
+            "prediction execution failed",
+        )
+
+    def _terminal_key(self, prediction_id: PredictionId) -> str:
+        return f"{self._config.key_prefix}:terminal:{prediction_id}"
+
+    def _terminal_marker(self, prediction_id: PredictionId) -> dict[str, object] | None:
+        try:
+            raw = self._redis.get(self._terminal_key(prediction_id))
+        except Exception:  # noqa: BLE001 - marker lookup is best-effort
+            return None
+        if raw is None:
+            return None
+        try:
+            value = json.loads(_text(raw))
+            return {
+                "code": str(value["code"]),
+                "detail": str(value["detail"]),
+                "retryable": bool(value.get("retryable", False)),
+                "submitted_at": float(value["submitted_at"]),
+                "completed_at": float(value["completed_at"]),
+            }
+        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return None
+
+    def _status_from_marker(
+        self,
+        prediction_id: PredictionId,
+        marker: dict[str, object],
+    ) -> PredictionStatus:
+        completed_at = float(marker["completed_at"])
+        return PredictionStatus(
+            prediction_id=prediction_id,
+            state=PredictionJobState.FAILED,
+            submitted_at=float(marker["submitted_at"]),
+            started_at=None,
+            completed_at=completed_at,
+            expires_at=completed_at + self._config.status_ttl_seconds,
+            failure=PredictionFailure(
+                str(marker["code"]),
+                str(marker["detail"]),
+                retryable=bool(marker["retryable"]),
+            ),
+            queue_wait_ms=None,
+        )
+
+    def _abandon_expired_reservation(
+        self,
+        job: object,
+        prediction_id: PredictionId,
+        *,
+        submitted_at: float,
+        now: float,
+    ) -> None:
+        """Convert a lapsed reservation into a terminal state and reclaim it."""
+
+        try:
+            self._redis.set(
+                self._terminal_key(prediction_id),
+                json.dumps(
+                    {
+                        "code": "prediction_reservation_expired",
+                        "detail": "prediction reservation expired",
+                        "retryable": False,
+                        "submitted_at": submitted_at,
+                        "completed_at": now,
+                    },
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                nx=True,
+                ex=self._config.status_ttl_seconds,
+            )
+            self._redis.zrem(
+                f"{self._config.key_prefix}:active",
+                str(prediction_id),
+            )
+            try:
+                locator = self._locator(job)
+            except GatewayUnavailable:
+                locator = None
+            job.cancel()
+            if locator is not None:
+                self._store.discard_job(locator)
+        except Exception:  # noqa: BLE001, S110 - cleanup is best-effort; the
+            # synthesized FAILED status is already correct without it
+            pass
 
     def result(self, prediction_id: PredictionId) -> PredictionResult:
         status = self.status(prediction_id)
@@ -416,6 +542,7 @@ class RqGpuExecutionGateway:
                         retry=None,
                         meta={
                             "result_ttl_seconds": self._config.result_ttl_seconds,
+                            "status_ttl_seconds": self._config.status_ttl_seconds,
                             "key_prefix": self._config.key_prefix,
                         },
                         pipeline=transaction,
@@ -455,5 +582,5 @@ def _text(value: object) -> str:
     return value.decode("utf-8") if isinstance(value, bytes) else str(value)
 
 
-def _timestamp(value: object) -> float:
-    return float(value.timestamp()) if hasattr(value, "timestamp") else 0.0
+def _timestamp(value: object) -> float | None:
+    return float(value.timestamp()) if hasattr(value, "timestamp") else None

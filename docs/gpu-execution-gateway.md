@@ -49,8 +49,16 @@ payloads. The persistent executor writes the prediction result atomically to
 the same private directory and removes the request files.
 
 RQ retains only job status for the configured status TTL. The task returns no
-prediction value to Redis. Expired and corrupt job directories are removed at
-gateway and worker startup and by `cleanup_expired()`.
+prediction value to Redis. Retention is enforced physically as well as
+logically: `load_request()` fails closed and deletes the directory once
+`expires_at` passes, and recomputes the stored request fingerprint with a
+constant-time comparison so a tampered or truncated payload can never reach
+the model; `load_result()` deletes expired result directories on access; a
+rate-limited janitor sweep (`maybe_cleanup()`) runs on status polls and after
+every executor job, reclaiming expired locator directories and orphaned
+`.tmp-*`/`.result-*` staging entries left by killed processes; and an expired
+queued reservation is converted into a terminal FAILED state whose payload
+directory is discarded immediately.
 
 ## Admission and idempotency
 
@@ -70,12 +78,14 @@ replaced by a new submission.
 | --- | --- |
 | Queue full | Reject before creating another RQ job. |
 | Redis or enqueue unavailable | Delete the staged payload and return `prediction_gateway_unavailable`. |
+| Case rejected by the pipeline (bad DICOM pixels, no valid proposals, unusable ROIs) | Terminal `prediction_case_failed`, non-retryable; the model stays resident and the runtime stays healthy. |
 | Pipeline failure | RQ records one terminal failed job; result retrieval returns sanitized HTTP 500 and no retry. |
-| Work-horse termination | RQ records failure and result retrieval returns sanitized HTTP 503. |
-| Executor unavailable or failed runtime | The current RQ job fails once and result retrieval returns sanitized HTTP 503. |
+| Work-horse termination | A terminal marker records `prediction_runtime_unavailable` (retryable) so the state survives RQ job-hash expiry; result retrieval returns sanitized HTTP 503. |
+| Executor unavailable, busy, or failed runtime | The current RQ job fails once and result retrieval returns sanitized HTTP 503 (retryable). |
 | RQ execution timeout | RQ records terminal failure and result retrieval returns sanitized HTTP 504. |
 | Bounded synchronous wait elapsed | Return a healthy pollable handle without cancelling the job. |
-| Result TTL elapsed | Return `prediction_result_expired` while short-lived RQ status remains available. |
+| Reservation TTL elapsed while queued | The job is cancelled, its payload directory is discarded, and a Redis terminal marker pins the FAILED `prediction_reservation_expired` state monotonically — the job can no longer transition to RUNNING afterwards or decay into a 404. |
+| Result TTL elapsed | Return `prediction_result_expired`; the access path deletes the stored directory. |
 
 `observations()` reports active, queued, and running counts plus admission,
 rejection, success, failure, worker-loss, and accumulated queue-wait metrics.
@@ -124,15 +134,24 @@ uv run --extra gateway python -m vision_model_serving.execution.rq_cli \
 ```
 
 Start the RQ worker only after the executor socket exists. Django readiness
-uses the socket's status operation rather than file existence. The executor
-timeout must not exceed the RQ job timeout, and the result TTL must match the
-gateway configuration.
+uses the socket's status operation rather than file existence. Compose now
+enforces a strict timeout hierarchy: executor socket wait 170 s < RQ job
+timeout 180 s < worker shutdown grace 190 s < executor shutdown grace 210 s.
+On SIGTERM the executor stops accepting connections, finishes the in-flight
+case (its response is still delivered), and latches the runtime closed so a
+queued handler thread cannot reload a model mid-shutdown; Docker's grace is
+the outer bound on that drain. The executor also fails fast with a retryable
+busy signal if a second concurrent execute arrives, and bounds every
+connection read so a dead peer cannot pin a handler thread. The result TTL is
+shared with the web tier through `VMS_RESULT_TTL_SECONDS`.
 
 ## L4 acceptance evidence
 
-The checked-in 2026-08-08/09 packaged records describe the superseded
-dual-resident policy and remain historical only. The standalone
-single-residency record proves real adapter unload/switch behavior but predates
-the corrected packaged topology. Run current GPU smoke, browser,
+The 2026-08-10 exact-revision
+[resolution](validation/spec-resolution-l4-20260810.md),
+[single-residency](validation/single-residency-l4-20260810.json), and
+[destructive-restart](validation/compose-restart-l4-20260810.json) records prove
+the corrected topology only for their embedded revisions. HEAD contains later
+runtime, dependency, and validation changes. Run current GPU smoke, browser,
 destructive-restart, and schema-v4 benchmark gates on one clean revision before
 claiming current packaged L4 acceptance.

@@ -7,6 +7,13 @@
       "skillPath": "skills/engineering/ask-matt/SKILL.md",
       "computedHash": "5ec84a4c2d9021d99780e5222b2a9f532b53cca8237024eb6cb40ad370c667c5"
     },
+    "cdrf-expert": {
+      "source": "vintasoftware/django-ai-plugins",
+      "ref": "b8af2688d994747666e6a793d441365807d6772f",
+      "sourceType": "github",
+      "skillPath": "skills/cdrf-expert/SKILL.md",
+      "computedHash": "970ee691f8f38a68965e29d9e4e00353abdcbf18be3e504c77267ef546fd8925"
+    },
     "code-review": {
       "source": "mattpocock/skills",
       "sourceType": "github",
@@ -30,6 +37,34 @@
       "sourceType": "github",
       "skillPath": "skills/engineering/domain-modeling/SKILL.md",
       "computedHash": "b747e8b4dcd0f367ef940c290b14f858bf9576ad9961fd6684bacff5688f4a2b"
+    },
+    "django-celery-expert": {
+      "source": "vintasoftware/django-ai-plugins",
+      "ref": "b8af2688d994747666e6a793d441365807d6772f",
+      "sourceType": "github",
+      "skillPath": "skills/django-celery-expert/SKILL.md",
+      "computedHash": "31eb59e33c4251087afc81387abf26502814885921b93c9c9afa06090c3495ca"
+    },
+    "django-expert": {
+      "source": "vintasoftware/django-ai-plugins",
+      "ref": "b8af2688d994747666e6a793d441365807d6772f",
+      "sourceType": "github",
+      "skillPath": "skills/django-expert/SKILL.md",
+      "computedHash": "496dca1506ff9a57fdfeddab3404995ecaf06874cf5a1fa815cd87a6d38621cd"
+    },
+    "django-reviewer": {
+      "source": "vintasoftware/django-ai-plugins",
+      "ref": "b8af2688d994747666e6a793d441365807d6772f",
+      "sourceType": "github",
+      "skillPath": "skills/django-reviewer/SKILL.md",
+      "computedHash": "c7a39605795611d39492dad29c184d669759ada7ea11307689b8b1a6ca524637"
+    },
+    "django-safe-migration": {
+      "source": "vintasoftware/django-ai-plugins",
+      "ref": "b8af2688d994747666e6a793d441365807d6772f",
+      "sourceType": "github",
+      "skillPath": "skills/django-safe-migration/SKILL.md",
+      "computedHash": "3c842a595f6d6914e8b5b7b0c8db92c75baf63a228a1ace9e59ecf99776ba0ee"
     },
     "grill-me": {
       "source": "mattpocock/skills",

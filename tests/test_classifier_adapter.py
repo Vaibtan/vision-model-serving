@@ -324,10 +324,15 @@ class OfflineTokenizerTests(unittest.TestCase):
                         "max_length": 90,
                         "return_tensors": "np",
                     },
-                )
+                ),
+                (
+                    ["Indication:"],
+                    {"truncation": False},
+                ),
             ],
         )
         self.assertEqual(tokens.input_ids.tolist(), [[0, 15248, 14086, 35, 2]])
+        self.assertFalse(tokens.truncated)
 
     def test_snapshot_checksum_mismatch_fails_before_transformers_loads(self) -> None:
         tokenizer_root = (
@@ -406,12 +411,11 @@ class ClassifierInputTests(unittest.TestCase):
         )
         np.testing.assert_allclose(red_values, expected, rtol=0, atol=1e-6)
 
-    def test_degenerate_or_out_of_bounds_rois_fail_before_tokenization(self) -> None:
+    def test_invalid_roi_coordinates_fail_before_tokenization(self) -> None:
         invalid_boxes = (
-            (-1.0, 0.0, 10.0, 10.0),
-            (0.0, 0.0, 0.0, 10.0),
-            (0.0, 0.0, 1025.0, 10.0),
             (0.0, float("nan"), 10.0, 10.0),
+            (0.0, 0.0, 10.0),
+            ("a", 0.0, 10.0, 10.0),
         )
         for invalid in invalid_boxes:
             rois = list(classifier_rois())
@@ -421,6 +425,23 @@ class ClassifierInputTests(unittest.TestCase):
                 with self.assertRaises(ClassifierInputError):
                     adapter(tokenizer=tokenizer).predict(mammogram(), rois, "")
                 self.assertEqual(tokenizer.calls, [])
+
+    def test_border_overhang_rois_are_zero_padded_with_a_warning(self) -> None:
+        # Reference MMBCD crops are unclipped: PIL zero-pads outside pixels.
+        rois = list(classifier_rois())
+        rois[0] = SimpleNamespace(canonical_xyxy=(-8.0, -8.0, 24.0, 24.0))
+        rois[1] = SimpleNamespace(canonical_xyxy=(1000.0, 1000.0, 1032.0, 1032.0))
+        result = adapter().predict(mammogram(), rois, "")
+        self.assertIn(
+            "roi_extends_beyond_canonical_image_zero_padded",
+            result.warnings,
+        )
+
+    def test_sub_pixel_roi_is_expanded_to_one_pixel_with_a_warning(self) -> None:
+        rois = list(classifier_rois())
+        rois[0] = SimpleNamespace(canonical_xyxy=(10.2, 10.2, 10.8, 24.0))
+        result = adapter().predict(mammogram(), rois, "")
+        self.assertIn("roi_expanded_to_minimum_extent", result.warnings)
 
 
 class GoldenClassifierInputTests(unittest.TestCase):

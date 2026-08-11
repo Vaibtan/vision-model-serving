@@ -24,6 +24,12 @@ applied state, the checksum-pinned `config_cfg.py`, and modules that resolve
 inside that source checkout. It performs no clone, download, hub, or URL
 operation.
 
+The current source gate verifies the pinned HEAD, approved patch files, and
+`git diff --check`, but it does not reject every additional tracked/untracked
+change outside those patches. Treat the mounted source checkout as executable
+input and require a complete tree manifest or exact approved-diff check before
+making a supply-chain integrity claim.
+
 ## Detector input
 
 The preprocessor reproduces the official evaluation transform:
@@ -74,10 +80,12 @@ Proposal selection is fixed:
 1. Sigmoid and flatten query/class scores.
 2. Sort descending with a stable flattened-index tie break and select at most
    300 candidates.
-3. Convert center-format boxes to XYXY, clamp to `[0, 1]`, and reject boxes
-   that become degenerate.
-4. Apply greedy NMS in confidence order. Suppression occurs only when IoU is
-   strictly greater than `0.1`; equality is retained.
+3. Convert center-format boxes to XYXY without clamping — matching the
+   archived MMBCD reference, which runs NMS over raw normalized coordinates
+   and zero-pads border-overhanging crops downstream. Reject only boxes with
+   no positive extent.
+4. Apply greedy NMS in confidence order over the unclipped boxes. Suppression
+   occurs only when IoU is strictly greater than `0.1`; equality is retained.
 5. Keep the first eight survivors for MMBCD.
 6. If one to seven survive, duplicate them round-robin in confidence order and
    mark each duplicate. If none survive, fail with
@@ -98,10 +106,9 @@ threshold.
 The immutable Lightning evidence records raw detector prediction SHA-256
 `4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5` on
 an NVIDIA L4. The checkpoint is intentionally outside this checkout. The
-sibling read-only artifact directory contains `focalnet-dino-finetuned.pth` at
-exactly 2,731,092,364 bytes, and its SHA-256 was rechecked as
-`67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4`.
-This workstation still cannot rerun that forward pass because it lacks:
+manifest requires `focalnet-dino-finetuned.pth` at 2,731,092,364 bytes with
+SHA-256 `67a7b0cd787a3aaba199cf1ff82ed2934c33ffe37544473379d7a837ab1637b4`.
+A fresh forward pass requires all of these external inputs together:
 
 - a FocalNet-DINO checkout at revision
   `23901e021dc6ec8f66bad47983f45a25574452cc` with all repository patches
@@ -114,11 +121,12 @@ as a fresh detector run. After the external checkpoint, source checkout, and
 L4 runtime are available together, the explicit success gate remains
 `REAL DICOM DETECTOR INFERENCE PASSED` with an exact raw prediction-hash match.
 
-That gate passed on an NVIDIA L4 on 2026-08-08 as part of two complete
-detector-to-classifier residency cycles. The committed runtime evidence is
-`docs/validation/single-residency-l4-20260808.json`. This proves serving-path
-execution and exact output parity for the one checksum-pinned public fixture;
-it is not medical-performance or clinical validation.
+That gate passed on an NVIDIA L4 in archived revision-bound records. The latest
+corrected topology is indexed by the
+[`2026-08-10 resolution record`](validation/spec-resolution-l4-20260810.md).
+This proves serving-path execution and exact output parity for one
+checksum-pinned public fixture at the embedded revisions; it is not current-HEAD
+or medical-performance/clinical validation.
 
 Run the locally available coverage with:
 

@@ -95,12 +95,14 @@ class LocalRobertaTokenizer:
                 max_length=max_length,
                 return_tensors="np",
             )
+            full_ids = self._tokenizer([prompt], truncation=False)["input_ids"][0]
             return TokenBatch(
                 input_ids=np.ascontiguousarray(encoded["input_ids"], dtype=np.int64),
                 attention_mask=np.ascontiguousarray(
                     encoded["attention_mask"],
                     dtype=np.int64,
                 ),
+                truncated=len(full_ids) > max_length,
             )
         except ClassifierInputError:
             raise

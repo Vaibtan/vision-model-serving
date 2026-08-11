@@ -20,7 +20,8 @@ The returned `CanonicalMammogram` contains:
 - a geometry ledger for points and XYXY boxes;
 - a strict non-identifying metadata record;
 - structured warnings; and
-- the source SHA-256 for internal provenance.
+- the source SHA-256 for provenance. The public typed result currently exposes
+  this stable, correlatable value, so result JSON remains sensitive.
 
 ## Pixel contract
 
@@ -39,10 +40,22 @@ The processing order is fixed:
    `PixelPaddingRangeLimit` from normalization and cropping.
 8. Min-max normalize non-padding finite pixels to unsigned 8-bit. A zero range
    fails closed.
-9. Select the largest external contour above value 1, add 15 pixels of clipped
-   padding, and fail closed if no contour exists.
-10. Resize the crop to 1024 by 1024 using Pillow bicubic resampling. This is the
-    validated MMBCD behavior and may intentionally distort aspect ratio.
+9. Select the largest external contour above value 1, clamp the crop origin to
+   the frame, and extend the crop by the full `2 * 15` padding pixels before
+   clamping the far edge — matching the archived MMBCD reference formula, so an
+   edge-flush contour (the chest-wall side of a real mammogram) keeps the same
+   crop extent as an interior one. Fail closed if no contour exists.
+10. Resize the crop to 1024 by 1024 using Pillow bicubic resampling. This
+    mirrors the repository's archived reference preprocessing and may
+    intentionally distort aspect ratio. Author-golden parity for LUT, padding,
+    and inversion variants remains unvalidated.
+
+A cheap `validate_header()` entry point runs the same structural gates
+(parseability, transfer syntax, photometric interpretation, frame count, and
+declared-dimension limits) without touching `PixelData`, so the web tier can
+reject unsupported uploads before queue admission without paying for a full
+pixel decode. Pixel-level failures on accepted uploads surface asynchronously
+as case failures from the executor.
 
 The first-window and no-contour policies are deliberate. They must not be
 silently changed by an HTTP caller or decoder plugin.
@@ -95,6 +108,13 @@ whether modality/VOI transforms ran. Patient, study, series, instance,
 accession, institution, filename, and clinical-text fields are never copied to
 the result. Errors contain a stable code and sanitized implementation detail;
 raw pydicom exception text is not returned.
+
+Metadata minimization is not de-identification. The decoder does not inspect the
+`BurnedInAnnotation` tag, run OCR, or redact text embedded in pixel data. A
+preview/overlay can therefore contain patient information even though no DICOM
+metadata is copied. The service also does not require `Modality == "MG"` or a
+mammography SOP class; any supported single-frame grayscale object can reach the
+model, including the assessment Secondary Capture fixture.
 
 Representative codes include:
 

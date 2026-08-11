@@ -159,6 +159,29 @@ jobs:
           VMS_SESSION_COOKIE_SECURE: "true"
         run: uv run --no-sync python manage.py check --deploy
 
+      - name: Run Django deployment checks with the Compose-shipped environment
+        env:
+          VMS_ALLOWED_HOSTS: localhost,127.0.0.1,web
+          VMS_DEBUG: "false"
+          VMS_EXECUTOR_SOCKET: /run/vms/executor.sock
+          VMS_JOB_ROOT: /var/lib/vms/jobs
+          VMS_JOB_TIMEOUT_SECONDS: "180"
+          VMS_METRICS_ALLOWED_NETWORKS: 127.0.0.0/8,::1/128
+          VMS_METRICS_ENABLED: "false"
+          VMS_QUEUE_CAPACITY: "1"
+          VMS_QUEUE_NAME: gpu-inference
+          VMS_REDIS_URL: redis://redis:6379/0
+          VMS_RESULT_TTL_SECONDS: "900"
+          VMS_STATUS_TTL_SECONDS: "1200"
+          VMS_SYNC_WAIT_SECONDS: "5"
+        run: |
+          set -euo pipefail
+          VMS_SECRET_KEY="$(python -c 'import secrets; print(secrets.token_urlsafe(50))')" \
+            uv run --no-sync python manage.py check --deploy
+
+      - name: Syntax-check real-infrastructure test suite
+        run: uv run --no-sync python -m compileall -q tests/real_infra
+
       - name: Validate generated OpenAPI schema
         run: >-
           uv run --no-sync python manage.py spectacular
@@ -170,7 +193,25 @@ jobs:
       - name: Validate every Compose profile
         env:
           VMS_DICOM_PATH: ${{ github.workspace }}/fixtures/cbis-ddsm/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547/1-1.dcm
+          VMS_SECRET_KEY: ci-only-compose-interpolation-value
         run: docker compose --profile "*" config --quiet
+
+  web-image:
+    name: Web image build
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+
+      - name: Build the runtime web image from pinned bases
+        run: >-
+          docker build
+          --file docker/web.Dockerfile
+          --target runtime
+          --tag vision-model-serving-web:ci
+          .
 
   unit-tests:
     name: Unit tests (Python ${{ matrix.python-version }})

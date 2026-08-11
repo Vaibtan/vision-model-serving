@@ -38,5 +38,6 @@ COPY --chown=10001:10001 scripts/smoke_api.py ./scripts/smoke_api.py
 COPY --chown=10001:10001 scripts/validate_compose_api.py ./scripts/validate_compose_api.py
 
 FROM app AS runtime
+COPY --chown=10001:10001 docker/gunicorn.conf.py ./docker/gunicorn.conf.py
 EXPOSE 8000
-CMD ["gunicorn", "vision_model_serving.web.wsgi:application", "--bind", "0.0.0.0:8000", "--workers", "2", "--access-logfile", "-", "--error-logfile", "-", "--timeout", "30", "--graceful-timeout", "30"]
+CMD ["gunicorn", "vision_model_serving.web.wsgi:application", "--config", "/app/docker/gunicorn.conf.py"]

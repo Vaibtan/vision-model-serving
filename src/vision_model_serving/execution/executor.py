@@ -10,6 +10,7 @@ import socket
 import socketserver
 from collections.abc import Sequence
 from pathlib import Path
+from threading import Lock
 from time import perf_counter
 from typing import Protocol
 
@@ -25,6 +26,16 @@ class GpuExecutorError(RuntimeError):
 
 class GpuExecutorUnavailable(GpuExecutorError):
     pass
+
+
+class GpuExecutorCaseFailed(GpuExecutorError):
+    """The submitted case was rejected; the executor remains healthy."""
+
+    case_input_error = True
+
+
+class GpuExecutorBusy(GpuExecutorError):
+    """Another case holds the executor; the caller should retry later."""
 
 
 class GpuExecutorConfigurationError(GpuExecutorError):
@@ -56,9 +67,18 @@ class PersistentGpuExecutor:
         self._processor = processor
         self._device_name = device_name
         self._startup = startup or ExecutorStartupTimings(0.0, 0.0, 0.0)
+        self._execute_lock = Lock()
 
     def execute(self, prediction_id: PredictionId, locator: str) -> None:
-        self._processor.execute(prediction_id, locator)
+        # The runtime serializes execution internally; this bounded gate
+        # exists so a concurrent caller fails fast with a retryable signal
+        # instead of silently queueing into its own socket timeout.
+        if not self._execute_lock.acquire(timeout=1.0):
+            raise GpuExecutorBusy("prediction executor is executing another case")
+        try:
+            self._processor.execute(prediction_id, locator)
+        finally:
+            self._execute_lock.release()
 
     def status(self) -> GpuExecutorStatus:
         runtime = self._processor.status()
@@ -126,6 +146,18 @@ class GpuExecutorClient:
             "error": "runtime_unavailable",
         }:
             raise GpuExecutorUnavailable("prediction executor is unavailable")
+        if response == {
+            "schema_version": 1,
+            "ok": False,
+            "error": "case_failed",
+        }:
+            raise GpuExecutorCaseFailed("prediction case was rejected")
+        if response == {
+            "schema_version": 1,
+            "ok": False,
+            "error": "executor_busy",
+        }:
+            raise GpuExecutorBusy("prediction executor is executing another case")
         raise GpuExecutorError("prediction execution failed")
 
     def status(self) -> GpuExecutorStatus:
@@ -167,6 +199,10 @@ class GpuExecutorServer:
         outer = self
 
         class Handler(socketserver.StreamRequestHandler):
+            # Bounds each socket read so a stalled or dead peer cannot pin
+            # a handler thread forever on readline().
+            timeout = 30.0
+
             def handle(self) -> None:
                 outer._handle(self.rfile, self.wfile)
 
@@ -233,16 +269,26 @@ class GpuExecutorServer:
                 raise ValueError
             self._executor.execute(PredictionId(prediction), locator)
             response = {"schema_version": 1, "ok": True}
-        except Exception:  # noqa: BLE001 - sanitize the process seam
-            try:
-                runtime_unavailable = not self._executor.status().artifact_ready
-            except Exception:  # noqa: BLE001 - preserve the sanitized seam
-                runtime_unavailable = True
-            response = {
-                "schema_version": 1,
-                "ok": False,
-                "error": ("runtime_unavailable" if runtime_unavailable else "execution_failed"),
-            }
+        except Exception as error:  # noqa: BLE001 - sanitize the process seam
+            case_failed = getattr(error, "case_input_error", False) is True
+            busy = isinstance(error, GpuExecutorBusy)
+            del error
+            if case_failed:
+                response = {"schema_version": 1, "ok": False, "error": "case_failed"}
+            elif busy:
+                response = {"schema_version": 1, "ok": False, "error": "executor_busy"}
+            else:
+                try:
+                    runtime_unavailable = not self._executor.status().artifact_ready
+                except Exception:  # noqa: BLE001 - preserve the sanitized seam
+                    runtime_unavailable = True
+                response = {
+                    "schema_version": 1,
+                    "ok": False,
+                    "error": (
+                        "runtime_unavailable" if runtime_unavailable else "execution_failed"
+                    ),
+                }
         try:
             writer.write(_encode(response))
             writer.flush()
@@ -320,6 +366,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     except KeyboardInterrupt:
         pass
     finally:
+        # Stop accepting new work first; pipeline.close() then drains by
+        # waiting on the runtime execution lock (the in-flight case finishes
+        # and its response is still written) and latches the runtime closed
+        # so a queued handler thread cannot reload a model mid-shutdown.
+        # Docker's stop_grace_period is the outer bound on this drain.
         server.close()
         try:
             resident_models = executor.status().resident_models

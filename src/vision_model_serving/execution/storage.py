@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import os
 import re
@@ -11,6 +12,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
+from threading import Lock
 from time import time
 
 from vision_model_serving.pipeline.contracts import (
@@ -27,10 +29,18 @@ from .contracts import PredictionGatewayError, PredictionId, PredictionRequest
 from .fingerprinting import request_fingerprint
 
 _LOCATOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32}$")
+_STAGING_PREFIXES = (".tmp-", ".result-")
+# Staging entries older than this are orphans from a killed process, never
+# live writes; store_request/store_result complete in well under a minute.
+_STAGING_ORPHAN_SECONDS = 900.0
 
 
 class JobPayloadNotFound(PredictionGatewayError):
     code = "prediction_payload_not_found"
+
+
+class JobPayloadExpired(JobPayloadNotFound):
+    code = "prediction_payload_expired"
 
 
 class JobResultNotFound(PredictionGatewayError):
@@ -55,6 +65,8 @@ class EphemeralJobStore:
         self._root = root.resolve()
         self._root.mkdir(parents=True, exist_ok=True)
         self._clock = clock
+        self._cleanup_lock = Lock()
+        self._last_cleanup_at: float | None = None
 
     def store_request(
         self,
@@ -126,17 +138,30 @@ class EphemeralJobStore:
             mode = PredictionMode(metadata["mode"])
             history = metadata["clinical_history"]
             threshold = metadata.get("detector_score_threshold")
+            expires_at = float(metadata["expires_at"])
+            stored_fingerprint = metadata["request_fingerprint"]
             if history is not None and not isinstance(history, str):
+                raise TypeError
+            if not isinstance(stored_fingerprint, str):
                 raise TypeError
         except (KeyError, TypeError, ValueError):
             raise JobPayloadNotFound(
                 "prediction request payload is unavailable"
             ) from None
-        return PredictionRequest(
+        if self._clock() >= expires_at:
+            self.discard_job(locator)
+            raise JobPayloadExpired("prediction request payload has expired")
+        request = PredictionRequest(
             case=CaseInput(BytesIO(payload), history),
             mode=mode,
             detector_score_threshold=threshold,
         )
+        if not hmac.compare_digest(
+            request_fingerprint(request, payload),
+            stored_fingerprint,
+        ):
+            raise JobPayloadNotFound("prediction request payload is unavailable")
+        return request
 
     def purge_request(self, locator: str) -> None:
         directory = self._directory(locator)
@@ -195,18 +220,20 @@ class EphemeralJobStore:
         self.purge_request(locator)
 
     def load_result(self, locator: str) -> PredictionResult:
+        expired = False
         try:
             envelope = json.loads(
                 (self._directory(locator) / "result.json").read_text(encoding="utf-8")
             )
-            if (
-                not isinstance(envelope, dict)
-                or envelope.get("schema_version") != 1
-                or self._clock() >= float(envelope["expires_at"])
-            ):
+            if not isinstance(envelope, dict) or envelope.get("schema_version") != 1:
+                raise ValueError
+            if self._clock() >= float(envelope["expires_at"]):
+                expired = True
                 raise ValueError
             return prediction_from_dict(envelope["result"])
         except (FileNotFoundError, OSError, KeyError, TypeError, ValueError):
+            if expired:
+                self.discard_job(locator)
             raise JobResultNotFound(
                 "prediction result payload is unavailable"
             ) from None
@@ -214,17 +241,22 @@ class EphemeralJobStore:
     def cleanup_expired(self) -> int:
         removed = 0
         now = self._clock()
-        for directory in self._root.iterdir():
-            if (
-                directory.is_symlink()
-                or not directory.is_dir()
-                or not _LOCATOR_PATTERN.fullmatch(directory.name)
-            ):
+        try:
+            entries = list(self._root.iterdir())
+        except OSError:
+            return 0
+        for entry in entries:
+            if entry.is_symlink():
+                continue
+            if entry.name.startswith(_STAGING_PREFIXES):
+                removed += self._remove_stale_staging_entry(entry)
+                continue
+            if not entry.is_dir() or not _LOCATOR_PATTERN.fullmatch(entry.name):
                 continue
             metadata_path = (
-                directory / "result.json"
-                if (directory / "result.json").is_file()
-                else directory / "request.json"
+                entry / "result.json"
+                if (entry / "result.json").is_file()
+                else entry / "request.json"
             )
             try:
                 metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -239,9 +271,40 @@ class EphemeralJobStore:
             ):
                 expired = True
             if expired:
-                shutil.rmtree(directory)
-                removed += 1
+                try:
+                    shutil.rmtree(entry)
+                    removed += 1
+                except OSError:
+                    continue
         return removed
+
+    def maybe_cleanup(self, *, interval_seconds: float = 60.0) -> int:
+        """Run one rate-limited cleanup sweep; safe to call on any hot path."""
+
+        now = self._clock()
+        with self._cleanup_lock:
+            last = self._last_cleanup_at
+            if last is not None and now - last < interval_seconds:
+                return 0
+            self._last_cleanup_at = now
+        try:
+            return self.cleanup_expired()
+        except Exception:  # noqa: BLE001 - the janitor must never fail a request
+            return 0
+
+    def _remove_stale_staging_entry(self, entry: Path) -> int:
+        try:
+            # Orphan age is judged with the OS clock because st_mtime comes
+            # from it, independent of the injected logical clock.
+            if time() - entry.stat().st_mtime < _STAGING_ORPHAN_SECONDS:
+                return 0
+            if entry.is_dir():
+                shutil.rmtree(entry)
+            else:
+                entry.unlink()
+            return 1
+        except OSError:
+            return 0
 
     def discard_job(self, locator: str) -> None:
         directory = self._directory(locator)

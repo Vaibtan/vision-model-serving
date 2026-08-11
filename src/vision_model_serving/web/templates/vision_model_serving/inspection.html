@@ -193,6 +193,7 @@
       const resultsPanel = $("#results-panel");
       let previewUrl = null;
       let lastResult = null;
+      let submittedThreshold = null;
 
       const csrfToken = () => form.querySelector("[name=csrfmiddlewaretoken]").value;
       const idempotencyKey = () => {
@@ -250,6 +251,7 @@
           data.delete("csrfmiddlewaretoken");
           if (selectedMode() !== "full") data.delete("clinical_history");
           if (!data.get("detector_score_threshold")) data.delete("detector_score_threshold");
+          submittedThreshold = data.get("detector_score_threshold") || null;
           const response = await fetch("/api/v1/predictions", { method: "POST", body: data, headers: { "Prefer": "respond-async", "Idempotency-Key": idempotencyKey(), "X-CSRFToken": csrfToken() }, credentials: "same-origin" });
           if (!response.ok) await apiError(response);
           const handle = await response.json();
@@ -309,7 +311,7 @@
           ["Active model", runtime?.active_model || "idle"],
           ["Resident", runtime?.resident_models?.join(", ") || "not reported"],
           ["Precision", result.provenance.precision || "not reported"],
-          ["Display threshold", result.detector.display_score_threshold ?? "model default"],
+          ["Display threshold", submittedThreshold ?? "model default"],
           ["Classifier ROI policy", `${rois.length} deterministic regions`],
           ["Detector", `${result.provenance.detector.id} · ${shortHash(result.provenance.detector.sha256)}`],
           ["Classifier", result.provenance.classifier ? `${result.provenance.classifier.id} · ${shortHash(result.provenance.classifier.sha256)}` : "not run"],

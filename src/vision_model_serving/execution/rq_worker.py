@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from time import time
-
-from vision_model_serving.observability import record_queue_wait
 
 from .contracts import PredictionId
 from .executor import GpuExecutorClient
@@ -54,13 +53,40 @@ def create_prediction_rq_worker(
     )
 
     def record_worker_loss(job: object, *_details: object) -> None:
-        key_prefix = str(job.meta.get("key_prefix", ""))
-        if not key_prefix:
-            return
-        redis_client.zrem(f"{key_prefix}:active", job.id)
-        metrics_key = f"{key_prefix}:metrics"
-        redis_client.hincrby(metrics_key, "failed_total", 1)
-        redis_client.hincrby(metrics_key, "worker_lost_total", 1)
+        # RQ calls this from the worker's main loop; an exception here would
+        # kill the loop, so every Redis write stays best-effort.
+        try:
+            key_prefix = str(job.meta.get("key_prefix", ""))
+            if not key_prefix:
+                return
+            now = time()
+            submitted_at = now
+            enqueued_at = getattr(job, "enqueued_at", None)
+            if hasattr(enqueued_at, "timestamp"):
+                submitted_at = float(enqueued_at.timestamp())
+            redis_client.set(
+                f"{key_prefix}:terminal:{job.id}",
+                json.dumps(
+                    {
+                        "code": "prediction_runtime_unavailable",
+                        "detail": "prediction runtime was unavailable",
+                        "retryable": True,
+                        "submitted_at": submitted_at,
+                        "completed_at": now,
+                    },
+                    allow_nan=False,
+                    separators=(",", ":"),
+                    sort_keys=True,
+                ),
+                nx=True,
+                ex=int(job.meta.get("status_ttl_seconds", 1_200)),
+            )
+            redis_client.zrem(f"{key_prefix}:active", job.id)
+            metrics_key = f"{key_prefix}:metrics"
+            redis_client.hincrby(metrics_key, "failed_total", 1)
+            redis_client.hincrby(metrics_key, "worker_lost_total", 1)
+        except Exception:  # noqa: BLE001, S110 - never break the worker loop
+            pass
 
     return Worker(
         [queue],
@@ -86,14 +112,14 @@ def execute_prediction_job(prediction_id: str, locator: str) -> None:
     active_key = f"{key_prefix}:active"
     started_at = time()
     timeout = int(job.timeout or 0)
-    redis.zadd(active_key, {prediction_id: started_at + timeout})
+    if timeout > 0:
+        # Extend only a reservation that still exists (xx). Re-inserting a
+        # member the gateway already pruned would push the active set past
+        # the admission capacity.
+        redis.zadd(active_key, {prediction_id: started_at + timeout}, xx=True)
     if job.enqueued_at is not None:
         wait_ms = max(0.0, (started_at - job.enqueued_at.timestamp()) * 1_000.0)
         redis.hincrbyfloat(metrics_key, "queue_wait_ms_total", wait_ms)
-        try:
-            record_queue_wait(wait_ms / 1_000.0)
-        except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
-            pass
     global _executor_client
     if _executor_client is None:
         _executor_client = GpuExecutorClient(

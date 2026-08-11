@@ -34,6 +34,9 @@ class ClassifierAdapterError(RuntimeError):
 
 class ClassifierInputError(ClassifierAdapterError):
     code = "classifier_input_invalid"
+    # Data-dependent: the ROI/text inputs for this case are unusable, but the
+    # model and runtime are healthy. Must never latch the runtime FAILED.
+    case_input_error = True
 
 
 class ClassifierOutputError(ClassifierAdapterError):
@@ -74,6 +77,7 @@ class LocalTokenizerIdentity:
 class TokenBatch:
     input_ids: NDArray[np.int64] = field(repr=False)
     attention_mask: NDArray[np.int64] = field(repr=False)
+    truncated: bool = False
 
     def __post_init__(self) -> None:
         if (
@@ -114,6 +118,7 @@ class ClassifierInputSummary:
     prompt: str
     label_information_used: bool
     token_count: int
+    clinical_text_truncated: bool
     crop_tensor_sha256: str
     input_ids_sha256: str
     attention_mask_sha256: str
@@ -270,7 +275,7 @@ class MmbcdClassifierAdapter:
         if len(classifier_rois) != 8:
             raise ClassifierInputError("exactly eight classifier ROIs are required")
         crop_started = perf_counter()
-        crops = _prepare_crops(mammogram, classifier_rois)
+        crops, crop_warnings = _prepare_crops(mammogram, classifier_rois)
         crop_preprocess_ms = (perf_counter() - crop_started) * 1000.0
         prompt = _format_prompt(clinical_history)
         tokenization_started = perf_counter()
@@ -326,6 +331,7 @@ class MmbcdClassifierAdapter:
                 prompt=prompt,
                 label_information_used=False,
                 token_count=int(tokens.attention_mask.sum()),
+                clinical_text_truncated=tokens.truncated,
                 crop_tensor_sha256=crop_digest,
                 input_ids_sha256=input_ids_digest,
                 attention_mask_sha256=mask_digest,
@@ -357,7 +363,9 @@ class MmbcdClassifierAdapter:
             warnings=(
                 "class_semantics_and_decision_threshold_unverified",
                 "attention_is_inspection_not_causal_or_clinical_evidence",
-            ),
+            )
+            + crop_warnings
+            + (("clinical_text_truncated",) if tokens.truncated else ()),
         )
 
 
@@ -384,6 +392,7 @@ def _prepare_crops(
         raise ClassifierInputError("canonical mammogram must not be empty")
     image = Image.fromarray(pixels, mode="L").convert("RGB")
     tensors: list[NDArray[np.float32]] = []
+    warnings: list[str] = []
     for proposal in classifier_rois:
         box = getattr(proposal, "canonical_xyxy", None)
         try:
@@ -394,15 +403,17 @@ def _prepare_crops(
             ) from None
         if len(values) != 4 or not np.isfinite(values).all():
             raise ClassifierInputError("classifier ROI coordinates are invalid")
-        float_x0, float_y0, float_x1, float_y1 = values
-        if not (
-            0.0 <= float_x0 < float_x1 <= float(width)
-            and 0.0 <= float_y0 < float_y1 <= float(height)
-        ):
-            raise ClassifierInputError("classifier ROI is outside the canonical image")
+        # Reference MMBCD behavior: truncate to integer pixels without
+        # clamping and let PIL zero-pad anything outside the frame.
         x0, y0, x1, y1 = (int(value) for value in values)
-        if not (0 <= x0 < x1 <= width and 0 <= y0 < y1 <= height):
-            raise ClassifierInputError("classifier ROI is outside the canonical image")
+        if x1 <= x0:
+            x1 = x0 + 1
+            _append_once(warnings, "roi_expanded_to_minimum_extent")
+        if y1 <= y0:
+            y1 = y0 + 1
+            _append_once(warnings, "roi_expanded_to_minimum_extent")
+        if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+            _append_once(warnings, "roi_extends_beyond_canonical_image_zero_padded")
         crop = image.crop((x0, y0, x1, y1)).resize(
             (224, 224),
             resample=Image.Resampling.BILINEAR,
@@ -412,7 +423,12 @@ def _prepare_crops(
         tensors.append(np.ascontiguousarray(normalized.transpose(2, 0, 1)))
     crops = np.ascontiguousarray(np.stack(tensors)[np.newaxis, ...])
     crops.setflags(write=False)
-    return crops
+    return crops, tuple(warnings)
+
+
+def _append_once(warnings: list[str], warning: str) -> None:
+    if warning not in warnings:
+        warnings.append(warning)
 
 
 def _array_sha256(values: NDArray[object], dtype: str) -> str:

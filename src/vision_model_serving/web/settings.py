@@ -71,6 +71,12 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": (),
     "DEFAULT_PERMISSION_CLASSES": (),
     "DEFAULT_SCHEMA_CLASS": "drf_spectacular.openapi.AutoSchema",
+    "DEFAULT_THROTTLE_CLASSES": ("rest_framework.throttling.ScopedRateThrottle",),
+    "DEFAULT_THROTTLE_RATES": {
+        "predictions": os.environ.get("VMS_THROTTLE_PREDICTIONS", "30/minute"),
+        "preview": os.environ.get("VMS_THROTTLE_PREVIEW", "20/minute"),
+        "polling": os.environ.get("VMS_THROTTLE_POLLING", "300/minute"),
+    },
     "EXCEPTION_HANDLER": "vision_model_serving.web.errors.exception_handler",
     "UNAUTHENTICATED_USER": None,
 }
@@ -78,6 +84,13 @@ SPECTACULAR_SETTINGS = {
     "TITLE": "Vision Model Serving",
     "VERSION": "1.0.0",
 }
+
+# Empty means allow-any; the assessment fixture is Secondary Capture.
+VMS_ALLOWED_MODALITIES = tuple(
+    item.strip().upper()
+    for item in os.environ.get("VMS_ALLOWED_MODALITIES", "").split(",")
+    if item.strip()
+)
 
 VMS_REDIS_URL = os.environ.get("VMS_REDIS_URL", "redis://127.0.0.1:6379/0")
 VMS_REDIS_CONNECT_TIMEOUT_SECONDS = _environment_positive_float(

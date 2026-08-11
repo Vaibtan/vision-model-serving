@@ -207,6 +207,7 @@ def classifier_result() -> MmbcdResult:
             prompt="Indication: prior surgery",
             label_information_used=False,
             token_count=5,
+            clinical_text_truncated=False,
             crop_tensor_sha256="1" * 64,
             input_ids_sha256="2" * 64,
             attention_mask_sha256="3" * 64,

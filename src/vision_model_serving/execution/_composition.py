@@ -92,7 +92,9 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
             )
 
         def warmup(self, inputs: object) -> None:
-            self._adapter.predict(inputs)
+            # The cold execute() that follows immediately is the warm pass;
+            # a real forward here would run the same patient case twice.
+            del inputs
 
         def execute(self, inputs: object) -> object:
             return self._adapter.predict(inputs)
@@ -110,7 +112,8 @@ def build_executor_pipeline(config: ExecutorPipelineConfig) -> ExecutorCompositi
             )
 
         def warmup(self, inputs: object) -> None:
-            self.execute(inputs)
+            # See DetectorResident.warmup: the first execute() is the warm pass.
+            del inputs
 
         def execute(self, inputs: object) -> object:
             mammogram, rois, history = inputs

@@ -7,6 +7,7 @@ import os
 from pathlib import Path
 import sys
 from threading import Event, Lock, Thread
+from time import sleep
 from types import ModuleType, SimpleNamespace
 import unittest
 from unittest.mock import patch
@@ -788,6 +789,161 @@ class TorchCudaLifecycleTests(unittest.TestCase):
                 ("empty_cache", None),
             ],
         )
+
+
+class _CaseRejectionError(RuntimeError):
+    case_input_error = True
+
+
+class CaseRejectingResident(ResidentStub):
+    def __init__(self, model_id: str):
+        super().__init__(model_id)
+        self.reject_next = False
+
+    def execute(self, inputs: object) -> object:
+        self.execute_calls.append(inputs)
+        if self.reject_next:
+            self.reject_next = False
+            raise _CaseRejectionError("no valid proposals for this case")
+        return f"{self.model_id}:{inputs}"
+
+
+class CaseRejectingLoaderStub(LoaderStub):
+    def load(self) -> CaseRejectingResident:
+        self.loads += 1
+        resident = CaseRejectingResident(self.model_id)
+        self.last_resident = weakref.ref(resident)
+        return resident
+
+
+class CaseInputFailureTests(unittest.TestCase):
+    def _runtime(self, loader: LoaderStub) -> SingleResidencyRuntime:
+        return SingleResidencyRuntime(
+            bindings=(
+                ModelBinding(
+                    model_id=MODEL_A,
+                    load=loader.load,
+                    failure_token=loader.failure_token,
+                ),
+            ),
+            accelerator=AcceleratorStub(),
+        )
+
+    def test_case_rejection_keeps_the_model_resident_and_ready(self) -> None:
+        from vision_model_serving.residency.runtime import RuntimeCaseInputError
+
+        loader = CaseRejectingLoaderStub(MODEL_A)
+        runtime = self._runtime(loader)
+        runtime.execute(MODEL_A, "scan-1")
+        loader.last_resident().reject_next = True
+
+        with self.assertRaises(RuntimeCaseInputError) as raised:
+            runtime.execute(MODEL_A, "hairline-case")
+
+        status = runtime.status()
+        self.assertEqual(status.state, RuntimeState.READY)
+        self.assertEqual(status.resident_models, (MODEL_A,))
+        self.assertIsNone(status.last_error)
+        self.assertNotIn("hairline", str(raised.exception))
+
+        # The next case must run on the still-resident model without reload.
+        output = runtime.execute(MODEL_A, "scan-2")
+        self.assertEqual(output.value, f"{MODEL_A}:scan-2")
+        self.assertTrue(output.reused)
+        self.assertEqual(loader.loads, 1)
+
+    def test_case_rejection_marker_is_set_on_the_raised_error(self) -> None:
+        from vision_model_serving.residency.runtime import RuntimeCaseInputError
+
+        self.assertTrue(RuntimeCaseInputError.case_input_error)
+
+    def test_generic_inference_failure_still_unloads_and_latches(self) -> None:
+        loader = LoaderStub(MODEL_A)
+        loader.fail_execute = True
+        runtime = self._runtime(loader)
+
+        with self.assertRaises(RuntimeInferenceError):
+            runtime.execute(MODEL_A, "scan-1")
+
+        self.assertEqual(runtime.status().state, RuntimeState.FAILED)
+        with self.assertRaises(RuntimeUnavailableError):
+            runtime.execute(MODEL_A, "scan-2")
+
+
+class TerminalCloseTests(unittest.TestCase):
+    def test_execute_after_close_is_refused_without_reload(self) -> None:
+        loader = LoaderStub(MODEL_A)
+        runtime = SingleResidencyRuntime(
+            bindings=(
+                ModelBinding(
+                    model_id=MODEL_A,
+                    load=loader.load,
+                    failure_token=loader.failure_token,
+                ),
+            ),
+            accelerator=AcceleratorStub(),
+        )
+        runtime.execute(MODEL_A, "scan-1")
+
+        runtime.close()
+
+        with self.assertRaises(RuntimeUnavailableError):
+            runtime.execute(MODEL_A, "scan-2")
+        self.assertEqual(loader.loads, 1)
+        self.assertEqual(runtime.status().state, RuntimeState.UNLOADED)
+
+    def test_execute_queued_behind_close_cannot_reload_a_model(self) -> None:
+        entered = Event()
+        release = Event()
+        loader = BlockingLoaderStub(MODEL_A, entered, release)
+        runtime = SingleResidencyRuntime(
+            bindings=(
+                ModelBinding(
+                    model_id=MODEL_A,
+                    load=loader.load,
+                    failure_token=loader.failure_token,
+                ),
+            ),
+            accelerator=AcceleratorStub(),
+        )
+        errors: list[Exception] = []
+
+        def blocked_execute() -> None:
+            try:
+                runtime.execute(MODEL_A, "scan-1")
+            except Exception as error:  # noqa: BLE001 - surface thread failures
+                errors.append(error)
+
+        first = Thread(target=blocked_execute)
+        first.start()
+        self.assertTrue(entered.wait(2))
+
+        second_errors: list[Exception] = []
+
+        def queued_execute() -> None:
+            try:
+                runtime.execute(MODEL_A, "scan-2")
+            except Exception as error:  # noqa: BLE001 - surface thread failures
+                second_errors.append(error)
+
+        closer = Thread(target=runtime.close)
+        closer.start()
+        for _ in range(200):
+            if runtime._closed:
+                break
+            sleep(0.01)
+        self.assertTrue(runtime._closed)
+        second = Thread(target=queued_execute)
+        second.start()
+        release.set()
+        first.join(2)
+        second.join(2)
+        closer.join(2)
+
+        self.assertEqual(loader.loads, 1)
+        self.assertEqual(runtime.status().state, RuntimeState.UNLOADED)
+        self.assertEqual(len(second_errors), 1)
+        self.assertIsInstance(second_errors[0], RuntimeUnavailableError)
 
 
 if __name__ == "__main__":

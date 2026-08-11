@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 import math
+import threading
+import time
 
 from django.conf import settings
 from prometheus_client import REGISTRY, CollectorRegistry, generate_latest, multiprocess
@@ -95,7 +97,9 @@ def read_operational_snapshot() -> OperationalSnapshot:
         "manifest_available": manifest_available,
         "telemetry_available": telemetry_available,
     }
-    ready = all(checks.values())
+    # telemetry_available is informational only: a corrupt or full metrics store
+    # must never gate readiness while inference still works.
+    ready = all(value for name, value in checks.items() if name != "telemetry_available")
     return OperationalSnapshot(
         captured_at=datetime.now(UTC).isoformat(),
         status="ready" if ready else "not_ready",
@@ -138,11 +142,25 @@ def _manifest_payload() -> tuple[
     )
 
 
+# Healthcheck probes arrive every few seconds; the multiprocess collect, render,
+# and reparse below is the expensive part of a snapshot, so reuse it briefly.
+_TELEMETRY_CACHE_SECONDS = 2.0
+_telemetry_cache_lock = threading.Lock()
+_telemetry_cache: tuple[float, tuple[bool, dict[str, object]]] | None = None
+
+
 def _telemetry_snapshot() -> tuple[bool, dict[str, object]]:
-    try:
-        return True, _telemetry_payload(_metric_samples(instrumented_metrics()))
-    except Exception:  # noqa: BLE001 - readiness exposes only a bounded reason
-        return False, _telemetry_payload(())
+    global _telemetry_cache
+    with _telemetry_cache_lock:
+        now = time.monotonic()
+        if _telemetry_cache is not None and now - _telemetry_cache[0] < _TELEMETRY_CACHE_SECONDS:
+            return _telemetry_cache[1]
+        try:
+            snapshot = True, _telemetry_payload(_metric_samples(instrumented_metrics()))
+        except Exception:  # noqa: BLE001 - readiness exposes only a bounded reason
+            snapshot = False, _telemetry_payload(())
+        _telemetry_cache = (now, snapshot)
+        return snapshot
 
 
 def _unavailable_reason(check_name: str) -> str:
@@ -323,7 +341,7 @@ def _telemetry_payload(samples: tuple[object, ...]) -> dict[str, object]:
             "cuda": {
                 model: {
                     kind: int(
-                        _sample_max(
+                        _sample_value(
                             samples,
                             "vms_cuda_memory_bytes",
                             {"model": model, "kind": kind},
@@ -340,7 +358,7 @@ def _telemetry_payload(samples: tuple[object, ...]) -> dict[str, object]:
             },
             "process_rss": {
                 process: int(
-                    _sample_max(
+                    _sample_value(
                         samples,
                         "vms_process_rss_bytes",
                         {"process": process},
@@ -429,17 +447,17 @@ def _sample_sum(
     )
 
 
-def _sample_max(
+def _sample_value(
     samples: tuple[object, ...], name: str, labels: dict[str, str] | None = None
 ) -> float:
+    # mostrecent-mode gauges emit one sample per labelset, so read it directly.
     labels = labels or {}
-    values = [
-        float(getattr(sample, "value"))
-        for sample in samples
-        if getattr(sample, "name", None) == name
-        and _labels_match(getattr(sample, "labels", {}), labels)
-    ]
-    return max(values, default=0.0)
+    for sample in samples:
+        if getattr(sample, "name", None) == name and _labels_match(
+            getattr(sample, "labels", {}), labels
+        ):
+            return float(getattr(sample, "value"))
+    return 0.0
 
 
 def _labels_match(observed: dict[str, str], expected: dict[str, str]) -> bool:

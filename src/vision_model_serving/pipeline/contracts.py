@@ -215,6 +215,7 @@ class DetectorPrediction:
 class ClassifierInputSummary:
     label_information_used: bool
     token_count: int
+    clinical_text_truncated: bool
     crop_tensor_sha256: str
     input_ids_sha256: str
     attention_mask_sha256: str

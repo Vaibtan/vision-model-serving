@@ -22,12 +22,17 @@ root so detector/classifier loading can vary and tests can use non-CUDA fakes.
 ## State and concurrency contract
 
 The runtime begins `Unloaded`. A first request transitions through `Loading`
-to `Ready`, including strict adapter construction and one deliberate warmup
-using that request's inputs. The inputs cross the resident adapter interface
-directly; the composition root does not retain them in a side channel.
-Requests for the ready model reuse it. A different-model request marks the
-runtime `Draining` while active inference finishes, then transitions through
-`Unloading`, `Unloaded`, and `Loading` before the new model becomes `Ready`.
+to `Ready` with strict adapter construction; the cold request's own execute()
+call is the warm pass (the composition-root warmup hook is a no-op so a
+patient case never runs through the model twice). Requests for the ready
+model reuse it. A different-model request marks the runtime `Draining` while
+active inference finishes, then transitions through `Unloading`, `Unloaded`,
+and `Loading` before the new model becomes `Ready`.
+
+`close()` is terminal: it latches the runtime closed, waits on the execution
+lock for the in-flight case to finish, and unloads. A caller that queued
+behind `close()` is refused instead of reloading a model into a process that
+is shutting down.
 
 One execution lock serializes the accelerator critical section. A separate
 status lock permits `status()` to observe loading, active inference, and
@@ -47,8 +52,14 @@ causes a typed unload failure even if cache cleanup succeeds.
 
 ## Failure and recovery contract
 
-Load, warmup, inference/OOM-style, and unload failures enter `Failed` with a
-stable code, phase, model ID, and SHA-256 of the binding's cause token. Original
+Exceptions carrying the `case_input_error` marker (unusable proposals or ROI
+inputs, rejected DICOM pixels) are data-dependent: they fail only that case
+with a typed `runtime_case_input_invalid` error, keep the model resident, and
+leave the runtime `Ready`. They never enter `Failed`, so one unusual image
+cannot lock healthy models out of service.
+
+Load, inference/OOM-style, and unload failures enter `Failed` with a stable
+code, phase, model ID, and SHA-256 of the binding's cause token. Original
 exception text, paths, state keys, and inputs are not retained. The runtime
 rejects another attempt for the same model while that token is unchanged. A
 changed artifact/config/source generation permits one new attempt; another
@@ -105,10 +116,10 @@ uv run python -m unittest tests.test_single_residency_runtime -v
 uv run python -m unittest discover -s tests -v
 ```
 
-The real checkpoints remain outside Git. This workstation's read-only sibling
-artifact directory has been rechecked against the manifest: the 2,731,092,364
-byte FocalNet-DINO checkpoint and 587,689,457 byte MMBCD checkpoint both match
-their required SHA-256 values.
+The real checkpoints remain outside Git. A fresh run requires externally
+supplied checkpoints matching the manifest sizes/hashes plus the pinned source
+trees, tokenizer, and L4 runtime. Their presence in any one checkout is mutable
+host state and not repository evidence.
 
 ## NVIDIA L4 acceptance gate
 
@@ -145,14 +156,10 @@ The generated runtime manifest records each stage's load/inference/switch
 timings and allocated/reserved/peak memory. This is a serving correctness and
 lifecycle smoke test on one public fixture, not medical validation.
 
-The archived two-cycle gate passed on an NVIDIA L4 on 2026-08-08. The run completed four
-model loads, three switches, and three unloads with zero failures. Both detector
-cycles reproduced prediction SHA-256
-`4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5`, and
-both classifier cycles reproduced
-`43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b`.
-The exact generated record is committed at
-`docs/validation/single-residency-l4-20260808.json`.
-It proves the runtime and adapters directly, not the newly corrected
-Django/RQ/socket/Compose path. Fresh same-revision packaged evidence is still
-required.
+The archived 2026-08-08 direct gate proved two real-model cycles for its
+embedded revision. Corrected 2026-08-10
+[`single-residency`](validation/single-residency-l4-20260810.json),
+[`destructive-restart`](validation/compose-restart-l4-20260810.json), and
+[`resolution`](validation/spec-resolution-l4-20260810.md) records cover the
+corrected packaged topology for their own embedded revisions. HEAD has later
+changes, so fresh same-revision packaged evidence remains required.

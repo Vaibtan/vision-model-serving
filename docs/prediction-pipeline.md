@@ -41,8 +41,8 @@ values:
   attention inspection values, and prediction hashes in full mode;
 - exact detector, classifier, tokenizer, revision, precision, offline-load, and
   strict-load provenance where applicable;
-- decoder, adapter, runtime load/inference/switch, memory, and end-to-end timing
-  records; and
+- decoder, adapter, runtime load/inference/switch, memory, and executor-pipeline
+  timing records; and
 - structured DICOM, detector, and classifier warnings plus the research-use
   disclaimer.
 
@@ -51,6 +51,10 @@ the supplied artifact metadata. Clinical history and the formatted prompt are
 also excluded from the result. `prediction_to_dict()` converts the result to
 plain JSON-compatible values without retaining DICOM pixels, model inputs,
 PyTorch tensors, or NumPy arrays.
+
+The source SHA-256 is stable and correlatable, and predictions are sensitive
+derived health data. Excluding direct DICOM identifiers does not certify the
+serialized result as de-identified.
 
 Decoder failures, artifact/runtime failures, and adapter failures preserve
 their existing stable typed errors. Pipeline-owned validation and adapter
@@ -72,11 +76,13 @@ Real GPU validation runs only through the packaged executor topology described
 in [the reproduction guide](reproduction.md#4-build-and-run-the-packaged-l4-smoke-test).
 That gate uses the public DICOM, external weights, pinned source trees, offline
 tokenizer, standard RQ worker, and the private executor composition root. The
-current destructive-restart evidence reproduced detector SHA-256
+2026-08-10 exact-revision destructive-restart evidence reproduced detector SHA-256
 `4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5` and
 served-request classifier SHA-256
 `f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3`.
 See
-[`compose-restart-l4-20260809.json`](validation/compose-restart-l4-20260809.json).
-This validates reproducible execution and lifecycle behavior on one public
-fixture, not model accuracy, calibration, class semantics, or clinical fitness.
+[`compose-restart-l4-20260810.json`](validation/compose-restart-l4-20260810.json)
+and the [resolution record](validation/spec-resolution-l4-20260810.md). This
+validates reproducible execution and lifecycle behavior on one public fixture
+for the embedded revision, not current HEAD, model accuracy, calibration, class
+semantics, or clinical fitness.

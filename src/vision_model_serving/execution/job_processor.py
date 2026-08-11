@@ -30,6 +30,12 @@ class StoredPredictionProcessorError(RuntimeError):
     pass
 
 
+class StoredPredictionCaseError(StoredPredictionProcessorError):
+    """This case was rejected; the executor remains healthy for other cases."""
+
+    case_input_error = True
+
+
 class StoredPredictionProcessor:
     """Execute a private stored request inside the long-lived GPU owner."""
 
@@ -73,13 +79,17 @@ class StoredPredictionProcessor:
             except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
                 pass
         except Exception as error:  # noqa: BLE001 - never persist private pipeline errors
+            case_failed = getattr(error, "case_input_error", False) is True
             try:
                 record_prediction_failure(mode, error)
             except Exception:  # noqa: BLE001, S110 - preserve the prediction seam
                 pass
+            if case_failed:
+                raise StoredPredictionCaseError("prediction case was rejected") from None
             raise StoredPredictionProcessorError("prediction execution failed") from None
         finally:
             self._store.purge_request(locator)
+            self._store.maybe_cleanup()
 
     def status(self) -> object:
         status = getattr(self._pipeline, "status", None)

@@ -11,7 +11,10 @@ are never downloaded by this repository or copied into an image.
 - Git, Docker Engine with Compose, `uv` 0.8.4, `curl`, `jq`, and OpenSSL;
 - for inference, an NVIDIA L4 with driver 580.173.02-compatible CUDA support
   and the NVIDIA Container Toolkit;
-- enough disk for the 8.6 GB executor image and 3.3 GB of external weights;
+- conservative disk headroom for a multi-gigabyte CUDA executor image plus
+  3.3 GB of external weights. The last measured executor-image size came from a
+  superseded 2026-08-09 revision; inspect the rebuilt current image rather than
+  treating 8.6 GB as a current guarantee;
 - outbound network during source/image/tokenizer/fixture preparation only.
 
 Clone and synchronize the CPU development environment:
@@ -185,13 +188,21 @@ hashes. The longer two-lifecycle gate is documented in
 Open `http://127.0.0.1:8000/` for the server-rendered inspection workbench. It
 submits through the same versioned prediction API shown below and displays the
 canonical mammogram, ROI overlays/crops, non-causal attention weights, timings,
-runtime residency, warnings, and downloadable sanitized JSON/PNG. The preview
-is returned with `Cache-Control: no-store`; the browser keeps no job history.
+runtime residency, warnings, and downloadable metadata-minimized JSON/PNG. The
+preview is returned with `Cache-Control: no-store`; the browser keeps no job
+history. DICOM metadata is not copied into the PNG, but burned-in pixel text is
+not detected or redacted. The source hash, preview/overlay pixels, and
+predictions remain sensitive and are not certified de-identified.
 
 Start only the long-running services:
 
 ```bash
 docker compose --profile gpu up --build -d redis executor rq-worker web
+for attempt in $(seq 1 120); do
+  curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null && break
+  if [ "$attempt" -eq 120 ]; then echo "readiness timed out" >&2; exit 1; fi
+  sleep 1
+done
 curl --fail http://127.0.0.1:8000/livez
 curl --fail http://127.0.0.1:8000/readyz
 curl --fail http://127.0.0.1:8000/api/v1/models
@@ -288,7 +299,7 @@ docker compose --profile browser down --volumes --remove-orphans
 ```
 
 The browser gate drives real upload, polling, overlay/crop/attention
-inspection, and sanitized JSON/PNG export through Chromium. For the schema-v4
+inspection, and metadata-minimized JSON/PNG export through Chromium. For the schema-v4
 host benchmark and strict TensorRT/PyTorch L4 lanes, use
 [`containers.md`](containers.md#benchmark-profile) and
 [`acceleration.md`](acceleration.md). The benchmark requires a clean exact
@@ -297,8 +308,10 @@ revision, fresh unloaded executor, concurrency 1/2/4, Docker identity, and
 operations, requires zero offered-load failures, and writes both JSON and
 Markdown or fails.
 
-Always remove the stack volumes after assessment work; they are tmpfs-backed
-but can contain bounded results until their TTL expires:
+Always remove the stack volumes after assessment work. They are tmpfs-backed,
+but the current TTL is logical and expired/abandoned directories are physically
+scavenged only at gateway/processor construction; a long-running stack can
+retain sensitive data beyond that TTL:
 
 ```bash
 docker compose --profile gpu down --volumes --remove-orphans

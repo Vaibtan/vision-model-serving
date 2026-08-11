@@ -15,9 +15,10 @@ robustness, and checkpoint redistribution rights are not established.
 - deterministic top-300, strict `IoU > 0.1` NMS, and exactly eight MMBCD ROIs;
 - detection-only and full multipart prediction endpoints with polling/results;
 - a server-rendered upload/inspection workbench with an ephemeral mammogram
-  preview, ROI overlay/gallery, timings, warnings, and sanitized exports;
-- Redis Queue admission, idempotency, TTLs, sanitized failures, and private
-  tmpfs request/result storage;
+  preview, ROI overlay/gallery, timings, warnings, and metadata-minimized
+  exports that remain sensitive derived data;
+- Redis Queue admission, idempotency, logical TTLs, sanitized failures, and
+  private tmpfs request/result storage;
 - a persistent serialized L4 executor with an enforced maximum of one resident
   model, same-model reuse, and unload-before-switch behavior;
 - scoped artifact readiness, model-specific inference-warm state, liveness,
@@ -66,13 +67,36 @@ eager FP32 and the TensorRT lane concluded a measured STOP. Current code and
 dependency changes require an L4 rerun; see the
 [five-finding resolution record](docs/validation/spec-resolution-l4-20260810.md).
 
+## Current operational gaps
+
+This is an assessment-grade, production-oriented implementation, not a
+production-validated service. The four lifecycle gaps identified in the
+2026-08-11 review are now closed in source: request/result TTLs are enforced
+physically (fail-closed loads, deletion on access, a rate-limited janitor, and
+fingerprint verification); POST routes reject cross-site browser requests via
+`Sec-Fetch-Site`/`Origin` checks and are rate-limited; work-horses no longer
+write per-PID Prometheus files (queue-wait accounting lives in Redis, and a
+gunicorn `child_exit` hook reaps dead web-worker shards); and the timeout
+hierarchy is strict (socket wait 170 s < RQ timeout 180 s < worker grace
+190 s < executor grace 210 s) with a draining, terminally-closed executor
+shutdown. These closures are proven by the CPU suite only — a same-revision
+packaged L4 rerun (smoke, restart, benchmark, switch soak) is still required
+before any production claim. Authentication and TLS remain intentionally
+absent from this loopback deployment. See
+[the architecture guide](docs/architecture.md#current-operational-limitations)
+and [traceability matrix](docs/traceability.md#current-review-gaps).
+
+The preview removes DICOM metadata but does not inspect or redact burned-in
+pixel annotations. Preview/overlay PNGs, the source-file hash, and prediction
+JSON are not certified de-identified and must remain local and access-controlled.
+
 ## API surface
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/api/v1/predictions` | Submit multipart DICOM, mode, and full-mode history |
 | `GET` | `/` | Open the local DICOM and ROI inspection workbench |
-| `POST` | `/api/v1/dicom-preview` | Render an ephemeral metadata-free canonical PNG |
+| `POST` | `/api/v1/dicom-preview` | Render an ephemeral canonical PNG without copied DICOM metadata; not guaranteed de-identified |
 | `GET` | `/api/v1/predictions/{id}` | Poll bounded job status |
 | `GET` | `/api/v1/predictions/{id}/result` | Retrieve a completed typed result |
 | `GET` | `/api/v1/models` | Manifest and sanitized executor inventory |
@@ -84,7 +108,10 @@ dependency changes require an L4 rerun; see the
 | `GET` | `/metrics` | Trusted-network operational metrics when enabled |
 
 The service binds to `127.0.0.1` in Compose and has no authentication layer.
-Put authenticated TLS ingress in front of it before any remote exposure.
+Loopback prevents direct remote connections, and the POST routes now reject
+cross-site browser requests (`Sec-Fetch-Site`/`Origin` enforcement) and apply
+per-scope rate limits. Authentication and TLS ingress are still required
+before any shared-user or remote exposure.
 
 ## Architecture decision to notice
 
@@ -99,6 +126,7 @@ Artifact readiness and model-specific inference warmth are separate facts. See
 - [Fresh-machine reproduction, curl examples, benchmark, troubleshooting](docs/reproduction.md)
 - [Architecture, model flow, lifecycle, queue, privacy, operations](docs/architecture.md)
 - [Assignment traceability and validation evidence index](docs/traceability.md)
+- [2026-08-11 architecture and implementation review](docs/architecture-implementation-review-20260811.md)
 - [Container build and profile runbook](docs/containers.md)
 - [Artifact inventory, trust, licensing, and semantic boundaries](docs/model-artifact-inventory.md)
 - [DICOM contract and supported transfer syntaxes](docs/dicom-canonicalization.md)
