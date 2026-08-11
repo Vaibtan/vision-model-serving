@@ -108,7 +108,7 @@ def error_payload(
     message: str,
     details: object | None = None,
 ) -> dict[str, object]:
-    return {
+    payload = {
         "error": {
             "code": code,
             "message": message,
@@ -116,3 +116,6 @@ def error_payload(
             "details": {} if details is None else details,
         }
     }
+    serializer = ErrorEnvelopeSerializer(data=payload)
+    serializer.is_valid(raise_exception=True)
+    return dict(serializer.data)

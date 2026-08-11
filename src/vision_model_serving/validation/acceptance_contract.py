@@ -12,27 +12,19 @@ from typing import Any, Final
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
 from vision_model_serving.pipeline.contracts import PredictionMode
 
+from .acceptance_constants import (
+    ARCHIVED_CLASSIFIER_OUTPUT_SHA256 as ARCHIVED_CLASSIFIER_OUTPUT_SHA256,
+    PACKAGED_ACCEPTANCE_HISTORY as PACKAGED_ACCEPTANCE_HISTORY,
+    PACKAGED_DISCLAIMER,
+    PACKAGED_MANIFEST_ID,
+    PACKAGED_MANIFEST_SHA256,
+    PUBLIC_CANONICAL_ARRAY_SHA256 as PUBLIC_CANONICAL_ARRAY_SHA256,
+    PUBLIC_DICOM_SHA256,
+    SERVED_CLASSIFIER_OUTPUT_SHA256,
+    SERVED_DETECTOR_OUTPUT_SHA256,
+    TOKENIZER_REVISION,
+)
 
-PACKAGED_ACCEPTANCE_HISTORY: Final = "real public mammogram acceptance."
-PUBLIC_DICOM_SHA256: Final = "9f70081672a460f29231bb471e8a9e26dd3ed26a2ebbd91c064e575e7842a19c"
-PUBLIC_CANONICAL_ARRAY_SHA256: Final = (
-    "97fa0f80a696ce7f822c1681a8c3f7c072da9262b2bd91239c9f1637eaf68552"
-)
-SERVED_DETECTOR_OUTPUT_SHA256: Final = (
-    "4cdd09d986702e8839acff8d7517a63f263ca2a01b0607d78d6b2086c886a9a5"
-)
-# The archive used an empty history. Packaged requests use the pinned history above,
-# so these two classifier identities are intentionally different contracts.
-ARCHIVED_CLASSIFIER_OUTPUT_SHA256: Final = (
-    "43ec1c4593c0549510098ea082ea7092c7fd5631c95d8b912ecf31633185899b"
-)
-SERVED_CLASSIFIER_OUTPUT_SHA256: Final = (
-    "f994ccfad2e1894f95b487cf1068b5c0038b4bb12c7d49f5e0dc396afc83f1a3"
-)
-PACKAGED_MANIFEST_ID: Final = "vision-model-serving-l4-fp32-20260807"
-PACKAGED_MANIFEST_SHA256: Final = "9d949a0a7b8c64fce7109bfb7176b2986c1a895ee5fc5b037792679c0decff4f"
-PACKAGED_DISCLAIMER: Final = "Research use only; not a medical diagnosis."
-TOKENIZER_REVISION: Final = "e2da8e2f811d1448a5b465c236feacd80ffbac7b"
 _TOKENIZER_FILES: Final = {
     "config.json": (
         481,
@@ -435,11 +427,6 @@ class PackagedAcceptanceContract:
         original_height = _finite_real(geometry.get("original_height"), "original height")
         if min(canonical_width, canonical_height, original_width, original_height) <= 0.0:
             raise AssertionError("prediction geometry dimensions must be positive")
-        bounds = (
-            ("normalized_xyxy", 1.0, 1.0),
-            ("canonical_xyxy", canonical_width, canonical_height),
-            ("original_xyxy", original_width, original_height),
-        )
         detections: list[object] = []
         for field in ("top_candidates", "post_nms", "classifier_rois"):
             detections.extend(_sequence(detector.get(field), f"detector {field}"))
@@ -448,17 +435,51 @@ class PackagedAcceptanceContract:
             score = _finite_real(detection.get("score"), "detector score")
             if not 0.0 <= score <= 1.0:
                 raise AssertionError("detector score is outside [0, 1]")
-            for field, width, height in bounds:
-                x1, y1, x2, y2 = _finite_real_vector(
-                    detection.get(field),
-                    f"detector {field}",
-                    length=4,
-                )
-                if not (0 <= x1 < x2 <= width and 0 <= y1 < y2 <= height):
-                    raise AssertionError(f"detector {field} is outside image bounds")
+            normalized = _finite_real_vector(
+                detection.get("normalized_xyxy"),
+                "detector normalized_xyxy",
+                length=4,
+            )
+            canonical = _finite_real_vector(
+                detection.get("canonical_xyxy"),
+                "detector canonical_xyxy",
+                length=4,
+            )
+            original = _finite_real_vector(
+                detection.get("original_xyxy"),
+                "detector original_xyxy",
+                length=4,
+            )
+            if not _has_positive_extent(normalized) or not _has_positive_extent(canonical):
+                raise AssertionError("detector box must have positive extent")
+
+            expected_canonical = (
+                normalized[0] * canonical_width,
+                normalized[1] * canonical_height,
+                normalized[2] * canonical_width,
+                normalized[3] * canonical_height,
+            )
+            if any(
+                not math.isclose(actual, expected, rel_tol=1e-6, abs_tol=1e-4)
+                for actual, expected in zip(canonical, expected_canonical, strict=True)
+            ):
+                raise AssertionError("detector canonical_xyxy disagrees with normalized_xyxy")
+
+            # The reference detector deliberately keeps normalized/canonical
+            # boxes unclipped for NMS and zero-padded classifier crops.  The
+            # original-image projection is the clipped representation used by
+            # browser overlays, and a fully overhanging proposal may collapse
+            # to an image edge after clipping.
+            x1, y1, x2, y2 = original
+            if not (0.0 <= x1 <= x2 <= original_width and 0.0 <= y1 <= y2 <= original_height):
+                raise AssertionError("detector original_xyxy is outside image bounds")
 
 
 PACKAGED_ACCEPTANCE: Final = PackagedAcceptanceContract()
+
+
+def _has_positive_extent(box: Sequence[float]) -> bool:
+    return box[0] < box[2] and box[1] < box[3]
 
 
 def _mapping(value: object, name: str) -> Mapping[str, Any]:

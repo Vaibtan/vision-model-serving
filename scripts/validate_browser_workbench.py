@@ -9,7 +9,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from playwright.sync_api import sync_playwright
-from vision_model_serving.validation.acceptance_contract import (
+from vision_model_serving.validation.acceptance_constants import (
     PACKAGED_ACCEPTANCE_HISTORY,
 )
 
@@ -31,9 +31,7 @@ def main() -> int:
         page.on(
             "console",
             lambda message: (
-                browser_errors.append(message.text)
-                if message.type == "error"
-                else None
+                browser_errors.append(message.text) if message.type == "error" else None
             ),
         )
         page.on("pageerror", lambda error: browser_errors.append(str(error)))
@@ -64,10 +62,7 @@ def main() -> int:
             raise RuntimeError("browser ROI selection did not expose score/attention")
         summary = page.locator("#summary-grid").inner_text()
         runtime = page.locator("#runtime-values").inner_text()
-        if (
-            "class probabilities" not in summary.casefold()
-            or "mmbcd-classifier" not in runtime
-        ):
+        if "class probabilities" not in summary.casefold() or "mmbcd-classifier" not in runtime:
             raise RuntimeError(
                 "browser result evidence panels are incomplete: "
                 f"summary={summary!r}, runtime={runtime!r}"
@@ -84,10 +79,7 @@ def main() -> int:
             result = json.loads(json_path.read_text(encoding="utf-8"))
             if result["detector"]["prediction_sha256"] != args.expected_detector_sha256:
                 raise RuntimeError("browser detector output differs from the golden")
-            if (
-                result["classification"]["prediction_sha256"]
-                != args.expected_classifier_sha256
-            ):
+            if result["classification"]["prediction_sha256"] != args.expected_classifier_sha256:
                 raise RuntimeError("browser classifier output differs from the golden")
             serialized = json.dumps(result, sort_keys=True)
             if PACKAGED_ACCEPTANCE_HISTORY in serialized:
@@ -98,6 +90,19 @@ def main() -> int:
             png_download.value.save_as(png_path)
             if not png_path.read_bytes().startswith(b"\x89PNG\r\n\x1a\n"):
                 raise RuntimeError("browser overlay export is not a PNG")
+        page.goto(
+            f"{args.base_url.rstrip('/')}/monitoring",
+            wait_until="networkidle",
+            timeout=timeout_ms,
+        )
+        page.locator('#operations-status[data-state="ready"]').wait_for(
+            state="visible",
+            timeout=timeout_ms,
+        )
+        page.locator('[data-signal="executor"][data-state="ok"]').wait_for(
+            state="visible",
+            timeout=timeout_ms,
+        )
         context.close()
         browser.close()
     if browser_errors:
@@ -111,6 +116,7 @@ def main() -> int:
                 "overlay_rois": 8,
                 "roi_attention_selection": True,
                 "json_export": True,
+                "monitoring_ready": True,
                 "png_export": True,
                 "console_errors": 0,
             },

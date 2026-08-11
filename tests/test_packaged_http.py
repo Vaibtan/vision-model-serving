@@ -5,7 +5,7 @@ import json
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import patch
+from unittest.mock import call, patch
 
 
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
@@ -16,6 +16,7 @@ from vision_model_serving.validation.acceptance_contract import (  # noqa: E402
     PACKAGED_ACCEPTANCE_HISTORY,
 )
 from vision_model_serving.validation.packaged_http import (  # noqa: E402
+    PackagedHttpError,
     PackagedPredictionClient,
 )
 
@@ -41,12 +42,13 @@ class PackagedPredictionClientTests(unittest.TestCase):
         ]
         client = PackagedPredictionClient("http://service/", timeout_seconds=10)
 
-        with patch(
-            "vision_model_serving.validation.packaged_http.urllib.request.urlopen",
-            side_effect=responses,
-        ) as urlopen, patch(
-            "vision_model_serving.validation.packaged_http.time.sleep"
-        ) as sleep:
+        with (
+            patch(
+                "vision_model_serving.validation.packaged_http.urllib.request.urlopen",
+                side_effect=responses,
+            ) as urlopen,
+            patch("vision_model_serving.validation.packaged_http.time.sleep") as sleep,
+        ):
             result = client.predict(b"DICOM", mode=PredictionMode.FULL)
 
         submission = urlopen.call_args_list[0].args[0]
@@ -62,7 +64,35 @@ class PackagedPredictionClientTests(unittest.TestCase):
                 "http://service/api/v1/predictions/accepted/result",
             ],
         )
-        sleep.assert_called_once_with(0.1)
+        sleep.assert_called_once_with(0.25)
+
+    def test_polling_honors_throttle_retry_after_without_resubmitting(self) -> None:
+        responses = [
+            {"prediction_id": "accepted"},
+            PackagedHttpError(
+                "throttled",
+                "HTTP 429",
+                status_code=429,
+                retry_after_seconds=1.0,
+            ),
+            {"state": "queued"},
+            {"state": "succeeded"},
+            {"result": {"mode": "detection"}},
+        ]
+        client = PackagedPredictionClient("http://service", timeout_seconds=10)
+
+        with (
+            patch(
+                "vision_model_serving.validation.packaged_http._request_json",
+                side_effect=responses,
+            ) as request_json,
+            patch("vision_model_serving.validation.packaged_http.time.sleep") as sleep,
+        ):
+            result = client.predict(b"DICOM", mode=PredictionMode.DETECTION)
+
+        self.assertEqual(result, {"mode": "detection"})
+        self.assertEqual(request_json.call_count, 5)
+        sleep.assert_has_calls([call(1.0), call(0.25)])
 
     def test_detection_request_omits_clinical_history(self) -> None:
         responses = [
@@ -92,12 +122,15 @@ class PackagedPredictionClientTests(unittest.TestCase):
                     _JsonResponse({"state": state}),
                 ]
 
-                with patch(
-                    "vision_model_serving.validation.packaged_http.urllib.request.urlopen",
-                    side_effect=responses,
-                ) as urlopen, self.assertRaisesRegex(
-                    RuntimeError,
-                    f"state {state}",
+                with (
+                    patch(
+                        "vision_model_serving.validation.packaged_http.urllib.request.urlopen",
+                        side_effect=responses,
+                    ) as urlopen,
+                    self.assertRaisesRegex(
+                        RuntimeError,
+                        f"state {state}",
+                    ),
                 ):
                     client.predict(b"DICOM", mode=PredictionMode.DETECTION)
 

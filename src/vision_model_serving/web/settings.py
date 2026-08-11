@@ -101,6 +101,20 @@ VMS_REDIS_SOCKET_TIMEOUT_SECONDS = _environment_positive_float(
     "VMS_REDIS_SOCKET_TIMEOUT_SECONDS",
     "5.0",
 )
+CACHES = {
+    "default": {
+        "BACKEND": os.environ.get(
+            "VMS_CACHE_BACKEND",
+            "django.core.cache.backends.redis.RedisCache",
+        ),
+        "LOCATION": VMS_REDIS_URL,
+        "KEY_PREFIX": "vision-model-serving:throttle",
+        "OPTIONS": {
+            "socket_connect_timeout": VMS_REDIS_CONNECT_TIMEOUT_SECONDS,
+            "socket_timeout": VMS_REDIS_SOCKET_TIMEOUT_SECONDS,
+        },
+    }
+}
 VMS_JOB_ROOT = Path(os.environ.get("VMS_JOB_ROOT", BASE_DIR / ".jobs")).resolve()
 VMS_QUEUE_NAME = os.environ.get("VMS_QUEUE_NAME", "gpu-inference")
 VMS_KEY_PREFIX = os.environ.get(
@@ -121,6 +135,10 @@ VMS_EXECUTOR_STATUS_TIMEOUT_SECONDS = float(
 )
 VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS = float(
     os.environ.get("VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS", "0.5")
+)
+VMS_RQ_WORKER_HEARTBEAT_MAX_AGE_SECONDS = _environment_positive_float(
+    "VMS_RQ_WORKER_HEARTBEAT_MAX_AGE_SECONDS",
+    "60.0",
 )
 VMS_METRICS_ENABLED = _environment_bool("VMS_METRICS_ENABLED")
 _metrics_dir = os.environ.get("VMS_METRICS_DIR", "").strip()

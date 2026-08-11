@@ -15,12 +15,21 @@ from vision_model_serving.validation.acceptance_contract import (
 )
 
 
-_POLL_INTERVAL_SECONDS: Final = 0.1
+_POLL_INTERVAL_SECONDS: Final = 0.25
 
 
 class PackagedHttpError(RuntimeError):
-    def __init__(self, code: str, detail: str):
+    def __init__(
+        self,
+        code: str,
+        detail: str,
+        *,
+        status_code: int | None = None,
+        retry_after_seconds: float | None = None,
+    ):
         self.code = code
+        self.status_code = status_code
+        self.retry_after_seconds = retry_after_seconds
         super().__init__(detail)
 
 
@@ -100,12 +109,20 @@ class PackagedPredictionClient:
         states = [str(submitted.get("state", "submitted"))]
         deadline = time.monotonic() + self._timeout_seconds
         while time.monotonic() < deadline:
-            status = _request_json(
-                urllib.request.Request(
-                    f"{self._base_url}/api/v1/predictions/{prediction_id}"
-                ),
-                timeout=self._request_timeout(10.0),
-            )
+            try:
+                status = _request_json(
+                    urllib.request.Request(f"{self._base_url}/api/v1/predictions/{prediction_id}"),
+                    timeout=self._request_timeout(10.0),
+                )
+            except PackagedHttpError as error:
+                if error.status_code != 429 or error.code != "throttled":
+                    raise
+                retry_after = error.retry_after_seconds or _POLL_INTERVAL_SECONDS
+                remaining = deadline - time.monotonic()
+                if remaining <= 0.0:
+                    break
+                time.sleep(min(max(_POLL_INTERVAL_SECONDS, retry_after), remaining))
+                continue
             states.append(str(status["state"]))
             if status["state"] == "succeeded":
                 result = _request_json(
@@ -148,10 +165,26 @@ def _request_json(request: urllib.request.Request, *, timeout: float) -> dict[st
             code = str(body.get("error", {}).get("code") or code)
         except (AttributeError, json.JSONDecodeError):
             pass
-        raise PackagedHttpError(code, f"HTTP {error.code}: {message}") from error
+        retry_after_seconds = _retry_after_seconds(error.headers.get("Retry-After"))
+        raise PackagedHttpError(
+            code,
+            f"HTTP {error.code}: {message}",
+            status_code=error.code,
+            retry_after_seconds=retry_after_seconds,
+        ) from error
     if not isinstance(payload, dict):
         raise RuntimeError("HTTP response must be a JSON object")
     return payload
+
+
+def _retry_after_seconds(value: str | None) -> float | None:
+    if value is None:
+        return None
+    try:
+        seconds = float(value)
+    except ValueError:
+        return None
+    return seconds if seconds > 0.0 else None
 
 
 def _multipart_body(boundary: str, dicom: bytes, fields: dict[str, str]) -> bytes:

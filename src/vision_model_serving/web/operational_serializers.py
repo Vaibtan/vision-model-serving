@@ -86,6 +86,7 @@ class QueueSnapshotSerializer(serializers.Serializer):
     succeeded_total = serializers.IntegerField()
     failed_total = serializers.IntegerField()
     worker_lost_total = serializers.IntegerField()
+    wait_count = serializers.IntegerField()
     wait_accumulated_seconds = serializers.FloatField()
 
 
@@ -105,6 +106,9 @@ class ExecutorSnapshotSerializer(serializers.Serializer):
     startup = StartupTimingSerializer(allow_null=True)
     failure_code = serializers.CharField(allow_null=True)
     failure_present = serializers.BooleanField()
+    active_task = serializers.BooleanField()
+    active_task_age_seconds = serializers.FloatField(allow_null=True)
+    deadline_remaining_seconds = serializers.FloatField(allow_null=True)
     precision = serializers.CharField()
 
 

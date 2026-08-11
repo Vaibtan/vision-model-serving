@@ -7,6 +7,7 @@ flowchart LR
     C["Local API client"] -->|"multipart DICOM + mode/history"| W["Gunicorn / Django REST"]
     W -->|"opaque job identifiers"| R["Redis + RQ lifecycle"]
     W -->|"private request files"| J["Ephemeral jobs tmpfs"]
+    X["Lease-aware TTL janitor"] --> J
     R --> Q["Standard RQ worker"]
     Q -->|"two opaque tokens over owner-only socket"| E["Persistent GPU executor"]
     E --> D["FocalNet-DINO detector"]
@@ -26,7 +27,7 @@ Web alone also joins a no-masquerade edge bridge for the loopback HTTP port.
 | --- | --- | --- |
 | `artifacts` | Manifest parsing, hash/shape/runtime/operator verification, authorized local artifact resolution | Model construction or public artifact registration |
 | `dicom` | Bounded decode, pixel transforms, canonical array, warnings, reversible geometry | File persistence or patient metadata output |
-| `detector` | Strict FocalNet-DINO load, transform, raw tensors, top-300/NMS/eight-ROI contract | Classifier semantics or HTTP filtering policy |
+| `detector` | Strict FocalNet-DINO load, transform, internal raw tensors, top-300/NMS/eight-ROI contract | Classifier semantics or public HTTP representation policy |
 | `classifier` | Strict MMBCD load, eight crops, local tokenizer, label-free prompt, raw logits/probabilities | Clinical labels, thresholds, or causal explanations |
 | `pipeline` | Detector-then-optional-classifier ordering and typed serializable result | Queueing, HTTP, or device ownership |
 | `residency` | Serialized one-resident lifecycle, compatible reuse, unload-before-switch, memory/timing observations | Redis job state or API schemas |
@@ -51,10 +52,12 @@ not PyTorch modules, CUDA tensors, DICOM datasets, or filesystem paths.
 5. Detection mode ends. Full mode crops the same eight ROIs, formats the
    label-free `Indication:` prompt, tokenizes from the pinned offline snapshot,
    and runs MMBCD.
-6. The result contains finite host values, provenance, timings, warnings,
+6. The internal result contains finite host values, provenance, timings,
    original/canonical coordinates, and the source-file SHA-256. It excludes
    pixels, history, prompt text, DICOM metadata identifiers, model objects, and
-   invented medical semantics, but the stable hash keeps the JSON sensitive.
+   invented medical semantics. The public HTTP representation additionally
+   omits the full raw detector tensor dumps while preserving proposals, ROIs,
+   hashes, and provenance. The stable hash keeps the JSON sensitive.
 
 The local workbench at `/` uses these same public resources. Its preview route
 canonicalizes the selected DICOM into a grayscale PNG without copying DICOM
@@ -101,11 +104,11 @@ The complete mapping from failures to HTTP behavior is in
 ## Health and observability
 
 `/livez` proves only the web process. `/readyz` is scoped to
-`artifact_ready`: it requires Redis, a registered RQ worker, the initialized
+`artifact_ready`: it requires Redis, exactly one RQ worker with a fresh
+heartbeat, the initialized
 executor, verified artifact structure, an L4 device, and native-operator import/
 CUDA-allocation probes. It does not construct, strict-load, warm, or execute
-both models, and the RQ registration check can briefly outlive a dead worker.
-It may therefore be HTTP 200 while the runtime is unloaded or a first inference
+both models. It may therefore be HTTP 200 while the runtime is unloaded or a first inference
 would fail. The repository manifest and telemetry
 collector are also fail-closed readiness checks. `inference_warm` and
 `warm_model` report model-specific warmth. `/api/v1/models` exposes manifest
@@ -122,20 +125,20 @@ messages. Details are in [`observability.md`](observability.md).
 
 ## Security, trust, and retention
 
-- The API binds to `127.0.0.1` by default. It has no authentication layer; add
-  authenticated TLS ingress before any remote or multi-user exposure. The DRF
-  API views do not enforce CSRF, so loopback binding alone does not prevent a
-  hostile web page from issuing cross-site multipart POST workloads.
+- The API binds to `127.0.0.1` by default. Browser mutation routes reject
+  cross-site requests through Fetch Metadata and Origin checks and use shared
+  Redis-backed throttles. It has no authentication layer; add authenticated TLS
+  ingress before any remote or multi-user exposure.
 - Containers run non-root, read-only, with all capabilities dropped and
   `no-new-privileges`. Model and source mounts are read-only.
 - Checkpoints are authorized only by manifest identity and restricted CPU
   inspection. User-supplied model upload/registration is not an API feature.
-- Request DICOM/history files are removed after normal execution. API result
-  expiry is logical; physical cleanup of expired, abandoned, corrupt, or
-  worker-lost job directories currently runs only when gateway/processor
-  objects start. A long-lived stack can therefore retain data beyond the TTL
-  and fill the 1 GiB jobs tmpfs. Redis persistence is disabled, and complete
-  stack teardown with `--volumes` removes socket, jobs, and metrics.
+- Request DICOM/history files are removed after normal execution. The
+  independent janitor continuously removes expired, abandoned, corrupt, and
+  orphaned staging directories. Exclusive execution leases and atomic cleanup
+  tombstones prevent it from deleting live work; expiry is also enforced on
+  access. Redis persistence is disabled, and complete stack teardown with
+  `--volumes` removes socket, jobs, and metrics.
 - Checkpoint redistribution rights and MMBCD licensing remain unresolved.
   Images and Git history contain no weights.
 
@@ -155,22 +158,25 @@ same-revision parity and performance evidence passes.
 - Django now validates only DICOM structure (`validate_header`, no pixel
   decode) before admission; pixels are decoded once, in the executor.
   Pixel-level failures on accepted uploads therefore surface asynchronously as
-  terminal `prediction_case_failed` states. `total_ms` still measures only the
+  terminal `prediction_case_failed` states. `pipeline_ms` measures only the
   executor pipeline rather than upload, queue, IPC, persistence, or polling.
 - Cold loads no longer run the patient case twice: the composition-root warmup
   hook is a no-op and the cold request's own forward pass is the warm pass.
-- The timeout hierarchy is strict (socket wait 170 s < RQ job timeout 180 s <
-  worker grace 190 s < executor grace 210 s). A killed work-horse can still
-  release Redis capacity while uncancelled executor work finishes, but the
-  executor fails fast with a retryable busy signal on overlap, and expired
-  requests fail closed at `load_request`.
+- The timeout hierarchy is strict (executor task deadline 160 s < socket wait
+  170 s < RQ job timeout 180 s < worker grace 190 s < executor grace 210 s).
+  Worker loss produces a terminal marker but retains Redis admission until the
+  execution deadline, so work that may still own CUDA cannot overlap a new
+  admission. The executor watchdog exits the process at its deadline and
+  Compose restarts the CUDA owner.
 - RQ work-horses no longer write Prometheus multiprocess files (queue-wait
-  accounting lives in Redis); a gunicorn `child_exit` hook reaps dead
-  web-worker shards. Telemetry writes are exception-guarded so a full metrics
+  histogram lives in Redis); a gunicorn `child_exit` hook marks the worker dead
+  and removes all of its exact-PID shards. CUDA/RSS gauges use live-most-recent
+  semantics. Telemetry writes are exception-guarded so a full metrics
   volume degrades observability instead of failing requests, and readiness no
   longer depends on the telemetry collector.
-- Concurrency one is a Compose topology assumption. The worker healthcheck now
-  requires a local worker with a fresh heartbeat, and the runtime serializes
-  model calls rather than a complete detector-to-classifier transaction.
+- Compose readiness requires exactly one fresh worker, admission is shared and
+  bounded in Redis, and the executor rejects overlapping tasks while the
+  runtime serializes model calls. Multi-replica/high-availability routing is not
+  implemented.
 - These closures are validated by the CPU suite; the same-revision packaged L4
   acceptance rerun remains outstanding.

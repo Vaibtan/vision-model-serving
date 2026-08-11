@@ -53,7 +53,7 @@ class OperationalSnapshot:
             "status": self.status,
             "checks": dict(self.checks),
             "reasons": list(self.reasons),
-            "queue": dict(self.queue),
+            "queue": {key: value for key, value in self.queue.items() if not key.startswith("_")},
             "executor": {
                 **self.executor,
                 "resident_models": list(self.executor["resident_models"]),
@@ -84,6 +84,8 @@ def read_operational_snapshot() -> OperationalSnapshot:
 
     manifest_available, manifest_id, models = _manifest_payload()
     telemetry_available, telemetry = _telemetry_snapshot()
+    if observations is not None:
+        telemetry = _with_queue_wait(telemetry, observations)
     checks = {
         "redis": redis_ready,
         "rq_worker": worker_ready,
@@ -188,10 +190,26 @@ def _broker_readiness() -> tuple[bool, bool]:
             socket_timeout=settings.VMS_OPERATIONAL_PROBE_TIMEOUT_SECONDS,
         )
         redis_ready = bool(redis.ping())
-        worker_ready = bool(Worker.all(queue=Queue(settings.VMS_QUEUE_NAME, connection=redis)))
+        now = datetime.now(UTC)
+        live_workers = [
+            worker
+            for worker in Worker.all(queue=Queue(settings.VMS_QUEUE_NAME, connection=redis))
+            if _worker_heartbeat_age_seconds(worker, now)
+            < settings.VMS_RQ_WORKER_HEARTBEAT_MAX_AGE_SECONDS
+        ]
+        worker_ready = len(live_workers) == 1
         return redis_ready, worker_ready
     except Exception:  # noqa: BLE001 - no exception detail crosses this seam
         return False, False
+
+
+def _worker_heartbeat_age_seconds(worker: object, now: datetime) -> float:
+    heartbeat = getattr(worker, "last_heartbeat", None)
+    if not isinstance(heartbeat, datetime):
+        return math.inf
+    if heartbeat.tzinfo is None:
+        heartbeat = heartbeat.replace(tzinfo=UTC)
+    return max(0.0, (now - heartbeat).total_seconds())
 
 
 def _queue_payload(observations: object | None) -> dict[str, object]:
@@ -207,7 +225,9 @@ def _queue_payload(observations: object | None) -> dict[str, object]:
             "succeeded_total": 0,
             "failed_total": 0,
             "worker_lost_total": 0,
+            "wait_count": 0,
             "wait_accumulated_seconds": 0.0,
+            "_wait_buckets": (),
         }
     return {
         "available": True,
@@ -220,8 +240,27 @@ def _queue_payload(observations: object | None) -> dict[str, object]:
         "succeeded_total": int(getattr(observations, "succeeded_total")),
         "failed_total": int(getattr(observations, "failed_total")),
         "worker_lost_total": int(getattr(observations, "worker_lost_total")),
+        "wait_count": int(getattr(observations, "queue_wait_count")),
         "wait_accumulated_seconds": float(getattr(observations, "queue_wait_ms_total")) / 1_000.0,
+        "_wait_buckets": tuple(getattr(observations, "queue_wait_buckets")),
     }
+
+
+def _with_queue_wait(
+    telemetry: dict[str, object],
+    observations: object,
+) -> dict[str, object]:
+    count = int(getattr(observations, "queue_wait_count"))
+    total = float(getattr(observations, "queue_wait_ms_total")) / 1_000.0
+    buckets = dict(getattr(observations, "queue_wait_buckets"))
+    latency = dict(telemetry["latency_seconds"])
+    latency["queue_wait"] = {
+        "count": count,
+        "mean": None if count <= 0 else total / count,
+        "p50": _bucket_quantile(buckets, count, 0.5),
+        "p95": _bucket_quantile(buckets, count, 0.95),
+    }
+    return {**telemetry, "latency_seconds": latency}
 
 
 def _executor_payload(executor: object | None) -> dict[str, object]:
@@ -242,6 +281,9 @@ def _executor_payload(executor: object | None) -> dict[str, object]:
             "startup": None,
             "failure_code": None,
             "failure_present": False,
+            "active_task": False,
+            "active_task_age_seconds": None,
+            "deadline_remaining_seconds": None,
             "precision": "float32",
         }
     return {
@@ -270,6 +312,17 @@ def _executor_payload(executor: object | None) -> dict[str, object]:
         },
         "failure_code": getattr(executor, "last_error"),
         "failure_present": getattr(executor, "last_error") is not None,
+        "active_task": bool(getattr(executor, "active_task", False)),
+        "active_task_age_seconds": (
+            None
+            if getattr(executor, "active_task_age_ms", None) is None
+            else float(getattr(executor, "active_task_age_ms")) / 1_000.0
+        ),
+        "deadline_remaining_seconds": (
+            None
+            if getattr(executor, "deadline_remaining_ms", None) is None
+            else float(getattr(executor, "deadline_remaining_ms")) / 1_000.0
+        ),
         "precision": "float32",
     }
 
@@ -450,7 +503,7 @@ def _sample_sum(
 def _sample_value(
     samples: tuple[object, ...], name: str, labels: dict[str, str] | None = None
 ) -> float:
-    # mostrecent-mode gauges emit one sample per labelset, so read it directly.
+    # livemostrecent-mode gauges emit one sample per labelset, so read it directly.
     labels = labels or {}
     for sample in samples:
         if getattr(sample, "name", None) == name and _labels_match(

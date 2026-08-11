@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import stat
 import sys
 import unittest
 from io import BytesIO
@@ -105,6 +106,22 @@ class EphemeralJobStoreRetentionTests(unittest.TestCase):
         self.assertEqual(loaded.case.dicom_stream.read(), b"payload-bytes")
         self.assertEqual(loaded.case.clinical_history, "private history")
 
+    @unittest.skipIf(os.name == "nt", "Windows does not expose POSIX mode bits")
+    def test_job_payload_is_owner_writable_and_validation_group_readable(self) -> None:
+        stored = self.store.store_request(
+            self.prediction_id,
+            request(),
+            ttl_seconds=100,
+        )
+        directory = self.root / stored.locator
+
+        self.assertEqual(stat.S_IMODE(directory.stat().st_mode), 0o750)
+        self.assertEqual(stat.S_IMODE((directory / "input.dcm").stat().st_mode), 0o640)
+        self.assertEqual(stat.S_IMODE((directory / "request.json").stat().st_mode), 0o640)
+
+        self.store.store_result(stored.locator, _prediction_result(), ttl_seconds=100)
+        self.assertEqual(stat.S_IMODE((directory / "result.json").stat().st_mode), 0o640)
+
     def test_expired_result_is_deleted_on_access(self) -> None:
         stored = self.store.store_request(
             self.prediction_id,
@@ -165,6 +182,36 @@ class EphemeralJobStoreJanitorTests(unittest.TestCase):
         removed = self.store.cleanup_expired()
         self.assertEqual(removed, 1)
         self.assertFalse((self.root / stored.locator).exists())
+
+    def test_active_execution_lease_protects_expired_request(self) -> None:
+        prediction_id = PredictionId("c" * 32)
+        stored = self.store.store_request(prediction_id, request(), ttl_seconds=10)
+        self.store.acquire_lease(stored.locator, ttl_seconds=100)
+        self.clock.advance(11)
+
+        self.assertEqual(self.store.cleanup_expired(), 0)
+        loaded = self.store.load_request(prediction_id, stored.locator)
+        self.assertEqual(loaded.case.dicom_stream.read(), b"private-dicom")
+
+        self.store.release_lease(stored.locator)
+        self.assertEqual(self.store.cleanup_expired(), 1)
+
+    def test_expired_execution_lease_does_not_block_cleanup(self) -> None:
+        prediction_id = PredictionId("d" * 32)
+        stored = self.store.store_request(prediction_id, request(), ttl_seconds=10)
+        self.store.acquire_lease(stored.locator, ttl_seconds=20)
+        self.clock.advance(21)
+
+        self.assertEqual(self.store.cleanup_expired(), 1)
+        self.assertFalse((self.root / stored.locator).exists())
+
+    def test_direct_discard_refuses_to_delete_active_execution(self) -> None:
+        prediction_id = PredictionId("e" * 32)
+        stored = self.store.store_request(prediction_id, request(), ttl_seconds=10)
+        self.store.acquire_lease(stored.locator, ttl_seconds=100)
+
+        self.assertFalse(self.store.discard_job(stored.locator))
+        self.assertTrue((self.root / stored.locator).is_dir())
 
 
 def _prediction_result() -> object:

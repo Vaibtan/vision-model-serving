@@ -29,7 +29,7 @@ contract.
 ## Result contract
 
 `PredictionResult` is immutable and contains only host-side, serialization-safe
-values:
+values. Its internal/storage contract includes:
 
 - whitelisted DICOM facts and the source SHA-256;
 - original/crop/canonical geometry and scale factors;
@@ -48,9 +48,15 @@ values:
 
 No class name or decision threshold is exposed because neither is verified by
 the supplied artifact metadata. Clinical history and the formatted prompt are
-also excluded from the result. `prediction_to_dict()` converts the result to
+also excluded from the result. `prediction_to_dict()` converts the complete
+internal result to
 plain JSON-compatible values without retaining DICOM pixels, model inputs,
-PyTorch tensors, or NumPy arrays.
+PyTorch tensors, or NumPy arrays. HTTP uses `prediction_to_public_dict()`, which
+omits the full raw detector logits/scores/box tensors while retaining the
+bounded candidates, eight ROIs, hashes, provenance, and all user-relevant
+outputs. The request echo includes the detector display threshold used for the
+submission. Timings call the executor-only aggregate `pipeline_ms`; it excludes
+upload, queueing, IPC, persistence, network transfer, and polling.
 
 The source SHA-256 is stable and correlatable, and predictions are sensitive
 derived health data. Excluding direct DICOM identifiers does not certify the

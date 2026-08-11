@@ -31,7 +31,11 @@ from .pipeline import (
     PredictionPipeline,
     PredictionPipelineError,
 )
-from .serialization import prediction_from_dict, prediction_to_dict
+from .serialization import (
+    prediction_from_dict,
+    prediction_to_dict,
+    prediction_to_public_dict,
+)
 
 __all__ = [
     "ArtifactProvenance",
@@ -62,5 +66,6 @@ __all__ = [
     "RuntimeExecutionSummary",
     "TokenizerProvenance",
     "prediction_to_dict",
+    "prediction_to_public_dict",
     "prediction_from_dict",
 ]

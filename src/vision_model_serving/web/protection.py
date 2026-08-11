@@ -29,11 +29,14 @@ def browser_origin_rejection(request: Request) -> Response | None:
     origin = request.headers.get("Origin")
     if origin is None:
         return None
-    # Scheme-agnostic netloc comparison; "Origin: null" yields an empty
-    # netloc and is rejected like any foreign origin.
-    origin_host = urlsplit(origin.strip()).netloc.lower()
-    request_host = request.headers.get("Host", "").strip().lower()
-    if origin_host and origin_host == request_host:
+    # Match both scheme and authority. "Origin: null" has neither and is
+    # rejected like every other foreign origin.
+    parsed_origin = urlsplit(origin.strip())
+    request_host = request.get_host().lower()
+    if (
+        parsed_origin.scheme.lower() == request.scheme.lower()
+        and parsed_origin.netloc.lower() == request_host
+    ):
         return None
     return _rejection(request)
 

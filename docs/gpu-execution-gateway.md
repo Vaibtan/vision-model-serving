@@ -54,9 +54,11 @@ logically: `load_request()` fails closed and deletes the directory once
 `expires_at` passes, and recomputes the stored request fingerprint with a
 constant-time comparison so a tampered or truncated payload can never reach
 the model; `load_result()` deletes expired result directories on access; a
-rate-limited janitor sweep (`maybe_cleanup()`) runs on status polls and after
-every executor job, reclaiming expired locator directories and orphaned
-`.tmp-*`/`.result-*` staging entries left by killed processes; and an expired
+  independent janitor service sweeps every 30 seconds, reclaiming expired
+  locator directories and orphaned `.tmp-*`/`.result-*` staging entries left by
+  killed processes. An exclusive execution lease protects live cases, and the
+  janitor atomically renames a cleanup candidate before rechecking that lease,
+  closing cleanup/load races; and an expired
 queued reservation is converted into a terminal FAILED state whose payload
 directory is discarded immediately.
 
@@ -66,6 +68,9 @@ Redis `WATCH`/`MULTI` reserves capacity and enqueues the RQ job in one
 transaction. The reservation counts pending plus running work across every web
 process. When capacity is full, submission fails with
 `prediction_queue_full` and the staged private payload is deleted.
+Before contacting the executor, the work-horse atomically verifies that its
+reservation still exists and has not expired, then extends that same claim. A
+reclaimed or terminal job can therefore never transition back to running.
 
 Idempotency keys are SHA-256 digested. A duplicate request with the same input
 returns the existing job; reuse for different input fails with
@@ -80,7 +85,7 @@ replaced by a new submission.
 | Redis or enqueue unavailable | Delete the staged payload and return `prediction_gateway_unavailable`. |
 | Case rejected by the pipeline (bad DICOM pixels, no valid proposals, unusable ROIs) | Terminal `prediction_case_failed`, non-retryable; the model stays resident and the runtime stays healthy. |
 | Pipeline failure | RQ records one terminal failed job; result retrieval returns sanitized HTTP 500 and no retry. |
-| Work-horse termination | A terminal marker records `prediction_runtime_unavailable` (retryable) so the state survives RQ job-hash expiry; result retrieval returns sanitized HTTP 503. |
+| Work-horse termination | A strict terminal marker records `prediction_runtime_unavailable` (retryable) so the state survives RQ job-hash expiry; admission remains reserved until the execution deadline because the executor may still own CUDA. |
 | Executor unavailable, busy, or failed runtime | The current RQ job fails once and result retrieval returns sanitized HTTP 503 (retryable). |
 | RQ execution timeout | RQ records terminal failure and result retrieval returns sanitized HTTP 504. |
 | Bounded synchronous wait elapsed | Return a healthy pollable handle without cancelling the job. |
@@ -130,12 +135,18 @@ uv run --extra gateway python -m vision_model_serving.execution.rq_cli \
   --redis-url redis://127.0.0.1:6379/0 \
   --queue-name gpu-inference \
   --executor-socket /run/vision-model-serving/executor.sock \
-  --executor-timeout-seconds 180
+  --executor-timeout-seconds 170 \
+  --executor-task-timeout-seconds 160
+
+uv run --extra gateway python -m vision_model_serving.execution.janitor \
+  --job-root /var/lib/vision-model-serving/jobs \
+  --interval-seconds 30
 ```
 
 Start the RQ worker only after the executor socket exists. Django readiness
 uses the socket's status operation rather than file existence. Compose now
-enforces a strict timeout hierarchy: executor socket wait 170 s < RQ job
+enforces a strict timeout hierarchy: executor-owned task deadline 160 s <
+executor socket wait 170 s < RQ job
 timeout 180 s < worker shutdown grace 190 s < executor shutdown grace 210 s.
 On SIGTERM the executor stops accepting connections, finishes the in-flight
 case (its response is still delivered), and latches the runtime closed so a
@@ -144,6 +155,10 @@ the outer bound on that drain. The executor also fails fast with a retryable
 busy signal if a second concurrent execute arrives, and bounds every
 connection read so a dead peer cannot pin a handler thread. The result TTL is
 shared with the web tier through `VMS_RESULT_TTL_SECONDS`.
+If a case reaches the executor-owned deadline, the watchdog terminates the
+process because in-flight CUDA work cannot be safely cancelled; Compose then
+restarts a clean CUDA owner. Non-daemon request handlers are drained during a
+normal shutdown.
 
 ## L4 acceptance evidence
 

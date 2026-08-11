@@ -17,6 +17,7 @@ from .canonicalization import (
     PixelDataError,
     UnsupportedPhotometricInterpretationError,
     UnsupportedTransferSyntaxError,
+    ValidatedDicomHeader,
 )
 
 __all__ = [
@@ -36,4 +37,5 @@ __all__ = [
     "PixelDataError",
     "UnsupportedPhotometricInterpretationError",
     "UnsupportedTransferSyntaxError",
+    "ValidatedDicomHeader",
 ]

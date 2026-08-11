@@ -50,12 +50,13 @@ The processing order is fixed:
     intentionally distort aspect ratio. Author-golden parity for LUT, padding,
     and inversion variants remains unvalidated.
 
-A cheap `validate_header()` entry point runs the same structural gates
+A cheap `validate_header()` entry point parses once, runs the same structural gates
 (parseability, transfer syntax, photometric interpretation, frame count, and
 declared-dimension limits) without touching `PixelData`, so the web tier can
 reject unsupported uploads before queue admission without paying for a full
 pixel decode. Pixel-level failures on accepted uploads surface asynchronously
-as case failures from the executor.
+as case failures from the executor. It returns a typed `ValidatedDicomHeader`;
+the web tier uses its modality instead of parsing the upload a second time.
 
 The first-window and no-contour policies are deliberate. They must not be
 silently changed by an HTTP caller or decoder plugin.

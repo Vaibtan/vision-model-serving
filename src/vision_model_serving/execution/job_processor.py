@@ -8,6 +8,7 @@ from pathlib import Path
 from time import time
 from typing import Protocol
 
+from vision_model_serving.failures import CaseInputFailure, is_case_input_failure
 from vision_model_serving.observability import (
     record_prediction_failure,
     record_prediction_success,
@@ -30,10 +31,8 @@ class StoredPredictionProcessorError(RuntimeError):
     pass
 
 
-class StoredPredictionCaseError(StoredPredictionProcessorError):
+class StoredPredictionCaseError(CaseInputFailure, StoredPredictionProcessorError):
     """This case was rejected; the executor remains healthy for other cases."""
-
-    case_input_error = True
 
 
 class StoredPredictionProcessor:
@@ -79,7 +78,7 @@ class StoredPredictionProcessor:
             except Exception:  # noqa: BLE001, S110 - telemetry is non-authoritative
                 pass
         except Exception as error:  # noqa: BLE001 - never persist private pipeline errors
-            case_failed = getattr(error, "case_input_error", False) is True
+            case_failed = is_case_input_failure(error)
             try:
                 record_prediction_failure(mode, error)
             except Exception:  # noqa: BLE001, S110 - preserve the prediction seam
@@ -105,7 +104,7 @@ def _apply_detector_display_threshold(
     """Filter display detections after inference without changing classifier ROIs."""
 
     if threshold is None:
-        return result
+        return replace(result, detector_score_threshold=None)
     detector = replace(
         result.detector,
         top_candidates=tuple(
@@ -114,9 +113,11 @@ def _apply_detector_display_threshold(
             if detection.score >= threshold
         ),
         post_nms=tuple(
-            detection
-            for detection in result.detector.post_nms
-            if detection.score >= threshold
+            detection for detection in result.detector.post_nms if detection.score >= threshold
         ),
     )
-    return replace(result, detector=detector)
+    return replace(
+        result,
+        detector=detector,
+        detector_score_threshold=threshold,
+    )

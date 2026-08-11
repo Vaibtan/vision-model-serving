@@ -196,8 +196,8 @@ jobs:
           VMS_SECRET_KEY: ci-only-compose-interpolation-value
         run: docker compose --profile "*" config --quiet
 
-  web-image:
-    name: Web image build
+  images:
+    name: Runtime image builds
     runs-on: ubuntu-latest
     timeout-minutes: 30
 
@@ -211,6 +211,13 @@ jobs:
           --file docker/web.Dockerfile
           --target runtime
           --tag vision-model-serving-web:ci
+          .
+
+      - name: Build the GPU executor image from pinned bases
+        run: >-
+          docker build
+          --file docker/executor.Dockerfile
+          --tag vision-model-serving-executor:ci
           .
 
   unit-tests:

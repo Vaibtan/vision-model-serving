@@ -24,11 +24,11 @@ applied state, the checksum-pinned `config_cfg.py`, and modules that resolve
 inside that source checkout. It performs no clone, download, hub, or URL
 operation.
 
-The current source gate verifies the pinned HEAD, approved patch files, and
-`git diff --check`, but it does not reject every additional tracked/untracked
-change outside those patches. Treat the mounted source checkout as executable
-input and require a complete tree manifest or exact approved-diff check before
-making a supply-chain integrity claim.
+The source gate verifies the pinned HEAD and compares the complete tracked diff
+against the exact approved patch hunks; any additional tracked modification is
+rejected before import. Untracked build products remain outside that Git-diff
+guarantee, so the runtime still restricts imported modules and native artifacts
+to the expected source/build paths.
 
 ## Detector input
 

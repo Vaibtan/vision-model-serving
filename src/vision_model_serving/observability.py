@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 import logging
 import os
+from pathlib import Path
+import re
 from datetime import UTC, datetime
 
 from prometheus_client import Counter, Gauge, Histogram
@@ -32,10 +34,6 @@ _PREDICTIONS = Counter(
     "Executor prediction outcomes by mode.",
     ("mode", "outcome"),
 )
-_QUEUE_WAIT = Histogram(
-    "vms_queue_wait_seconds",
-    "Time spent waiting for an RQ worker.",
-)
 _LIFECYCLE = Counter(
     "vms_model_lifecycle",
     "Model lifecycle events.",
@@ -56,18 +54,18 @@ _PIPELINE_STAGE = Histogram(
     "Pipeline duration by bounded stage.",
     ("stage",),
 )
-# mostrecent presents the current reading; max would freeze a permanent high-water mark.
+# Live-most-recent presents the current reading and allows dead-PID reaping.
 _CUDA_MEMORY = Gauge(
     "vms_cuda_memory_bytes",
     "CUDA allocator bytes by model and bounded memory kind.",
     ("model", "kind"),
-    multiprocess_mode="mostrecent",
+    multiprocess_mode="livemostrecent",
 )
 _CPU_RSS = Gauge(
     "vms_process_rss_bytes",
     "Resident memory by bounded process role.",
     ("process",),
-    multiprocess_mode="mostrecent",
+    multiprocess_mode="livemostrecent",
 )
 _CLASSIFIER_ROIS = Histogram(
     "vms_classifier_rois",
@@ -126,10 +124,7 @@ def record_http_response(
         _HTTP_REQUESTS.labels(route, method, outcome).inc()
         _HTTP_DURATION.labels(route, method).observe(max(0.0, duration_seconds))
         _CPU_RSS.labels("web").set(_rss_bytes())
-        if (
-            route in {"prediction-status", "operations-snapshot"}
-            and outcome == "success"
-        ):
+        if route in {"prediction-status", "operations-snapshot"} and outcome == "success":
             return
         _event(
             "http_response",
@@ -164,10 +159,9 @@ def record_dicom(outcome: str) -> None:
 
 
 def record_queue_wait(wait_seconds: float) -> None:
-    # Telemetry must never fail a request (e.g. ENOSPC on the metrics tmpfs).
+    """Emit only a bounded event; Redis owns the durable queue histogram."""
+
     try:
-        _QUEUE_WAIT.observe(max(0.0, wait_seconds))
-        _CPU_RSS.labels("worker").set(_rss_bytes())
         _event(
             "queue_started",
             outcome="started",
@@ -176,6 +170,39 @@ def record_queue_wait(wait_seconds: float) -> None:
         )
     except Exception:  # noqa: BLE001 - telemetry must never fail a request
         pass
+
+
+def cleanup_multiprocess_pid(pid: int, directory: Path | None = None) -> int:
+    """Remove every exact prometheus shard owned by one exited worker PID."""
+
+    if isinstance(pid, bool) or not isinstance(pid, int) or pid <= 0:
+        raise ValueError("metrics PID must be a positive integer")
+    configured = os.environ.get("PROMETHEUS_MULTIPROC_DIR", "")
+    if directory is None and not configured:
+        return 0
+    root = directory or Path(configured)
+    root = root.resolve()
+    try:
+        from prometheus_client import multiprocess
+
+        multiprocess.mark_process_dead(pid, path=str(root))
+    except Exception:
+        pass
+    pattern = re.compile(rf"^[a-z][a-z0-9_]*_{pid}\.db$")
+    removed = 0
+    try:
+        entries = tuple(root.iterdir())
+    except OSError:
+        return 0
+    for entry in entries:
+        if not entry.is_file() or pattern.fullmatch(entry.name) is None:
+            continue
+        try:
+            entry.unlink()
+            removed += 1
+        except OSError:
+            continue
+    return removed
 
 
 def record_prediction_success(result: PredictionResult) -> None:
@@ -191,7 +218,7 @@ def _record_prediction_success(result: PredictionResult) -> None:
     _PREDICTIONS.labels(mode, "succeeded").inc()
     _CPU_RSS.labels("executor").set(_rss_bytes())
     _PIPELINE_STAGE.labels("decode").observe(result.timings.decode_ms / 1_000.0)
-    _PIPELINE_STAGE.labels("total").observe(result.timings.total_ms / 1_000.0)
+    _PIPELINE_STAGE.labels("total").observe(result.timings.pipeline_ms / 1_000.0)
     stages = (("detector", result.timings.detector),)
     if result.timings.classifier is not None:
         stages += (("classifier", result.timings.classifier),)
@@ -235,9 +262,7 @@ def _record_prediction_success(result: PredictionResult) -> None:
         classifier_rois=roi_count,
         roi_fallbacks=padded,
         detector_lifecycle=_lifecycle_event(result.timings.detector.runtime),
-        classifier_lifecycle=(
-            None if classifier is None else _lifecycle_event(classifier.runtime)
-        ),
+        classifier_lifecycle=(None if classifier is None else _lifecycle_event(classifier.runtime)),
         detector_cuda_allocated_bytes=(result.timings.detector.memory.allocated_bytes),
         detector_cuda_reserved_bytes=(result.timings.detector.memory.reserved_bytes),
         classifier_cuda_allocated_bytes=(
@@ -248,10 +273,8 @@ def _record_prediction_success(result: PredictionResult) -> None:
         ),
         decode_ms=round(result.timings.decode_ms, 3),
         detector_ms=round(result.timings.detector.runtime.inference_ms, 3),
-        classifier_ms=(
-            None if classifier is None else round(classifier.runtime.inference_ms, 3)
-        ),
-        total_ms=round(result.timings.total_ms, 3),
+        classifier_ms=(None if classifier is None else round(classifier.runtime.inference_ms, 3)),
+        pipeline_ms=round(result.timings.pipeline_ms, 3),
         rss_bytes=_rss_bytes(),
     )
 
@@ -321,11 +344,7 @@ def _other_model_stage(model: str) -> str:
 
 
 def _mode(value: PredictionMode | None) -> str:
-    return (
-        value.value
-        if value in {PredictionMode.DETECTION, PredictionMode.FULL}
-        else "unknown"
-    )
+    return value.value if value in {PredictionMode.DETECTION, PredictionMode.FULL} else "unknown"
 
 
 def _rss_bytes() -> int:

@@ -310,7 +310,7 @@ def _run_sample(
     classifier_stage = timings["classifier"]
     stages: dict[str, float | None] = {
         "dicom_decode": timings["decode_ms"] / 1_000.0,
-        "pipeline_total": timings["total_ms"] / 1_000.0,
+        "pipeline_total": timings["pipeline_ms"] / 1_000.0,
         "detector_adapter_load": detector_adapter["load_ms"] / 1_000.0,
         "detector_preprocess": detector_adapter["preprocess_ms"] / 1_000.0,
         "detector_load_warmup": detector_stage["runtime"]["load_ms"] / 1_000.0,
@@ -347,7 +347,7 @@ def _run_sample(
             peak_reserved,
             classifier_stage["memory"]["peak_reserved_bytes"],
         )
-    pipeline_seconds = timings["total_ms"] / 1_000.0
+    pipeline_seconds = timings["pipeline_ms"] / 1_000.0
     overhead_seconds = observation.wall_seconds - pipeline_seconds
     if overhead_seconds < -_TIMING_TOLERANCE_SECONDS:
         raise BenchmarkContractError(

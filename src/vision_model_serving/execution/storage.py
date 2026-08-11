@@ -29,7 +29,8 @@ from .contracts import PredictionGatewayError, PredictionId, PredictionRequest
 from .fingerprinting import request_fingerprint
 
 _LOCATOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]{32}$")
-_STAGING_PREFIXES = (".tmp-", ".result-")
+_STAGING_PREFIXES = (".tmp-", ".result-", ".gc-")
+_LEASE_NAME = ".active.json"
 # Staging entries older than this are orphans from a killed process, never
 # live writes; store_request/store_result complete in well under a minute.
 _STAGING_ORPHAN_SECONDS = 900.0
@@ -49,6 +50,10 @@ class JobResultNotFound(PredictionGatewayError):
 
 class JobResultConflict(PredictionGatewayError):
     code = "prediction_result_write_conflict"
+
+
+class JobLeaseConflict(PredictionGatewayError):
+    code = "prediction_execution_lease_conflict"
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,7 +91,10 @@ class EphemeralJobStore:
         destination = self._directory(locator)
         temporary = self._root / f".tmp-{secrets.token_hex(16)}"
         try:
-            temporary.mkdir(mode=0o700)
+            # Keep payloads private from other users while allowing the
+            # explicitly configured job-volume group to run read-only privacy
+            # validation under a host-mapped UID.
+            temporary.mkdir(mode=0o750)
             (temporary / "input.dcm").write_bytes(payload)
             (temporary / "request.json").write_text(
                 json.dumps(
@@ -106,7 +114,7 @@ class EphemeralJobStore:
                 encoding="utf-8",
             )
             for item in temporary.iterdir():
-                item.chmod(0o600)
+                item.chmod(0o640)
             temporary.replace(destination)
         except Exception:
             shutil.rmtree(temporary, ignore_errors=True)
@@ -120,14 +128,10 @@ class EphemeralJobStore:
     ) -> PredictionRequest:
         directory = self._directory(locator)
         try:
-            metadata = json.loads(
-                (directory / "request.json").read_text(encoding="utf-8")
-            )
+            metadata = json.loads((directory / "request.json").read_text(encoding="utf-8"))
             payload = (directory / "input.dcm").read_bytes()
         except (FileNotFoundError, json.JSONDecodeError, OSError):
-            raise JobPayloadNotFound(
-                "prediction request payload is unavailable"
-            ) from None
+            raise JobPayloadNotFound("prediction request payload is unavailable") from None
         if (
             not isinstance(metadata, dict)
             or metadata.get("schema_version") != 1
@@ -145,10 +149,8 @@ class EphemeralJobStore:
             if not isinstance(stored_fingerprint, str):
                 raise TypeError
         except (KeyError, TypeError, ValueError):
-            raise JobPayloadNotFound(
-                "prediction request payload is unavailable"
-            ) from None
-        if self._clock() >= expires_at:
+            raise JobPayloadNotFound("prediction request payload is unavailable") from None
+        if self._clock() >= expires_at and not self.lease_active(locator):
             self.discard_job(locator)
             raise JobPayloadExpired("prediction request payload has expired")
         request = PredictionRequest(
@@ -199,7 +201,7 @@ class EphemeralJobStore:
         temporary = directory / f".result-{secrets.token_hex(16)}.tmp"
         destination = directory / "result.json"
         temporary.write_text(encoded, encoding="utf-8")
-        temporary.chmod(0o600)
+        temporary.chmod(0o640)
         try:
             try:
                 os.link(temporary, destination)
@@ -207,13 +209,8 @@ class EphemeralJobStore:
                 try:
                     existing = json.loads(destination.read_text(encoding="utf-8"))
                 except (OSError, json.JSONDecodeError):
-                    raise JobResultConflict(
-                        "stored prediction result is inconsistent"
-                    ) from None
-                if (
-                    not isinstance(existing, dict)
-                    or existing.get("result") != envelope["result"]
-                ):
+                    raise JobResultConflict("stored prediction result is inconsistent") from None
+                if not isinstance(existing, dict) or existing.get("result") != envelope["result"]:
                     raise JobResultConflict("stored prediction result is inconsistent")
         finally:
             temporary.unlink(missing_ok=True)
@@ -234,9 +231,7 @@ class EphemeralJobStore:
         except (FileNotFoundError, OSError, KeyError, TypeError, ValueError):
             if expired:
                 self.discard_job(locator)
-            raise JobResultNotFound(
-                "prediction result payload is unavailable"
-            ) from None
+            raise JobResultNotFound("prediction result payload is unavailable") from None
 
     def cleanup_expired(self) -> int:
         removed = 0
@@ -271,11 +266,7 @@ class EphemeralJobStore:
             ):
                 expired = True
             if expired:
-                try:
-                    shutil.rmtree(entry)
-                    removed += 1
-                except OSError:
-                    continue
+                removed += int(self._discard_directory_if_unleased(entry))
         return removed
 
     def maybe_cleanup(self, *, interval_seconds: float = 60.0) -> int:
@@ -306,14 +297,100 @@ class EphemeralJobStore:
         except OSError:
             return 0
 
-    def discard_job(self, locator: str) -> None:
+    def acquire_lease(self, locator: str, *, ttl_seconds: float) -> None:
+        """Atomically protect one locator from physical reclamation."""
+
+        if ttl_seconds <= 0:
+            raise ValueError("execution lease TTL must be positive")
+        directory = self._directory(locator)
+        payload = json.dumps(
+            {
+                "schema_version": 1,
+                "expires_at": self._clock() + ttl_seconds,
+            },
+            allow_nan=False,
+            separators=(",", ":"),
+            sort_keys=True,
+        ).encode("utf-8")
+        lease = directory / _LEASE_NAME
+        for _attempt in range(2):
+            try:
+                descriptor = os.open(lease, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o640)
+            except FileExistsError:
+                if self._lease_active_in_directory(directory):
+                    raise JobLeaseConflict("prediction payload already has an active lease")
+                try:
+                    lease.unlink()
+                except FileNotFoundError:
+                    pass
+                continue
+            except FileNotFoundError:
+                raise JobPayloadNotFound("prediction payload locator is unavailable") from None
+            with os.fdopen(descriptor, "wb") as stream:
+                stream.write(payload)
+            return
+        raise JobLeaseConflict("prediction payload already has an active lease")
+
+    def release_lease(self, locator: str) -> None:
+        try:
+            (self._directory(locator) / _LEASE_NAME).unlink()
+        except FileNotFoundError:
+            pass
+
+    def lease_active(self, locator: str) -> bool:
+        return self._lease_active_in_directory(self._directory(locator))
+
+    def discard_job(self, locator: str, *, force: bool = False) -> bool:
         directory = self._directory(locator)
         if directory.is_symlink():
             raise JobPayloadNotFound("prediction payload locator is invalid")
+        if force:
+            try:
+                shutil.rmtree(directory)
+                return True
+            except FileNotFoundError:
+                return False
+        return self._discard_directory_if_unleased(directory)
+
+    def _discard_directory_if_unleased(self, directory: Path) -> bool:
+        tombstone = self._root / f".gc-{directory.name}-{secrets.token_hex(8)}"
         try:
-            shutil.rmtree(directory)
+            directory.replace(tombstone)
         except FileNotFoundError:
-            pass
+            return False
+        except OSError:
+            return False
+        if self._lease_active_in_directory(tombstone):
+            try:
+                tombstone.replace(directory)
+            except OSError:
+                # Preserve live work under the tombstone rather than deleting it.
+                pass
+            return False
+        try:
+            shutil.rmtree(tombstone)
+            return True
+        except OSError:
+            return False
+
+    def _lease_active_in_directory(self, directory: Path) -> bool:
+        try:
+            value = json.loads((directory / _LEASE_NAME).read_text(encoding="utf-8"))
+            return (
+                isinstance(value, dict)
+                and set(value) == {"schema_version", "expires_at"}
+                and value["schema_version"] == 1
+                and self._clock() < float(value["expires_at"])
+            )
+        except (
+            FileNotFoundError,
+            OSError,
+            json.JSONDecodeError,
+            KeyError,
+            TypeError,
+            ValueError,
+        ):
+            return False
 
     def _directory(self, locator: str) -> Path:
         if not isinstance(locator, str) or not _LOCATOR_PATTERN.fullmatch(locator):

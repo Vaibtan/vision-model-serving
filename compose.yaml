@@ -164,6 +164,8 @@ services:
       - /run/vms/executor.sock
       - --executor-timeout-seconds
       - "170"
+      - --executor-task-timeout-seconds
+      - "160"
     <<: *hardened
     restart: unless-stopped
     stop_grace_period: 190s
@@ -199,10 +201,39 @@ services:
           and w.last_heartbeat is not None
           and (now - (w.last_heartbeat if w.last_heartbeat.tzinfo
           else w.last_heartbeat.replace(tzinfo=timezone.utc))).total_seconds() < 60];
-          raise SystemExit(0 if r.ping() and live else 1)
+          raise SystemExit(0 if r.ping() and len(live) == 1 else 1)
       interval: 5s
       timeout: 5s
       retries: 12
+
+  job-janitor:
+    profiles: ["gpu", "benchmark", "validation", "browser"]
+    image: vision-model-serving-web:local
+    build:
+      <<: *web-build
+      target: runtime
+    command:
+      - python
+      - -m
+      - vision_model_serving.execution.janitor
+      - --job-root
+      - /var/lib/vms/jobs
+      - --interval-seconds
+      - "30"
+    <<: *hardened
+    restart: unless-stopped
+    stop_grace_period: 10s
+    mem_limit: 256m
+    cpus: 0.25
+    pids_limit: 32
+    environment:
+      PYTHONPATH: /app/src
+    networks:
+      - backend
+    volumes:
+      - jobs:/var/lib/vms/jobs
+    tmpfs:
+      - /tmp:size=16m,mode=0700,uid=10001,gid=10001
 
   web:
     profiles: ["gpu", "benchmark", "validation", "browser"]
@@ -306,6 +337,8 @@ services:
       <<: *web-build
       target: test
     user: ${VMS_RESULT_UID:-1000}:${VMS_RESULT_GID:-1000}
+    group_add:
+      - "10001"
     command:
       - python
       - scripts/validate_compose_api.py
@@ -386,7 +419,7 @@ volumes:
     driver_opts:
       type: tmpfs
       device: tmpfs
-      o: size=${VMS_JOBS_SIZE:-1g},uid=10001,gid=10001,mode=0700
+      o: size=${VMS_JOBS_SIZE:-1g},uid=10001,gid=10001,mode=0750
   metrics:
     driver: local
     driver_opts:

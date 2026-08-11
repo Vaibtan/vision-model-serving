@@ -166,9 +166,7 @@ def torch_stub(checkpoint: object) -> tuple[ModuleType, list[tuple[str, object]]
     module.float32 = "float32"
     module.int64 = "int64"
     module.manual_seed = lambda seed: events.append(("manual_seed", seed))
-    module.set_float32_matmul_precision = lambda value: events.append(
-        ("matmul_precision", value)
-    )
+    module.set_float32_matmul_precision = lambda value: events.append(("matmul_precision", value))
     module.use_deterministic_algorithms = lambda value, **kwargs: events.append(
         ("deterministic_algorithms", (value, kwargs))
     )
@@ -204,10 +202,7 @@ def mammogram() -> SimpleNamespace:
 
 
 def classifier_rois() -> tuple[SimpleNamespace, ...]:
-    return tuple(
-        SimpleNamespace(canonical_xyxy=(0.0, 0.0, 1024.0, 1024.0))
-        for _ in range(8)
-    )
+    return tuple(SimpleNamespace(canonical_xyxy=(0.0, 0.0, 1024.0, 1024.0)) for _ in range(8))
 
 
 def tokenizer_identity() -> LocalTokenizerIdentity:
@@ -288,9 +283,12 @@ class OfflineTokenizerTests(unittest.TestCase):
         RobertaTokenizerStub.load_calls.clear()
         RobertaTokenizerStub.encode_calls.clear()
 
-        with patch.dict(os.environ, {}, clear=False), patch.dict(
-            sys.modules,
-            {"transformers": fake_transformers},
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.dict(
+                sys.modules,
+                {"transformers": fake_transformers},
+            ),
         ):
             tokenizer = LocalRobertaTokenizer.from_manifest(
                 tokenizer_root,
@@ -437,19 +435,16 @@ class ClassifierInputTests(unittest.TestCase):
             result.warnings,
         )
 
-    def test_sub_pixel_roi_is_expanded_to_one_pixel_with_a_warning(self) -> None:
+    def test_sub_pixel_roi_with_no_integer_extent_is_rejected(self) -> None:
         rois = list(classifier_rois())
         rois[0] = SimpleNamespace(canonical_xyxy=(10.2, 10.2, 10.8, 24.0))
-        result = adapter().predict(mammogram(), rois, "")
-        self.assertIn("roi_expanded_to_minimum_extent", result.warnings)
+        with self.assertRaises(ClassifierInputError):
+            adapter().predict(mammogram(), rois, "")
 
 
 class GoldenClassifierInputTests(unittest.TestCase):
     def test_public_dicom_and_archived_boxes_reproduce_the_l4_crop_tensor(self) -> None:
-        series_uid = (
-            "1.3.6.1.4.1.9590.100.1.2."
-            "100131208110604806117271735422083351547"
-        )
+        series_uid = "1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547"
         fixture = REPOSITORY_ROOT / "fixtures" / "cbis-ddsm" / series_uid / "1-1.dcm"
         if not fixture.is_file():
             self.skipTest("checksum-pinned CBIS-DDSM fixture is not installed")
@@ -470,9 +465,7 @@ class GoldenClassifierInputTests(unittest.TestCase):
 
         result = adapter(runtime=runtime).predict(canonical, rois, "")
 
-        observed = hashlib.sha256(
-            np.ascontiguousarray(runtime.calls[0][0]).tobytes()
-        ).hexdigest()
+        observed = hashlib.sha256(np.ascontiguousarray(runtime.calls[0][0]).tobytes()).hexdigest()
         self.assertEqual(
             observed,
             "89cda9694e3696f63eb70706a6ae4cc2dd16e9be214f27ba6f106479eac90155",

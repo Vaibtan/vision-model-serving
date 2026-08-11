@@ -50,6 +50,7 @@ from vision_model_serving.pipeline import (  # noqa: E402
     PredictionPipeline,
     prediction_from_dict,
     prediction_to_dict,
+    prediction_to_public_dict,
 )
 from vision_model_serving.residency import (  # noqa: E402
     ExecutionTimings,
@@ -433,7 +434,7 @@ class PredictionPipelineDetectionTests(unittest.TestCase):
         self.assertEqual(result.timings.detector.runtime.inference_ms, 16.0)
         self.assertEqual(result.timings.detector.adapter.postprocess_ms, 14.0)
         self.assertGreaterEqual(result.timings.decode_ms, 0.0)
-        self.assertGreaterEqual(result.timings.total_ms, 0.0)
+        self.assertGreaterEqual(result.timings.pipeline_ms, 0.0)
         self.assertEqual(result.timings.detector.memory.peak_reserved_bytes, 400)
         self.assertEqual(
             {(warning.stage, warning.code) for warning in result.warnings},
@@ -523,6 +524,11 @@ class PredictionPipelineFullTests(unittest.TestCase):
         self.assertNotIn("prior surgery", encoded)
         self.assertNotIn("Indication", encoded)
         self.assertEqual(prediction_from_dict(payload), result)
+
+        public_payload = prediction_to_public_dict(result)
+        self.assertNotIn("raw_logits", public_payload["detector"])
+        self.assertNotIn("raw_scores", public_payload["detector"])
+        self.assertNotIn("raw_boxes_cxcywh", public_payload["detector"])
 
     def test_full_mode_drives_the_single_residency_switch(self) -> None:
         mammogram = canonical_mammogram()

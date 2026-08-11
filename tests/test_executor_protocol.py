@@ -4,7 +4,7 @@ from pathlib import Path
 import socketserver
 import sys
 from tempfile import TemporaryDirectory
-from threading import Thread
+from threading import Event, Thread
 import unittest
 
 
@@ -25,7 +25,12 @@ from vision_model_serving.model_ids import DETECTOR_MODEL_ID  # noqa: E402
 
 
 class _FailingHealthyExecutor:
-    def execute(self, _prediction_id: PredictionId, _locator: str) -> None:
+    def execute(
+        self,
+        _prediction_id: PredictionId,
+        _locator: str,
+        _deadline_at: float,
+    ) -> None:
         raise RuntimeError("inference failed")
 
     def status(self) -> GpuExecutorStatus:
@@ -61,6 +66,50 @@ class GpuExecutorProtocolTests(unittest.TestCase):
 
                 self.assertNotIsInstance(raised.exception, GpuExecutorUnavailable)
             finally:
+                server.shutdown()
+                server.close()
+                thread.join(timeout=2.0)
+
+    @unittest.skipUnless(
+        hasattr(socketserver, "UnixStreamServer"),
+        "Unix-domain socket server is unavailable on this platform",
+    )
+    def test_executor_owned_watchdog_fires_before_socket_timeout(self) -> None:
+        deadline_fired = Event()
+        release = Event()
+
+        class BlockingExecutor(_FailingHealthyExecutor):
+            def execute(
+                self,
+                _prediction_id: PredictionId,
+                _locator: str,
+                _deadline_at: float,
+            ) -> None:
+                release.wait(timeout=2.0)
+
+        def deadline_exceeded() -> None:
+            deadline_fired.set()
+            release.set()
+
+        with TemporaryDirectory(prefix="vms-executor-deadline-") as directory:
+            socket_path = Path(directory) / "executor.sock"
+            server = GpuExecutorServer(
+                socket_path,
+                BlockingExecutor(),
+                deadline_exceeded=deadline_exceeded,
+            )
+            thread = Thread(target=server.serve_forever, daemon=True)
+            thread.start()
+            try:
+                client = GpuExecutorClient(
+                    socket_path,
+                    timeout_seconds=1.0,
+                    task_timeout_seconds=0.1,
+                )
+                client.execute(PredictionId("c" * 32), "d" * 32)
+                self.assertTrue(deadline_fired.wait(timeout=0.5))
+            finally:
+                release.set()
                 server.shutdown()
                 server.close()
                 thread.join(timeout=2.0)

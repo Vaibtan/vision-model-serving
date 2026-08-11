@@ -6,7 +6,8 @@ bind = "0.0.0.0:8000"
 workers = int(os.environ.get("WEB_CONCURRENCY", "2"))
 timeout = 60
 graceful_timeout = 30
-# Workers stay persistent; recycling would leak prometheus multiprocess shards.
+# Keep worker lifetime stable; child_exit still removes every exact-PID metrics
+# shard after an unexpected exit or operator-driven restart.
 max_requests = 0
 # The application emits sanitized telemetry; the default access log would leak
 # capability prediction identifiers in request lines.
@@ -15,11 +16,11 @@ errorlog = "-"
 
 
 def child_exit(server, worker):
-    """Reap the prometheus multiprocess shard of a dead gunicorn worker."""
+    """Reap all prometheus multiprocess shards of a dead gunicorn worker."""
     try:
-        from prometheus_client import multiprocess
+        from vision_model_serving.observability import cleanup_multiprocess_pid
 
-        multiprocess.mark_process_dead(worker.pid)
+        cleanup_multiprocess_pid(worker.pid)
     except Exception:
         # Metrics may be disabled or prometheus_client absent; never block reaping.
         pass

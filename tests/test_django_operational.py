@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import sys
+from datetime import UTC, datetime, timedelta
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
@@ -15,6 +16,7 @@ import fakeredis
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "vision_model_serving.web.settings")
+os.environ.setdefault("VMS_CACHE_BACKEND", "django.core.cache.backends.locmem.LocMemCache")
 
 import django  # noqa: E402
 
@@ -138,6 +140,32 @@ class OperationalFailureTests(unittest.TestCase):
         self.assertFalse(payload["checks"]["telemetry_available"])
         self.assertIn("telemetry_unavailable", payload["reasons"])
 
+
+class BrokerReadinessTests(unittest.TestCase):
+    client = Client()
+
+    def setUp(self) -> None:
+        _reset_telemetry_cache()
+
+    @override_settings(VMS_RQ_WORKER_HEARTBEAT_MAX_AGE_SECONDS=60.0)
+    def test_exactly_one_fresh_worker_is_required(self) -> None:
+        redis = fakeredis.FakeRedis()
+        fresh = SimpleNamespace(last_heartbeat=datetime.now(UTC) - timedelta(seconds=5))
+        stale = SimpleNamespace(last_heartbeat=datetime.now(UTC) - timedelta(minutes=5))
+        cases = (([fresh], True), ([], False), ([fresh, fresh], False), ([stale], False))
+
+        with patch(
+            "vision_model_serving.web.operations.Redis.from_url",
+            return_value=redis,
+        ):
+            for workers, expected in cases:
+                with self.subTest(worker_count=len(workers), expected=expected):
+                    with patch(
+                        "vision_model_serving.web.operations.Worker.all",
+                        return_value=workers,
+                    ):
+                        self.assertEqual(operations._broker_readiness(), (True, expected))
+
     def test_readiness_does_not_gate_on_telemetry(self) -> None:
         executor_status = _ready_executor_status()
         with (
@@ -246,6 +274,26 @@ class TelemetryWriteGuardTests(unittest.TestCase):
         ):
             self.assertIsNone(observability.record_dicom("accepted"))
 
+    def test_dead_worker_cleanup_removes_all_exact_pid_shards(self) -> None:
+        with TemporaryDirectory(prefix="vms-metrics-reap-") as directory:
+            root = Path(directory)
+            expected = {
+                root / "counter_123.db",
+                root / "histogram_123.db",
+                root / "gauge_livemostrecent_123.db",
+            }
+            for path in expected:
+                path.write_bytes(b"fixture")
+            unrelated = root / "counter_124.db"
+            unrelated.write_bytes(b"fixture")
+
+            with patch("prometheus_client.multiprocess.mark_process_dead"):
+                removed = observability.cleanup_multiprocess_pid(123, root)
+
+            self.assertEqual(removed, 3)
+            self.assertFalse(any(path.exists() for path in expected))
+            self.assertTrue(unrelated.exists())
+
 
 class MediaNegotiationTests(unittest.TestCase):
     client = Client()
@@ -278,6 +326,20 @@ class MediaNegotiationTests(unittest.TestCase):
             response.json()["error"]["code"],
             "metrics_not_configured",
         )
+
+
+class MonitoringConsoleContractTests(unittest.TestCase):
+    client = Client()
+
+    def test_executor_signal_uses_the_versioned_operations_check(self) -> None:
+        response = self.client.get("/monitoring", HTTP_HOST="localhost")
+
+        self.assertEqual(response.status_code, 200)
+        content = response.content.decode("utf-8")
+        self.assertIn("data.checks.executor_artifact_ready", content)
+        self.assertNotIn("data.checks.executor ?", content)
+        self.assertIn("live-process histogram estimates", content)
+        self.assertNotIn("since process start", content)
 
 
 class OpenApiOperationalContractTests(unittest.TestCase):
@@ -318,6 +380,23 @@ class OpenApiOperationalContractTests(unittest.TestCase):
         metrics_content = schema["paths"]["/metrics"]["get"]["responses"]["200"]["content"]
         self.assertIn("image/png", preview_content)
         self.assertIn("text/plain", metrics_content)
+
+    def test_prediction_success_and_error_responses_are_named_schemas(self) -> None:
+        response = self.client.get("/api/schema/?format=json", HTTP_HOST="localhost")
+        schema = json.loads(response.content)
+        cases = (
+            ("/api/v1/predictions", "post", "200"),
+            ("/api/v1/predictions", "post", "202"),
+            ("/api/v1/predictions", "post", "400"),
+            ("/api/v1/predictions/{prediction_id}/result", "get", "200"),
+            ("/api/v1/predictions/{prediction_id}/result", "get", "503"),
+        )
+        for path, method, status_code in cases:
+            with self.subTest(path=path, status_code=status_code):
+                response_schema = schema["paths"][path][method]["responses"][status_code][
+                    "content"
+                ]["application/json"]["schema"]
+                self.assertIn("$ref", response_schema)
 
 
 if __name__ == "__main__":

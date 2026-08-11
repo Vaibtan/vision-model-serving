@@ -12,7 +12,11 @@ from prometheus_client import (
     CollectorRegistry,
     generate_latest,
 )
-from prometheus_client.core import CounterMetricFamily, GaugeMetricFamily
+from prometheus_client.core import (
+    CounterMetricFamily,
+    GaugeMetricFamily,
+    HistogramMetricFamily,
+)
 from rest_framework.renderers import JSONRenderer
 from rest_framework.request import Request
 from rest_framework.response import Response
@@ -184,6 +188,15 @@ class _SnapshotCollector:
             "Cumulative queue wait time.",
             value=float(self._queue["wait_accumulated_seconds"]),
         )
+        yield HistogramMetricFamily(
+            "vms_queue_wait_seconds",
+            "Time spent waiting for the RQ worker.",
+            buckets=[
+                ("+Inf" if upper == float("inf") else str(upper), float(count))
+                for upper, count in self._queue["_wait_buckets"]
+            ],
+            sum_value=float(self._queue["wait_accumulated_seconds"]),
+        )
         for name, help_text, value in (
             (
                 "vms_executor_artifact_ready",
@@ -214,6 +227,11 @@ class _SnapshotCollector:
                 "vms_executor_native_operator_available",
                 "Native detector operator availability.",
                 self._executor["native_operator_available"],
+            ),
+            (
+                "vms_executor_active_task",
+                "Whether the executor currently owns an inference task.",
+                self._executor["active_task"],
             ),
         ):
             yield GaugeMetricFamily(name, help_text, value=float(value))

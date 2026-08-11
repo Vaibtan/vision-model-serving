@@ -296,7 +296,7 @@ class _InMemoryPackagedTarget:
             "warnings": warnings,
             "timings": {
                 "decode_ms": 0.0,
-                "total_ms": self._pipeline_total_ms,
+                "pipeline_ms": self._pipeline_total_ms,
                 "detector": {
                     "runtime": {
                         "reused": detector_reused,

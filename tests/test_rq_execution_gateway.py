@@ -37,6 +37,8 @@ from vision_model_serving.execution import (
 )
 from vision_model_serving.execution.job_processor import StoredPredictionProcessor
 from vision_model_serving.execution.rq_worker import create_prediction_rq_worker
+from vision_model_serving.execution.storage import EphemeralJobStore
+from vision_model_serving.failures import CaseInputFailure
 from vision_model_serving.pipeline import CaseInput, PredictionMode
 
 
@@ -106,8 +108,8 @@ class FailingPipelineStub:
         raise RuntimeError(r"C:\patients\Alice\scan.dcm")
 
 
-class _CaseRejection(RuntimeError):
-    case_input_error = True
+class _CaseRejection(CaseInputFailure, RuntimeError):
+    pass
 
 
 class CaseFailingPipelineStub:
@@ -348,6 +350,8 @@ class RqGatewayTests(unittest.TestCase):
         self.assertIsNone(job.retries_left)
         self.assertEqual(observations.active_jobs, 0)
         self.assertEqual(observations.failed_total, 1)
+        self.assertEqual(observations.queue_wait_count, 1)
+        self.assertEqual(observations.queue_wait_buckets[-1], (float("inf"), 1))
 
     def test_case_rejection_is_reported_as_a_case_failure(self) -> None:
         redis = fakeredis.FakeRedis()
@@ -447,14 +451,10 @@ class RqGatewayTests(unittest.TestCase):
                 status = gateway.status(first.prediction_id)
                 with self.assertRaises(ResultExpired) as raised:
                     gateway.result(first.prediction_id)
-                replacement = gateway.submit(
-                    request(idempotency_key="expiring-upload")
-                )
+                replacement = gateway.submit(request(idempotency_key="expiring-upload"))
 
         self.assertEqual(status.state, PredictionJobState.EXPIRED)
-        self.assertEqual(
-            getattr(raised.exception, "code", None), "prediction_result_expired"
-        )
+        self.assertEqual(getattr(raised.exception, "code", None), "prediction_result_expired")
         self.assertNotEqual(replacement.prediction_id, first.prediction_id)
 
     def test_standard_rq_worker_configures_only_the_executor_socket(self) -> None:
@@ -474,6 +474,56 @@ class RqGatewayTests(unittest.TestCase):
         executor_client.assert_not_called()
         self.assertEqual([queue.name for queue in worker.queues], ["gpu-inference"])
         self.assertIs(worker.serializer, JSONSerializer)
+
+    def test_conflicting_execution_lease_preserves_admission(self) -> None:
+        redis = fakeredis.FakeRedis()
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            gateway = RqGpuExecutionGateway(
+                redis_client=redis,
+                job_root=root,
+                config=RqExecutionConfig(
+                    capacity=1,
+                    reservation_ttl_seconds=30,
+                    job_timeout_seconds=600,
+                    result_ttl_seconds=60,
+                    status_ttl_seconds=90,
+                ),
+            )
+            create_prediction_rq_worker(
+                redis_client=redis,
+                queue_name="gpu-inference",
+                executor_socket_path=root / "executor.sock",
+                executor_timeout_seconds=60,
+            )
+            handle = gateway.submit(request())
+            job = Job.fetch(
+                str(handle.prediction_id),
+                connection=redis,
+                serializer=JSONSerializer,
+            )
+            locator = job.args[1]
+            EphemeralJobStore(root).acquire_lease(locator, ttl_seconds=600)
+            queue = Queue(
+                "gpu-inference",
+                connection=redis,
+                serializer=JSONSerializer,
+            )
+
+            WindowsSimpleWorker(
+                [queue],
+                connection=redis,
+                serializer=JSONSerializer,
+            ).work(burst=True, logging_level="CRITICAL")
+
+            self.assertIsNotNone(
+                redis.zscore(
+                    "vision-model-serving:predictions:active",
+                    str(handle.prediction_id),
+                )
+            )
+            status = gateway.status(handle.prediction_id)
+            self.assertEqual(status.failure.code, "prediction_runtime_unavailable")
 
     def test_redis_loss_is_sanitized_and_discards_the_staged_payload(self) -> None:
         server = fakeredis.FakeServer()
@@ -689,9 +739,11 @@ class RqGatewayTests(unittest.TestCase):
         self.assertEqual(status.state, PredictionJobState.FAILED)
         self.assertEqual(status.failure.code, "prediction_runtime_unavailable")
         self.assertTrue(status.failure.retryable)
-        self.assertEqual(
-            redis.zcard("vision-model-serving:predictions:active"),
-            0,
+        self.assertIsNotNone(
+            redis.zscore(
+                "vision-model-serving:predictions:active",
+                str(submitted.prediction_id),
+            )
         )
 
     def test_worker_loss_handler_never_raises_on_redis_failure(self) -> None:

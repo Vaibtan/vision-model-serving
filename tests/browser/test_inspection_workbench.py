@@ -18,6 +18,7 @@ REPOSITORY_ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 sys.path.insert(0, str(REPOSITORY_ROOT))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "vision_model_serving.web.settings")
+os.environ.setdefault("VMS_CACHE_BACKEND", "django.core.cache.backends.locmem.LocMemCache")
 os.environ.setdefault("VMS_ALLOWED_HOSTS", "localhost,127.0.0.1")
 
 import django  # noqa: E402
@@ -92,7 +93,7 @@ def prediction_result() -> dict[str, object]:
         },
         "timings": {
             "decode_ms": 5.0,
-            "total_ms": 155.0,
+            "pipeline_ms": 155.0,
             "detector": {"runtime": runtime, "memory": memory},
             "classifier": {"runtime": runtime, "memory": memory},
         },

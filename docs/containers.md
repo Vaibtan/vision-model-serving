@@ -44,6 +44,12 @@ at startup:
 - the pinned MMBCD source, whose redistribution grant is unresolved; and
 - the pinned DINO source.
 
+Compose mounts `${VMS_ARTIFACT_ROOT:-../vision-model-serving-artifacts}` at
+`/models`. From the repository at `D:\SWE_DEV_NEW\vision-model-serving`, that
+default is `D:\SWE_DEV_NEW\vision-model-serving-artifacts`. Override
+`VMS_ARTIFACT_ROOT` for another host location; the manifest, not the directory
+name, defines the accepted checkpoint filenames, sizes, and hashes.
+
 `.dockerignore` is a whitelist. It excludes checkpoints, DICOM files, archives,
 validation evidence, downloaded source trees, Git metadata, and local virtual
 environments before Docker sends the build context.
@@ -57,6 +63,7 @@ weight mount.
 
 ```powershell
 $env:VMS_DICOM_PATH = "$PWD\fixtures\cbis-ddsm\1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547\1-1.dcm"
+$env:VMS_SECRET_KEY = python -c "import secrets; print(secrets.token_urlsafe(50))"
 docker compose --profile test up --build --abort-on-container-exit --exit-code-from test
 docker compose --profile test down
 ```
@@ -79,7 +86,8 @@ export VMS_METRICS_ALLOWED_NETWORKS="${TRUSTED_SCRAPER_CIDRS:?set trusted scrape
 Set `TRUSTED_SCRAPER_CIDRS` to the comma-separated exact scraper CIDRs for the
 deployment. Compose passes that allowlist to the web process. Forked RQ
 work-horses no longer write multiprocess shards (queue-wait accounting lives
-in Redis), and gunicorn's `child_exit` hook reaps shards from respawned web
+in Redis), and gunicorn's `child_exit` hook removes all exact-PID shards from
+respawned web
 workers, so the bounded metrics volume no longer grows with job churn.
 
 ## L4 smoke profile
@@ -125,7 +133,7 @@ from the current checked-in L4 configuration.
 
 ```bash
 export VMS_QUEUE_CAPACITY=4
-docker compose --profile benchmark up --build -d redis executor rq-worker web
+docker compose --profile benchmark up --build -d redis executor rq-worker job-janitor web
 
 REVISION="$(git rev-parse HEAD)"
 IMAGE_ID="$(docker image inspect vision-model-serving-executor:local --format '{{.Id}}')"
@@ -210,9 +218,10 @@ docker compose --profile validation down --volumes --remove-orphans
   copies of the pinned 50.5 MB acceptance DICOM fit within the declared
   benchmark boundary. Socket and metrics tmpfs volumes are separately bounded.
   Result expiry is enforced physically: expired requests fail closed and are
-  deleted at load, expired results are deleted on access, and a rate-limited
-  janitor (running on status polls and after every executor job) reclaims
-  expired and orphaned `.tmp-*` directories.
+  deleted at load, expired results are deleted on access, and an independent
+  janitor sweeps every 30 seconds. Exclusive execution leases plus atomic
+  cleanup tombstones prevent the janitor from deleting live work while it
+  reclaims expired and orphaned staging directories.
 - Every service is non-root, drops all Linux capabilities, uses
   `no-new-privileges`, has a read-only root filesystem, and now carries
   explicit memory/PID (and where appropriate CPU) limits so a misbehaving
@@ -221,10 +230,12 @@ docker compose --profile validation down --volumes --remove-orphans
 - Only `127.0.0.1:8000` is published through the web-only no-masquerade edge
   bridge. Redis (now `restart: unless-stopped` with `maxmemory 192mb
   noeviction`) and the executor socket are never published.
-- The shutdown hierarchy is strict: executor socket wait 170 s < RQ job
-  timeout 180 s < RQ worker grace 190 s < executor grace 210 s. On SIGTERM the
+- The shutdown hierarchy is strict: executor task deadline 160 s < executor
+  socket wait 170 s < RQ job timeout 180 s < RQ worker grace 190 s < executor
+  grace 210 s. On SIGTERM the
   executor stops accepting work, finishes the in-flight case, and latches its
-  runtime closed; Docker's 210 s grace bounds that drain.
+  runtime closed; Docker's 210 s grace bounds that drain. On a task deadline,
+  the watchdog terminates the executor and Compose restarts a clean CUDA owner.
 
 Inspect the built images without starting the model:
 
@@ -247,5 +258,8 @@ evidence. Corrected single-residency packaged benchmark and restart evidence is
 captured in the exact-revision
 [2026-08-10 resolution record](validation/spec-resolution-l4-20260810.md) and
 [destructive-restart record](validation/compose-restart-l4-20260810.json).
-Those records do not prove current HEAD; current image and L4 acceptance require
+Those records do not prove the later implementation. The bounded
+[2026-08-11 worktree L4 run](validation/worktree-l4-20260811.md) passed current
+image inference, restart, browser, observability, privacy, and footprint checks,
+but clean-revision benchmark and long switch/resource-soak evidence still require
 a fresh clean-revision run.

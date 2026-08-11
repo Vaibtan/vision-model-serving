@@ -15,6 +15,7 @@ from vision_model_serving.pipeline.contracts import (
 )
 
 PredictionId = NewType("PredictionId", str)
+QUEUE_WAIT_BUCKET_SECONDS = (0.1, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0, 60.0, 120.0)
 
 
 class PredictionGatewayError(RuntimeError):
@@ -140,7 +141,9 @@ class GatewayObservations:
     succeeded_total: int
     failed_total: int
     worker_lost_total: int
+    queue_wait_count: int
     queue_wait_ms_total: float
+    queue_wait_buckets: tuple[tuple[float, int], ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -172,6 +175,9 @@ class GpuExecutorStatus:
     resident_models: tuple[str, ...]
     device_name: str
     last_error: str | None
+    active_task: bool = False
+    active_task_age_ms: float | None = None
+    deadline_remaining_ms: float | None = None
     startup: ExecutorStartupTimings = field(
         default_factory=lambda: ExecutorStartupTimings(0.0, 0.0, 0.0)
     )
@@ -200,6 +206,21 @@ class GpuExecutorStatus:
             not isinstance(self.last_error, str) or not self.last_error
         ):
             raise ValueError("executor failure code is invalid")
+        for name in ("active_task_age_ms", "deadline_remaining_ms"):
+            value = getattr(self, name)
+            if value is not None and (
+                isinstance(value, bool)
+                or not isinstance(value, (int, float))
+                or not math.isfinite(float(value))
+                or value < 0.0
+            ):
+                raise ValueError(f"executor {name} must be finite and non-negative")
+        if not isinstance(self.active_task, bool):
+            raise TypeError("executor active_task must be boolean")
+        if self.active_task != (self.active_task_age_ms is not None):
+            raise ValueError("executor active-task age does not match active state")
+        if self.active_task != (self.deadline_remaining_ms is not None):
+            raise ValueError("executor deadline does not match active state")
         if (
             not isinstance(self.resident_models, tuple)
             or len(self.resident_models) > 1
@@ -217,9 +238,7 @@ class GpuExecutorStatus:
         if self.runtime_state in {"unloaded", "loading", "failed"} and (
             self.active_model is not None or self.resident_models
         ):
-            raise ValueError(
-                f"{self.runtime_state} executor cannot retain a model"
-            )
+            raise ValueError(f"{self.runtime_state} executor cannot retain a model")
 
     @property
     def artifact_ready(self) -> bool:

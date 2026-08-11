@@ -19,6 +19,19 @@ def prediction_to_dict(result: PredictionResult) -> dict[str, object]:
     return cast(dict[str, object], _plain_value(result))
 
 
+def prediction_to_public_dict(result: PredictionResult) -> dict[str, object]:
+    """Return the bounded HTTP result without full detector tensor dumps."""
+
+    payload = prediction_to_dict(result)
+    detector = payload.get("detector")
+    if not isinstance(detector, dict):
+        raise TypeError("prediction detector payload is invalid")
+    for field_name in ("raw_logits", "raw_scores", "raw_boxes_cxcywh"):
+        detector.pop(field_name, None)
+    payload.pop("detector_score_threshold", None)
+    return payload
+
+
 def prediction_from_dict(payload: object) -> PredictionResult:
     """Rebuild a validated typed result from trusted JSON-compatible values."""
 
@@ -31,10 +44,7 @@ def _plain_value(value: object) -> object:
     if isinstance(value, Enum):
         return value.value
     if is_dataclass(value) and not isinstance(value, type):
-        return {
-            item.name: _plain_value(getattr(value, item.name))
-            for item in fields(value)
-        }
+        return {item.name: _plain_value(getattr(value, item.name)) for item in fields(value)}
     if isinstance(value, (tuple, list)):
         return [_plain_value(item) for item in value]
     raise TypeError(f"prediction result contains unsupported {type(value).__name__}")
@@ -63,8 +73,7 @@ def _typed_value(value: object, annotation: object) -> object:
         if len(value) != len(arguments):
             raise ValueError("prediction tuple has an unexpected length")
         return tuple(
-            _typed_value(item, item_type)
-            for item, item_type in zip(value, arguments, strict=True)
+            _typed_value(item, item_type) for item, item_type in zip(value, arguments, strict=True)
         )
     if isinstance(annotation, type) and issubclass(annotation, Enum):
         try:
@@ -72,9 +81,7 @@ def _typed_value(value: object, annotation: object) -> object:
         except (TypeError, ValueError) as error:
             raise ValueError("prediction enum value is invalid") from error
     if isinstance(annotation, type) and is_dataclass(annotation):
-        if not isinstance(value, dict) or not all(
-            isinstance(key, str) for key in value
-        ):
+        if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
             raise TypeError("prediction object must be encoded as a string-keyed map")
         declared_fields = fields(annotation)
         declared_names = {item.name for item in declared_fields}

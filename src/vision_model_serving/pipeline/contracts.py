@@ -45,9 +45,7 @@ class NumericTensor:
         if (
             not self.shape
             or any(
-                isinstance(size, bool)
-                or not isinstance(size, int)
-                or size <= 0
+                isinstance(size, bool) or not isinstance(size, int) or size <= 0
                 for size in self.shape
             )
             or expected != len(self.values)
@@ -171,7 +169,7 @@ class PredictionTimings:
     decode_ms: float
     detector: DetectorStageTimings
     classifier: ClassifierStageTimings | None
-    total_ms: float
+    pipeline_ms: float
 
 
 @dataclass(frozen=True, slots=True)
@@ -249,3 +247,4 @@ class PredictionResult:
     timings: PredictionTimings
     warnings: tuple[PredictionWarning, ...]
     disclaimer: str = RESEARCH_USE_DISCLAIMER
+    detector_score_threshold: float | None = None

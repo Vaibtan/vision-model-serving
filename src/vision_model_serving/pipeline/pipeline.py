@@ -10,6 +10,7 @@ import numpy as np
 from vision_model_serving.classifier import MmbcdResult
 from vision_model_serving.detector import DetectorProposal, DetectorResult
 from vision_model_serving.dicom import CanonicalMammogram
+from vision_model_serving.failures import CaseInputFailure
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID, DETECTOR_MODEL_ID
 from vision_model_serving.residency import ModelOutputs
 
@@ -48,9 +49,8 @@ class PredictionPipelineError(RuntimeError):
         super().__init__(f"{self.code}: {detail}")
 
 
-class PredictionInputError(PredictionPipelineError):
+class PredictionInputError(CaseInputFailure, PredictionPipelineError):
     code = "prediction_input_invalid"
-    case_input_error = True
 
 
 class PredictionContractError(PredictionPipelineError):
@@ -90,9 +90,7 @@ class PredictionPipeline:
             raise PredictionInputError("mode must be a PredictionMode")
         history = case.clinical_history or ""
         if mode is PredictionMode.FULL and not history.strip():
-            raise PredictionInputError(
-                "clinical history is required for full-pipeline mode"
-            )
+            raise PredictionInputError("clinical history is required for full-pipeline mode")
 
         total_started = perf_counter()
         decode_started = perf_counter()
@@ -154,7 +152,7 @@ class PredictionPipeline:
                 )
                 for warning in classifier_result.warnings
             )
-        total_ms = (perf_counter() - total_started) * 1000.0
+        pipeline_ms = (perf_counter() - total_started) * 1000.0
         return PredictionResult(
             mode=mode,
             input=_input_summary(canonical),
@@ -176,7 +174,7 @@ class PredictionPipeline:
                     detector_result,
                 ),
                 classifier=classifier_stage,
-                total_ms=total_ms,
+                pipeline_ms=pipeline_ms,
             ),
             warnings=warnings,
         )
@@ -204,9 +202,7 @@ def _classifier_result(execution: ModelOutputs) -> MmbcdResult:
         execution.value,
         MmbcdResult,
     ):
-        raise PredictionContractError(
-            "runtime returned an unexpected classifier result"
-        )
+        raise PredictionContractError("runtime returned an unexpected classifier result")
     return execution.value
 
 
@@ -269,13 +265,9 @@ def _detector_prediction(result: DetectorResult) -> DetectorPrediction:
         raw_scores=_numeric_tensor(proposals.raw_scores),
         raw_boxes_cxcywh=_numeric_tensor(proposals.raw_boxes_cxcywh),
         prediction_sha256=proposals.prediction_sha256,
-        top_candidates=tuple(
-            _detection(proposal) for proposal in proposals.top_candidates
-        ),
+        top_candidates=tuple(_detection(proposal) for proposal in proposals.top_candidates),
         post_nms=tuple(_detection(proposal) for proposal in proposals.post_nms),
-        classifier_rois=tuple(
-            _detection(proposal) for proposal in proposals.classifier_rois
-        ),
+        classifier_rois=tuple(_detection(proposal) for proposal in proposals.classifier_rois),
     )
 
 

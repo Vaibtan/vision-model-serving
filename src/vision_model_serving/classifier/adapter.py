@@ -15,6 +15,7 @@ import numpy as np
 from numpy.typing import NDArray
 from PIL import Image
 
+from vision_model_serving.failures import CaseInputFailure
 from vision_model_serving.model_ids import CLASSIFIER_MODEL_ID
 
 
@@ -32,11 +33,8 @@ class ClassifierAdapterError(RuntimeError):
         super().__init__(f"{self.code}: {detail}")
 
 
-class ClassifierInputError(ClassifierAdapterError):
+class ClassifierInputError(CaseInputFailure, ClassifierAdapterError):
     code = "classifier_input_invalid"
-    # Data-dependent: the ROI/text inputs for this case are unusable, but the
-    # model and runtime are healthy. Must never latch the runtime FAILED.
-    case_input_error = True
 
 
 class ClassifierOutputError(ClassifierAdapterError):
@@ -254,9 +252,7 @@ class MmbcdClassifierAdapter:
             dino_root=Path(dino_root).expanduser().resolve(),
             mmbcd_root=Path(mmbcd_root).expanduser().resolve(),
             project_root=root,
-            expected_mmbcd_revision=str(
-                getattr(artifact, "repository_revision", "")
-            ),
+            expected_mmbcd_revision=str(getattr(artifact, "repository_revision", "")),
         )
         return cls.from_artifact(
             artifact,
@@ -299,19 +295,13 @@ class MmbcdClassifierAdapter:
             raise ClassifierOutputError("classifier inference timing is invalid")
         logits = np.asarray(output.logits, dtype=np.float32)
         if logits.shape != (1, 2) or not np.isfinite(logits).all():
-            raise ClassifierOutputError(
-                "classifier logits violate the verified contract"
-            )
+            raise ClassifierOutputError("classifier logits violate the verified contract")
         embeddings = np.ascontiguousarray(output.fused_embeddings, dtype=np.float32)
         attention = np.asarray(output.roi_attention, dtype=np.float32)
         if embeddings.shape != (1, 768) or not np.isfinite(embeddings).all():
-            raise ClassifierOutputError(
-                "classifier fused embeddings violate the verified contract"
-            )
+            raise ClassifierOutputError("classifier fused embeddings violate the verified contract")
         if attention.shape != (1, 1, 8) or not np.isfinite(attention).all():
-            raise ClassifierOutputError(
-                "classifier ROI attention violates the verified contract"
-            )
+            raise ClassifierOutputError("classifier ROI attention violates the verified contract")
         weights = attention[0, 0]
         if np.any(weights < 0) or not np.isclose(np.sum(weights), 1.0, atol=1e-5):
             raise ClassifierOutputError("classifier ROI attention is not normalized")
@@ -381,11 +371,7 @@ def _prepare_crops(
     classifier_rois: Sequence[object],
 ) -> NDArray[np.float32]:
     pixels = getattr(mammogram, "pixels", None)
-    if (
-        not isinstance(pixels, np.ndarray)
-        or pixels.ndim != 2
-        or pixels.dtype != np.uint8
-    ):
+    if not isinstance(pixels, np.ndarray) or pixels.ndim != 2 or pixels.dtype != np.uint8:
         raise ClassifierInputError("canonical mammogram must be a uint8 image")
     height, width = pixels.shape
     if width <= 0 or height <= 0:
@@ -398,20 +384,14 @@ def _prepare_crops(
         try:
             values = tuple(float(value) for value in box)
         except (TypeError, ValueError):
-            raise ClassifierInputError(
-                "classifier ROI coordinates are invalid"
-            ) from None
+            raise ClassifierInputError("classifier ROI coordinates are invalid") from None
         if len(values) != 4 or not np.isfinite(values).all():
             raise ClassifierInputError("classifier ROI coordinates are invalid")
         # Reference MMBCD behavior: truncate to integer pixels without
         # clamping and let PIL zero-pad anything outside the frame.
         x0, y0, x1, y1 = (int(value) for value in values)
-        if x1 <= x0:
-            x1 = x0 + 1
-            _append_once(warnings, "roi_expanded_to_minimum_extent")
-        if y1 <= y0:
-            y1 = y0 + 1
-            _append_once(warnings, "roi_expanded_to_minimum_extent")
+        if x1 <= x0 or y1 <= y0:
+            raise ClassifierInputError("classifier ROI has no extent after integer truncation")
         if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
             _append_once(warnings, "roi_extends_beyond_canonical_image_zero_padded")
         crop = image.crop((x0, y0, x1, y1)).resize(

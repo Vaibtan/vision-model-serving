@@ -52,13 +52,13 @@ observations are unavailable, and `403` outside
 Forked RQ work-horses no longer write Prometheus multiprocess files: queue-wait
 accounting is recorded in Redis and surfaced through the gateway observations,
 so per-job child processes leave no shards behind. Gunicorn's `child_exit`
-hook calls `multiprocess.mark_process_dead` for respawned web workers. Every
+hook marks the worker dead and then removes every exact-PID counter, histogram,
+and gauge shard for that process. Every
 telemetry write is additionally exception-guarded, so a full or corrupt
 metrics directory degrades observability without failing requests, and the
 readiness gate no longer depends on the telemetry collector (its state is
-reported informationally). CUDA and process-RSS gauges use `mostrecent`
-multiprocess semantics — they report the latest observation, not a lifetime
-high-water mark.
+reported informationally). CUDA and process-RSS gauges use `livemostrecent`
+multiprocess semantics, so only live-process observations contribute.
 
 `GET /metrics` combines process-safe instrumentation with snapshots from the
 existing Redis/RQ and executor-status contracts. It covers:
@@ -66,16 +66,19 @@ existing Redis/RQ and executor-status contracts. It covers:
 - HTTP, DICOM, prediction, queue, and worker-loss outcomes;
 - queue depth, active work, and queue-wait duration;
 - model load/warmup, reuse, switch, cleanup, inference, and failure events;
-- decode and total pipeline latency;
+- decode and executor-pipeline latency;
 - allocated, reserved, peak-allocated, and peak-reserved CUDA bytes;
 - classifier ROI counts, padding fallbacks, CUDA OOMs, and process RSS; and
 - executor artifact readiness, controller initialization, model-specific
-  inference warmth, artifact/operator/device checks, and model residency.
+  inference warmth, artifact/operator/device checks, model residency, and
+  active-task age/deadline state.
 
-The console derives p50 and p95 estimates from Prometheus histogram buckets.
-Those values and counters are cumulative for the lifetime of the shared metrics
-directory/Compose volume and can include stale process shards across restarts;
-they are not a durable time series, service-level objective, or alerting system.
+The console derives p50 and p95 estimates from histogram buckets. Queue-wait
+buckets are Redis-owned and cumulative for the Redis lifecycle. Process-local
+web/executor metrics describe the live-process epoch; exited Gunicorn shards
+are removed, so they are not a durable cumulative history across worker churn.
+None of these values is a durable time series, service-level objective, or
+alerting system.
 Clear the directory only while every instrumented process is stopped. Use the
 restricted `/metrics` endpoint with an external Prometheus/Grafana deployment
 when retained history, alert rules, or cross-instance aggregation is required.

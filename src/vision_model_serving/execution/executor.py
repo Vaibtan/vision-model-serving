@@ -4,15 +4,19 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
+import os
 import re
 import signal
 import socket
 import socketserver
 from collections.abc import Sequence
 from pathlib import Path
-from threading import Lock
-from time import perf_counter
-from typing import Protocol
+from threading import Lock, Timer
+from time import monotonic, perf_counter, time
+from typing import Protocol, Callable
+
+from vision_model_serving.failures import CaseInputFailure, is_case_input_failure
 
 from .contracts import ExecutorStartupTimings, GpuExecutorStatus, PredictionId
 
@@ -28,10 +32,8 @@ class GpuExecutorUnavailable(GpuExecutorError):
     pass
 
 
-class GpuExecutorCaseFailed(GpuExecutorError):
+class GpuExecutorCaseFailed(CaseInputFailure, GpuExecutorError):
     """The submitted case was rejected; the executor remains healthy."""
-
-    case_input_error = True
 
 
 class GpuExecutorBusy(GpuExecutorError):
@@ -43,7 +45,12 @@ class GpuExecutorConfigurationError(GpuExecutorError):
 
 
 class _Executor(Protocol):
-    def execute(self, prediction_id: PredictionId, locator: str) -> None: ...
+    def execute(
+        self,
+        prediction_id: PredictionId,
+        locator: str,
+        deadline_at: float,
+    ) -> None: ...
 
     def status(self) -> GpuExecutorStatus: ...
 
@@ -57,6 +64,8 @@ class PersistentGpuExecutor:
         *,
         device_name: str,
         startup: ExecutorStartupTimings | None = None,
+        clock: Callable[[], float] = time,
+        monotonic_clock: Callable[[], float] = monotonic,
     ):
         if not callable(getattr(processor, "execute", None)) or not callable(
             getattr(processor, "status", None)
@@ -67,17 +76,41 @@ class PersistentGpuExecutor:
         self._processor = processor
         self._device_name = device_name
         self._startup = startup or ExecutorStartupTimings(0.0, 0.0, 0.0)
+        self._clock = clock
+        self._monotonic_clock = monotonic_clock
         self._execute_lock = Lock()
+        self._active_lock = Lock()
+        self._active_started_at: float | None = None
+        self._active_deadline_at: float | None = None
 
-    def execute(self, prediction_id: PredictionId, locator: str) -> None:
+    def execute(
+        self,
+        prediction_id: PredictionId,
+        locator: str,
+        deadline_at: float,
+    ) -> None:
         # The runtime serializes execution internally; this bounded gate
         # exists so a concurrent caller fails fast with a retryable signal
         # instead of silently queueing into its own socket timeout.
         if not self._execute_lock.acquire(timeout=1.0):
             raise GpuExecutorBusy("prediction executor is executing another case")
+        if (
+            isinstance(deadline_at, bool)
+            or not isinstance(deadline_at, (int, float))
+            or not math.isfinite(float(deadline_at))
+            or deadline_at <= self._clock()
+        ):
+            self._execute_lock.release()
+            raise GpuExecutorUnavailable("prediction execution deadline has expired")
+        with self._active_lock:
+            self._active_started_at = self._monotonic_clock()
+            self._active_deadline_at = float(deadline_at)
         try:
             self._processor.execute(prediction_id, locator)
         finally:
+            with self._active_lock:
+                self._active_started_at = None
+                self._active_deadline_at = None
             self._execute_lock.release()
 
     def status(self) -> GpuExecutorStatus:
@@ -98,6 +131,10 @@ class PersistentGpuExecutor:
         if error_code is not None and not isinstance(error_code, str):
             raise GpuExecutorError("prediction runtime status is invalid")
         try:
+            with self._active_lock:
+                active_started_at = self._active_started_at
+                active_deadline_at = self._active_deadline_at
+            active_task = active_started_at is not None and active_deadline_at is not None
             return GpuExecutorStatus(
                 verified_artifacts=True,
                 runtime_initialized=True,
@@ -108,6 +145,17 @@ class PersistentGpuExecutor:
                 resident_models=residents,
                 device_name=self._device_name,
                 last_error=error_code,
+                active_task=active_task,
+                active_task_age_ms=(
+                    max(0.0, self._monotonic_clock() - active_started_at) * 1_000.0
+                    if active_task and active_started_at is not None
+                    else None
+                ),
+                deadline_remaining_ms=(
+                    max(0.0, active_deadline_at - self._clock()) * 1_000.0
+                    if active_task and active_deadline_at is not None
+                    else None
+                ),
                 startup=self._startup,
             )
         except (TypeError, ValueError):
@@ -117,13 +165,29 @@ class PersistentGpuExecutor:
 class GpuExecutorClient:
     """Execute one opaque prediction through the local GPU-owner process."""
 
-    def __init__(self, socket_path: Path, *, timeout_seconds: float):
+    def __init__(
+        self,
+        socket_path: Path,
+        *,
+        timeout_seconds: float,
+        task_timeout_seconds: float | None = None,
+        clock: Callable[[], float] = time,
+    ):
         if not isinstance(socket_path, Path):
             raise TypeError("executor socket path must be a pathlib.Path")
         if timeout_seconds <= 0:
             raise ValueError("executor timeout must be positive")
         self._socket_path = socket_path.expanduser().resolve()
         self._timeout_seconds = float(timeout_seconds)
+        task_timeout = (
+            self._timeout_seconds * 0.9
+            if task_timeout_seconds is None
+            else float(task_timeout_seconds)
+        )
+        if task_timeout <= 0 or task_timeout >= self._timeout_seconds:
+            raise ValueError("executor task timeout must be below the socket timeout")
+        self._task_timeout_seconds = task_timeout
+        self._clock = clock
 
     def execute(self, prediction_id: PredictionId, locator: str) -> None:
         prediction = str(prediction_id)
@@ -135,6 +199,7 @@ class GpuExecutorClient:
                 "operation": "execute",
                 "prediction_id": prediction,
                 "locator": locator,
+                "deadline_at": self._clock() + self._task_timeout_seconds,
             }
         )
         response = self._exchange(request)
@@ -186,7 +251,14 @@ class GpuExecutorClient:
 class GpuExecutorServer:
     """Serve serialized prediction commands from RQ work-horses."""
 
-    def __init__(self, socket_path: Path, executor: _Executor):
+    def __init__(
+        self,
+        socket_path: Path,
+        executor: _Executor,
+        *,
+        deadline_exceeded: Callable[[], None] | None = None,
+        clock: Callable[[], float] = time,
+    ):
         if not isinstance(socket_path, Path):
             raise TypeError("executor socket path must be a pathlib.Path")
         if not callable(getattr(executor, "execute", None)) or not callable(
@@ -195,6 +267,8 @@ class GpuExecutorServer:
             raise TypeError("executor must implement execute() and status()")
         self._socket_path = socket_path.expanduser().resolve()
         self._executor = executor
+        self._deadline_exceeded = deadline_exceeded or _terminate_due_to_deadline
+        self._clock = clock
         self._prepare_socket_path()
         outer = self
 
@@ -256,21 +330,40 @@ class GpuExecutorServer:
                 "operation",
                 "prediction_id",
                 "locator",
+                "deadline_at",
             }:
                 raise ValueError
             prediction = request.get("prediction_id")
             locator = request.get("locator")
+            deadline_at = request.get("deadline_at")
             if (
                 not isinstance(prediction, str)
                 or not isinstance(locator, str)
                 or _TOKEN.fullmatch(prediction) is None
                 or _TOKEN.fullmatch(locator) is None
+                or isinstance(deadline_at, bool)
+                or not isinstance(deadline_at, (int, float))
+                or not math.isfinite(float(deadline_at))
+                or deadline_at <= self._clock()
             ):
                 raise ValueError
-            self._executor.execute(PredictionId(prediction), locator)
+            watchdog = Timer(
+                max(0.0, float(deadline_at) - self._clock()),
+                self._deadline_exceeded,
+            )
+            watchdog.daemon = True
+            watchdog.start()
+            try:
+                self._executor.execute(
+                    PredictionId(prediction),
+                    locator,
+                    float(deadline_at),
+                )
+            finally:
+                watchdog.cancel()
             response = {"schema_version": 1, "ok": True}
         except Exception as error:  # noqa: BLE001 - sanitize the process seam
-            case_failed = getattr(error, "case_input_error", False) is True
+            case_failed = is_case_input_failure(error)
             busy = isinstance(error, GpuExecutorBusy)
             del error
             if case_failed:
@@ -285,9 +378,7 @@ class GpuExecutorServer:
                 response = {
                     "schema_version": 1,
                     "ok": False,
-                    "error": (
-                        "runtime_unavailable" if runtime_unavailable else "execution_failed"
-                    ),
+                    "error": ("runtime_unavailable" if runtime_unavailable else "execution_failed"),
                 }
         try:
             writer.write(_encode(response))
@@ -439,7 +530,7 @@ def _read_message(connection: socket.socket) -> object:
 
 def _status_to_dict(status: GpuExecutorStatus) -> dict[str, object]:
     return {
-        "schema_version": 2,
+        "schema_version": 3,
         "verified_artifacts": status.verified_artifacts,
         "runtime_initialized": status.runtime_initialized,
         "device_available": status.device_available,
@@ -449,6 +540,9 @@ def _status_to_dict(status: GpuExecutorStatus) -> dict[str, object]:
         "resident_models": list(status.resident_models),
         "device_name": status.device_name,
         "last_error": status.last_error,
+        "active_task": status.active_task,
+        "active_task_age_ms": status.active_task_age_ms,
+        "deadline_remaining_ms": status.deadline_remaining_ms,
         "startup": {
             "artifact_verification_ms": status.startup.artifact_verification_ms,
             "runtime_initialization_ms": status.startup.runtime_initialization_ms,
@@ -471,16 +565,20 @@ def _status_from_dict(value: object) -> GpuExecutorStatus:
         "resident_models",
         "device_name",
         "last_error",
+        "active_task",
+        "active_task_age_ms",
+        "deadline_remaining_ms",
         "startup",
     }:
         raise GpuExecutorUnavailable("prediction executor status is unavailable")
-    if value.get("schema_version") != 2:
+    if value.get("schema_version") != 3:
         raise GpuExecutorUnavailable("prediction executor status is unavailable")
     boolean_fields = (
         "verified_artifacts",
         "runtime_initialized",
         "device_available",
         "native_operator_available",
+        "active_task",
     )
     if not all(isinstance(value.get(field), bool) for field in boolean_fields):
         raise GpuExecutorUnavailable("prediction executor status is unavailable")
@@ -489,6 +587,8 @@ def _status_from_dict(value: object) -> GpuExecutorStatus:
     residents = value.get("resident_models")
     device_name = value.get("device_name")
     last_error = value.get("last_error")
+    active_task_age_ms = value.get("active_task_age_ms")
+    deadline_remaining_ms = value.get("deadline_remaining_ms")
     startup = value.get("startup")
     if (
         not isinstance(runtime_state, str)
@@ -519,6 +619,9 @@ def _status_from_dict(value: object) -> GpuExecutorStatus:
             resident_models=tuple(residents),
             device_name=device_name,
             last_error=last_error,
+            active_task=value["active_task"],
+            active_task_age_ms=active_task_age_ms,
+            deadline_remaining_ms=deadline_remaining_ms,
             startup=ExecutorStartupTimings(
                 artifact_verification_ms=startup["artifact_verification_ms"],
                 runtime_initialization_ms=startup["runtime_initialization_ms"],
@@ -536,8 +639,14 @@ def _threading_unix_server_type() -> type[socketserver.BaseServer]:
     return type(
         "ThreadingUnixStreamServer",
         (socketserver.ThreadingMixIn, unix_server),
-        {"daemon_threads": True},
+        {"daemon_threads": False, "block_on_close": True},
     )
+
+
+def _terminate_due_to_deadline() -> None:
+    # CUDA kernels cannot be safely cancelled in-process. A hard executor exit
+    # is the fail-closed boundary; Compose restarts the GPU owner.
+    os._exit(124)
 
 
 if __name__ == "__main__":

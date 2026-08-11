@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import subprocess
 import sys
+from tempfile import TemporaryDirectory
 
 from .environment import L4EnvironmentSpec
 
@@ -55,9 +56,7 @@ def prepare_focalnet_patches(
                 f"expected {record['sha256']}, observed {observed_hash}"
             )
 
-        applicable = _git(
-            repository_path, "apply", "--check", str(patch), check=False
-        )
+        applicable = _git(repository_path, "apply", "--check", str(patch), check=False)
         if applicable.returncode == 0:
             if apply:
                 _git(repository_path, "apply", str(patch))
@@ -88,6 +87,11 @@ def prepare_focalnet_patches(
             "Patched checkout fails git diff --check: "
             + (whitespace.stdout or whitespace.stderr).strip()
         )
+    if apply or all(result.state == "already_applied" for result in results):
+        _verify_exact_tracked_patch(
+            repository_path,
+            tuple(project_path / record["path"] for record in spec.patches),
+        )
     return tuple(results)
 
 
@@ -111,9 +115,7 @@ def build_focalnet_extension(
     environment = os.environ.copy()
     cuda_home_value = environment.get("CUDA_HOME") or environment.get("CONDA_PREFIX")
     if not cuda_home_value or not Path(cuda_home_value).is_dir():
-        raise PatchCheckError(
-            "CUDA_HOME or CONDA_PREFIX must identify the CUDA 12.8 toolkit root"
-        )
+        raise PatchCheckError("CUDA_HOME or CONDA_PREFIX must identify the CUDA 12.8 toolkit root")
     cuda_home = Path(cuda_home_value).resolve()
     nvcc = cuda_home / "bin" / "nvcc"
     if not nvcc.is_file():
@@ -172,7 +174,10 @@ def _prepend_environment_path(
 
 
 def _git(
-    repository: Path, *arguments: str, check: bool = True
+    repository: Path,
+    *arguments: str,
+    check: bool = True,
+    environment: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     try:
         return subprocess.run(
@@ -180,12 +185,97 @@ def _git(
             check=check,
             capture_output=True,
             text=True,
+            env=environment,
         )
     except subprocess.CalledProcessError as error:
         diagnostic = (error.stderr or error.stdout).strip()
         raise PatchCheckError(
             f"git {' '.join(arguments)} failed: {diagnostic or error.returncode}"
         ) from error
+
+
+def _verify_exact_tracked_patch(repository: Path, patches: tuple[Path, ...]) -> None:
+    # Hunk coordinates are application hints, not final-tree identity: Git may
+    # apply an approved hunk with an offset and regenerate different headers in
+    # the combined worktree diff. Apply the approved patches to a temporary
+    # shared clone, build the observed tracked tree in an isolated index/object
+    # store, and compare exact tree IDs without writing to the packaged checkout.
+    with TemporaryDirectory(prefix="vms-focalnet-index-") as directory:
+        index_root = Path(directory)
+        expected_repository = index_root / "approved"
+        actual_index = index_root / "actual.index"
+        actual_objects = index_root / "actual-objects"
+        actual_objects.mkdir()
+        repository_objects = Path(
+            _git(repository, "rev-parse", "--git-path", "objects").stdout.strip()
+        )
+        if not repository_objects.is_absolute():
+            repository_objects = (repository / repository_objects).resolve()
+        _git(
+            repository,
+            "clone",
+            "--shared",
+            "--no-checkout",
+            str(repository),
+            str(expected_repository),
+        )
+        _git(expected_repository, "checkout", "--detach", "HEAD")
+        for patch in patches:
+            _git(
+                expected_repository,
+                "apply",
+                "--whitespace=nowarn",
+                str(patch),
+            )
+        _git(expected_repository, "add", "-u", "--", ".")
+        expected_tree = _git(expected_repository, "write-tree").stdout.strip()
+
+        _git_with_index(
+            repository,
+            actual_index,
+            actual_objects,
+            repository_objects,
+            "read-tree",
+            "HEAD",
+        )
+        _git_with_index(
+            repository,
+            actual_index,
+            actual_objects,
+            repository_objects,
+            "add",
+            "-u",
+            "--",
+            ".",
+        )
+        actual_tree = _git_with_index(
+            repository,
+            actual_index,
+            actual_objects,
+            repository_objects,
+            "write-tree",
+        ).stdout.strip()
+    if actual_tree != expected_tree:
+        raise PatchCheckError(
+            "FocalNet-DINO tracked source differs from the exact approved patch set"
+        )
+
+
+def _git_with_index(
+    repository: Path,
+    index: Path,
+    object_directory: Path,
+    alternate_object_directory: Path,
+    *arguments: str,
+) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    environment["GIT_INDEX_FILE"] = str(index)
+    environment["GIT_OBJECT_DIRECTORY"] = str(object_directory)
+    existing_alternates = environment.get("GIT_ALTERNATE_OBJECT_DIRECTORIES")
+    environment["GIT_ALTERNATE_OBJECT_DIRECTORIES"] = os.pathsep.join(
+        value for value in (str(alternate_object_directory), existing_alternates) if value
+    )
+    return _git(repository, *arguments, environment=environment)
 
 
 def _sha256(path: Path) -> str:

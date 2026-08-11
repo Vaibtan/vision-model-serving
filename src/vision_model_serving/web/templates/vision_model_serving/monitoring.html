@@ -109,8 +109,8 @@
 
     <div class="grid">
       <section class="panel" id="queue-panel"><div class="panel-head"><h2>Queue pressure</h2><span>real Redis / RQ state</span></div><div class="metric-row"><div class="metric"><span>Active</span><b id="queue-active">—</b></div><div class="metric"><span>Queued</span><b id="queue-queued">—</b></div><div class="metric"><span>Running</span><b id="queue-running">—</b></div></div><div class="capacity"><i id="queue-capacity-bar"></i></div><p class="caption" id="queue-caption">Reading serialized GPU capacity.</p></section>
-      <section class="panel" id="latency-panel"><div class="panel-head"><h2>Latency</h2><span>cumulative histogram estimates</span></div><div class="table" id="latency-table"></div><p class="caption">p50 and p95 are interpolated from Prometheus buckets since process start; they are not a durable time series.</p></section>
-      <section class="panel traffic-panel"><div class="panel-head"><h2>Outcomes</h2><span>process lifetime</span></div><div class="stack" id="traffic-values"></div></section>
+      <section class="panel" id="latency-panel"><div class="panel-head"><h2>Latency</h2><span>live-process histogram estimates</span></div><div class="table" id="latency-table"></div><p class="caption">p50 and p95 are interpolated from Prometheus buckets contributed by currently live processes; they are not a durable time series.</p></section>
+      <section class="panel traffic-panel"><div class="panel-head"><h2>Outcomes</h2><span>live process window</span></div><div class="stack" id="traffic-values"></div></section>
       <section class="panel memory-panel"><div class="panel-head"><h2>Memory</h2><span>latest observed bytes</span></div><div class="stack" id="memory-values"></div></section>
       <section class="panel runtime-panel"><div class="panel-head"><h2>Runtime & artifacts</h2><span>bounded identity only</span></div><div class="stack" id="runtime-values"></div><div class="model-list" id="model-list"></div></section>
     </div>
@@ -141,7 +141,7 @@
         signal("web", "ok", "online");
         signal("redis", data.checks.redis ? "ok" : "fail", data.checks.redis ? "connected" : "unavailable");
         signal("rq", data.checks.rq_worker ? "ok" : "fail", data.checks.rq_worker ? "listening" : "absent");
-        signal("executor", data.checks.executor ? "ok" : "fail", data.executor.available ? data.executor.state : "unavailable");
+        signal("executor", data.checks.executor_artifact_ready ? "ok" : "fail", data.executor.available ? data.executor.state : "unavailable");
         const residents = new Set(data.executor.resident_models);
         const modelsByRole = Object.fromEntries(data.models.map((model) => [model.role, model]));
         ["detector", "classifier"].forEach((role) => { const model = modelsByRole[role]; const resident = model && residents.has(model.id); signal(role, resident ? "ok" : "cold", resident ? "resident" : "cold"); });

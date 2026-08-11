@@ -14,6 +14,8 @@ from time import perf_counter
 from typing import ContextManager, Protocol
 import weakref
 
+from vision_model_serving.failures import CaseInputFailure, is_case_input_failure
+
 from ._torch_policy import (
     TorchProcessConfigurationError,
     configure_deterministic_torch,
@@ -49,11 +51,10 @@ class RuntimeUnavailableError(ResidencyRuntimeError):
     code = "runtime_cause_unchanged"
 
 
-class RuntimeCaseInputError(ResidencyRuntimeError):
+class RuntimeCaseInputError(CaseInputFailure, ResidencyRuntimeError):
     """The resident model rejected this case; the runtime itself is healthy."""
 
     code = "runtime_case_input_invalid"
-    case_input_error = True
 
 
 class UnknownModelError(ResidencyRuntimeError):
@@ -474,7 +475,7 @@ class SingleResidencyRuntime:
                 memory = self._accelerator.memory_snapshot()
             except Exception as error:
                 inference_error = type(error).__name__
-                case_input_rejected = getattr(error, "case_input_error", False) is True
+                case_input_rejected = is_case_input_failure(error)
                 del error
             inference_ms = (perf_counter() - inference_started) * 1000.0
             if case_input_rejected:

@@ -26,8 +26,9 @@ persistent GPU executor. A bounded Redis-backed queue carries only opaque job
 tokens; request payloads live in a private shared tmpfs. Each RQ work-horse
 forwards two opaque tokens over an owner-only Unix socket, while the long-lived
 executor alone owns CUDA and the single-residency runtime. Normal execution
-deletes request files, but configured TTL expiry is currently logical and
-physical scavenging runs only at gateway/processor construction. A bounded
+deletes request files; an independent lease-aware janitor, on-access expiry,
+and atomic cleanup tombstones enforce physical TTL without racing live work. A
+bounded
 synchronous compatibility endpoint submits to the same queue and waits for
 evaluator-friendly `curl` usage.
 
@@ -208,7 +209,7 @@ The API exposes:
 - preprocessing and model warnings; and
 - load, preprocess, detector, switch, classifier, postprocess, and executor-
   pipeline timings. Upload, queue wait, IPC, persistence, polling, and network
-  time are outside `total_ms`.
+  time are outside `pipeline_ms`.
 
 Attention weights are labeled as model inspection data, not as a causal explanation or clinical evidence.
 
@@ -368,6 +369,7 @@ Implemented Docker Compose topology:
 - `web`: Django/DRF, Gunicorn, templates/static files, validation, admission, status/result formatting;
 - `rq-worker`: one CPU-only standard RQ worker processing one job at a time; each isolated work-horse performs synchronous opaque-token IPC only;
 - `executor`: one persistent process with the NVIDIA device, PyTorch/CUDA, read-only artifacts/assets/source trees, and the single-residency pipeline;
+- `job-janitor`: one CPU-only lease-aware physical-TTL owner for the private jobs volume;
 - `redis`: RQ broker plus short-lived admission and job metadata, with persistence disabled for the assessment profile; and
 - `jobs`: a size-bounded ephemeral shared volume holding opaque per-job input
   and result files until cleanup.
@@ -380,9 +382,8 @@ separate failure domain.
 
 This is an explicit constraint, not an accidental default. Web/RQ worker count
 cannot create additional model copies because only `executor` mounts weights
-and sees the GPU. Compose provides one RQ worker and capacity one, but readiness
-currently requires only a non-empty registered worker set; it does not enforce
-the exact worker-count topology.
+and sees the GPU. Compose provides one RQ worker and capacity one; readiness
+requires exactly one registered worker with a fresh heartbeat.
 
 Scale-out topology, only after a measured need:
 
@@ -507,14 +508,14 @@ detector tensors, geometry, provenance, timings, hashes, and warnings):
 ```
 
 The numbers above illustrate structure only and are not performance or clinical
-claims. The generated OpenAPI currently describes these responses as generic
-objects; the dataclass/serialization code is the exact source contract until
-named response serializers are implemented.
+claims. Named nested DRF serializers define and validate the public success and
+error envelopes and generate the OpenAPI components. Internal storage retains
+full detector tensors; the public HTTP result deliberately omits those dumps.
 
 ### 8.2 Operational endpoints
 
 - `GET /livez`: process is alive; never loads a model.
-- `GET /readyz`: artifact-scoped readiness for Redis, a registered RQ worker,
+- `GET /readyz`: artifact-scoped readiness for Redis, exactly one fresh RQ worker,
   initialized executor, artifact structure, device, and import/allocation probes;
   it does not prove first-request inference.
 - `GET /api/v1/predictions/{id}`: queued/started/succeeded/failed/expired
@@ -555,11 +556,11 @@ Status mapping:
 - `504`: bounded inference timeout; and
 - `500`: unexpected internal failure with no sensitive diagnostic data returned.
 
-Prediction IDs are unguessable. Job and result records have a short configurable
-logical TTL. Broker messages contain the prediction ID and opaque storage
-locator only, never DICOM bytes or clinical history. Physical cleanup is
-startup-scoped in the current implementation and is not yet a continuous
-retention guarantee.
+Prediction IDs are unguessable. Job and result records have short configurable
+TTLs. Broker messages contain the prediction ID and opaque storage locator only,
+never DICOM bytes or clinical history. An independent janitor continuously
+enforces physical expiry; execution leases and atomic cleanup tombstones prevent
+cleanup from racing a running case.
 
 ## 9. Frontend
 
@@ -583,18 +584,18 @@ Guardrails:
 - no patient identifiers displayed or logged by default;
 - attention visualization labeled as inspection, not explanation;
 - the optional detector display threshold filters returned presentation
-  candidates only and is not currently echoed by the typed result; the
+  candidates only and is echoed in the public request provenance; the
   classifier always receives the deterministic eight ROIs;
 - no claim that a successful smoke test validates model quality; and
 - preview responses retained nowhere server-side; normal execution deletes
-  request files, while expired result directories require startup cleanup or
-  explicit volume teardown in the current implementation.
+  request files, while on-access expiry and the independent janitor remove
+  expired/abandoned directories.
 
 ## 10. Privacy, safety, and request hardening
 
 - Read a bounded upload into controlled private storage; do not trust the
-  original filename. The current web path buffers/canonicalizes the complete
-  DICOM before admission and the executor canonicalizes it again.
+  original filename. The web tier parses and validates the DICOM header once
+  before admission; pixels are decoded once in the executor.
 - Enforce encoded byte size, decoded pixel count, dimensions, frame count, clinical-text length, and processing timeout.
 - Validate the DICOM structure before full pixel decode where practical.
 - Install only the pixel decoder plugins required by the accepted fixture and artifact contract.
@@ -606,9 +607,9 @@ Guardrails:
 - Keep model mounts read-only and outside the image build context.
 - Run Django's deployment checks and disable debug mode in the production profile.
 - Bind the demo to localhost by default; require an explicit host/auth configuration for remote exposure.
-- Treat browser-origin enforcement separately from network binding: the current
-  unauthenticated DRF mutation views are CSRF-exempt, so localhost can still
-  receive cross-site multipart workloads.
+- Treat browser-origin enforcement separately from network binding: mutation
+  routes reject cross-site Fetch Metadata/Origin and use shared Redis-backed
+  throttles, while authentication/TLS remain required for remote or multi-user use.
 - Treat canonical PNG pixels, source hashes, and predictions as sensitive; no
   burned-in-annotation detection or redaction is implemented.
 
@@ -633,14 +634,14 @@ correlatable request record:
 
 Sanitized internal-error events contain the exception class only. Filenames,
 paths, DICOM identifiers, clinical/token text, and prediction IDs are excluded
-from executor events and metric labels. Gunicorn's raw access log still includes
-dynamic prediction paths and should be redacted before treating capability IDs
-as private.
+from executor events and metric labels. The packaged Gunicorn configuration
+disables the raw access log so capability-style prediction IDs are not emitted
+in request lines.
 
 ### Metrics
 
 - request count and duration by mode/outcome;
-- DICOM decode duration and failure reason;
+- DICOM preflight outcome and decode duration;
 - queue depth, rejection count, and wait duration;
 - model load, unload, reuse, switch, and failure counts;
 - model load and warmup duration;
@@ -806,9 +807,10 @@ INT8 is out of scope until a representative calibration set and clinical-quality
   the persistent GPU executor. No batch/prefetch behavior is claimed.
 - Disable Redis persistence in the assessment profile and isolate it on the Compose network.
 - Bound pending/running admission atomically and expire abandoned reservations.
-- Mount the jobs volume into `web`, `rq-worker`, and `executor`. Normal execution
-  removes request files; startup cleanup exists, but periodic physical expiry
-  and worker-loss cleanup remain open.
+- Mount the jobs volume into `web`, `rq-worker`, `executor`, and `job-janitor`.
+  Normal execution removes request files; the independent janitor and on-access
+  gates enforce physical expiry, while leases protect active work after worker
+  loss until its deadline.
 
 ### Local profiles
 
@@ -936,7 +938,7 @@ new issue descriptions rather than reusing these plan-state claims.
 | T07 | P0 | Implement artifact registry and manifest verification | T01 | Missing, corrupt, wrong-shape, or wrong-hash artifacts fail readiness with actionable errors. |
 | T08 | P0 | Implement single-residency model runtime | T05, T06, T07 | Same-model reuse, safe switch, one-resident invariant, failure recovery, and memory tests pass. |
 | T09 | P0 | Implement deep end-to-end prediction pipeline | T04, T08 | Detection and full modes return typed results, timings, warnings, provenance, and cleanup. |
-| T10 | P0 | Implement bounded GPU execution gateway and job lifecycle | T09 | One standard RQ worker, opaque messages, atomic admission, idempotency, logical TTLs, worker-loss behavior, sync wait, and async polling. Continuous physical cleanup remains open. |
+| T10 | P0 | Implement bounded GPU execution gateway and job lifecycle | T09 | One standard RQ worker, opaque messages, atomic admission/claim, idempotency, lease-aware physical TTLs, monotonic worker-loss behavior, sync wait, and async polling. |
 | T11 | P0 | Build Django REST, health, schema, and error interfaces | T10 | Versioned contract, upload validation, stable errors, sync/async examples, and API tests pass. |
 | T12 | P0 | Add privacy-safe structured logs and Prometheus metrics | T08, T11 | Required lifecycle/stage metrics exist and PHI/log-cardinality tests pass. |
 | T13 | P0 | Build reproducible web/GPU images and Compose profiles | T02, T11 | Non-root offline stack starts, isolates GPU/weights to the executor, verifies artifacts, becomes artifact-ready, and passes smoke request. |
@@ -963,7 +965,7 @@ Recommended issue ordering: create T01-T03 first. Do not fan out the queue, web,
 | One-resident-model policy causes switching latency. | Full pipeline necessarily switches models and can dominate request time. | Measure cold/switch time; reuse active model; add stage scheduling only if load tests justify it. |
 | Public CBIS-DDSM data differs from private AIIMS training data. | Smoke success is not evidence of model accuracy or calibration. | Use it only for compatibility and operational validation. |
 | Current HEAD lacks same-revision GPU acceptance. | Archived Python 3.12/PyTorch 2.8/CUDA 12.8/NVIDIA L4 records do not prove later source/dependency changes. | Rerun packaged smoke, browser, restart, schema-v4 benchmark, and switch soak on clean HEAD. |
-| Long-lived retention, metrics churn, and deadline ownership are incomplete. | The jobs/metrics tmpfs volumes can fill, stale telemetry can accumulate, and timed-out work can outlive RQ admission. | Add continuous janitorial ownership, long-lived metrics collection/compaction, strict timeout hierarchy, and cancellation/restart semantics. |
+| Current HEAD lacks long-duration lifecycle-soak evidence. | CPU race tests establish contracts but do not prove behavior under days of process churn, full tmpfs pressure, or repeated deadline kills on L4. | Run a same-revision packaged L4 switch/restart/deadline/retention soak and retain bounded metrics/storage evidence. |
 
 ## 18. Definition of done
 
@@ -986,10 +988,11 @@ The submission is complete when:
 - README and architecture docs distinguish measured facts, inherited paper claims, and unvalidated assumptions; and
 - TensorRT is either delivered with parity and benchmark evidence or closed with a technically precise STOP conclusion.
 
-At the 2026-08-11 review, the implementation satisfies most functional rows but
-does not meet this production definition of done because current-revision L4
-acceptance and the retention, browser-origin, metrics-churn, readiness, and
-deadline/shutdown gaps remain open.
+The 2026-08-11 findings are closed in the current source and CPU tests, but the
+implementation does not meet this production definition of done until a clean
+current-revision L4 run validates the packaged lifecycle and a long-duration
+failure/retention soak is recorded. Authentication, TLS ingress, HA/multi-GPU
+routing, author-golden parity, and clinical validation remain outside the claim.
 
 ## 19. Primary references
 

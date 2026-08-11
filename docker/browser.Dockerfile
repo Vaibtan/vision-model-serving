@@ -14,6 +14,8 @@ ENV PATH=/app/.venv/bin:$PATH \
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
 RUN uv sync --frozen --only-group browser --no-install-project
-COPY --chown=1000:1000 src ./src
+COPY --chown=1000:1000 \
+    src/vision_model_serving/validation/acceptance_constants.py \
+    ./src/vision_model_serving/validation/acceptance_constants.py
 COPY --chown=1000:1000 scripts/validate_browser_workbench.py ./scripts/validate_browser_workbench.py
 USER 1000:1000

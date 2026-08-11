@@ -20,6 +20,8 @@ from pydicom.uid import (
     RLELossless,
 )
 
+from vision_model_serving.failures import CaseInputFailure
+
 
 _SECONDARY_CAPTURE_STORAGE = "1.2.840.10008.5.1.4.1.1.7"
 _SUPPORTED_UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
@@ -29,16 +31,11 @@ _SUPPORTED_UNCOMPRESSED_TRANSFER_SYNTAXES = frozenset(
         ExplicitVRLittleEndian,
     )
 )
-_SUPPORTED_COMPRESSED_TRANSFER_SYNTAXES = frozenset(
-    {str(RLELossless)}
-)
+_SUPPORTED_COMPRESSED_TRANSFER_SYNTAXES = frozenset({str(RLELossless)})
 
 
-class DicomCanonicalizationError(RuntimeError):
+class DicomCanonicalizationError(CaseInputFailure, RuntimeError):
     """Base class for stable, non-identifying DICOM failures."""
-
-    # Data-dependent: a bad upload must fail the case, never the runtime.
-    case_input_error = True
 
     code = "dicom_canonicalization_failed"
 
@@ -126,6 +123,19 @@ class DicomMetadata:
     modality_transform_applied: bool
     voi_transform_applied: bool
     voi_index: int
+
+
+@dataclass(frozen=True, slots=True)
+class ValidatedDicomHeader:
+    """One parsed and structurally validated DICOM header."""
+
+    transfer_syntax: object = field(repr=False)
+    photometric_interpretation: str
+    presentation_lut_shape: str
+    rows: int
+    columns: int
+    frames: int
+    modality: str | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -236,16 +246,12 @@ class DicomCanonicalizer:
         ):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if (
-            isinstance(crop_padding, bool)
-            or not isinstance(crop_padding, int)
-            or crop_padding < 0
-        ):
+        if isinstance(crop_padding, bool) or not isinstance(crop_padding, int) or crop_padding < 0:
             raise ValueError("crop padding must be a non-negative integer")
         self._crop_threshold = crop_threshold
         self._crop_padding = crop_padding
 
-    def validate_header(self, stream: BinaryIO) -> None:
+    def validate_header(self, stream: BinaryIO) -> ValidatedDicomHeader:
         """Cheaply reject structurally unsupported DICOM without pixel decode.
 
         This runs the same structural gates as decode() (parseability,
@@ -262,15 +268,13 @@ class DicomCanonicalizer:
                 stop_before_pixels=True,
             )
         except (PydicomInvalidDicomError, EOFError, OSError, ValueError) as error:
-            raise InvalidDicomError(
-                f"DICOM parsing failed ({type(error).__name__})"
-            ) from None
-        self._validate_structure(dataset)
+            raise InvalidDicomError(f"DICOM parsing failed ({type(error).__name__})") from None
+        return self._validate_structure(dataset)
 
     def _validate_structure(
         self,
         dataset: pydicom.dataset.Dataset,
-    ) -> tuple[object, str, str, int, int, int]:
+    ) -> ValidatedDicomHeader:
         transfer_syntax = dataset.file_meta.get("TransferSyntaxUID")
         if transfer_syntax is None:
             raise InvalidDicomError("DICOM file meta has no Transfer Syntax UID")
@@ -280,13 +284,9 @@ class DicomCanonicalizer:
             raise UnsupportedPhotometricInterpretationError(
                 "only MONOCHROME1 and MONOCHROME2 are supported"
             )
-        presentation_lut_shape = str(
-            dataset.get("PresentationLUTShape", "IDENTITY")
-        ).upper()
+        presentation_lut_shape = str(dataset.get("PresentationLUTShape", "IDENTITY")).upper()
         if presentation_lut_shape not in {"IDENTITY", "INVERSE"}:
-            raise UnsupportedPhotometricInterpretationError(
-                "unsupported Presentation LUT Shape"
-            )
+            raise UnsupportedPhotometricInterpretationError("unsupported Presentation LUT Shape")
 
         rows = _positive_int(dataset.get("Rows"), "Rows")
         columns = _positive_int(dataset.get("Columns"), "Columns")
@@ -294,20 +294,19 @@ class DicomCanonicalizer:
         if frames != 1:
             raise MultiFrameNotSupportedError("only one DICOM frame is supported")
         if rows > self._limits.max_rows or columns > self._limits.max_columns:
-            raise DicomPixelLimitError(
-                "declared image dimensions exceed configured limits"
-            )
+            raise DicomPixelLimitError("declared image dimensions exceed configured limits")
         if rows * columns > self._limits.max_decoded_pixels:
-            raise DicomPixelLimitError(
-                "declared decoded pixel count exceeds configured limits"
-            )
-        return (
-            transfer_syntax,
-            photometric,
-            presentation_lut_shape,
-            rows,
-            columns,
-            frames,
+            raise DicomPixelLimitError("declared decoded pixel count exceeds configured limits")
+        modality_value = dataset.get("Modality")
+        modality = None if modality_value is None else str(modality_value)
+        return ValidatedDicomHeader(
+            transfer_syntax=transfer_syntax,
+            photometric_interpretation=photometric,
+            presentation_lut_shape=presentation_lut_shape,
+            rows=rows,
+            columns=columns,
+            frames=frames,
+            modality=modality,
         )
 
     def decode(self, stream: BinaryIO) -> CanonicalMammogram:
@@ -318,35 +317,28 @@ class DicomCanonicalizer:
         try:
             dataset = pydicom.dcmread(BytesIO(encoded), force=False)
         except (PydicomInvalidDicomError, EOFError, OSError, ValueError) as error:
-            raise InvalidDicomError(
-                f"DICOM parsing failed ({type(error).__name__})"
-            ) from None
+            raise InvalidDicomError(f"DICOM parsing failed ({type(error).__name__})") from None
 
-        (
-            transfer_syntax,
-            photometric,
-            presentation_lut_shape,
-            rows,
-            columns,
-            frames,
-        ) = self._validate_structure(dataset)
+        header = self._validate_structure(dataset)
+        transfer_syntax = header.transfer_syntax
+        photometric = header.photometric_interpretation
+        presentation_lut_shape = header.presentation_lut_shape
+        rows = header.rows
+        columns = header.columns
+        frames = header.frames
 
         try:
             raw = dataset.pixel_array
         except Exception as error:
-            raise PixelDataError(
-                f"pixel decoding failed ({type(error).__name__})"
-            ) from None
+            raise PixelDataError(f"pixel decoding failed ({type(error).__name__})") from None
         if raw.ndim != 2 or raw.shape != (rows, columns):
             raise PixelDataError("decoded pixels do not match one declared two-dimensional frame")
 
         modality_transform_applied = any(
-            name in dataset
-            for name in ("ModalityLUTSequence", "RescaleSlope", "RescaleIntercept")
+            name in dataset for name in ("ModalityLUTSequence", "RescaleSlope", "RescaleIntercept")
         )
         voi_transform_applied = any(
-            name in dataset
-            for name in ("VOILUTSequence", "WindowCenter", "WindowWidth")
+            name in dataset for name in ("VOILUTSequence", "WindowCenter", "WindowWidth")
         )
         try:
             modality_values = apply_modality_lut(raw, dataset)
@@ -356,9 +348,7 @@ class DicomCanonicalizer:
                 f"grayscale transformation failed ({type(error).__name__})"
             ) from None
 
-        inverted = (photometric == "MONOCHROME1") ^ (
-            presentation_lut_shape == "INVERSE"
-        )
+        inverted = (photometric == "MONOCHROME1") ^ (presentation_lut_shape == "INVERSE")
         padding_mask = _pixel_padding_mask(raw, dataset)
         normalized = _normalize(
             display_values,
@@ -444,9 +434,7 @@ class DicomCanonicalizer:
         if value in _SUPPORTED_UNCOMPRESSED_TRANSFER_SYNTAXES:
             return
         if value not in _SUPPORTED_COMPRESSED_TRANSFER_SYNTAXES:
-            raise UnsupportedTransferSyntaxError(
-                "declared pixel transfer syntax is not supported"
-            )
+            raise UnsupportedTransferSyntaxError("declared pixel transfer syntax is not supported")
         try:
             decoder = get_decoder(transfer_syntax)
         except NotImplementedError:
@@ -548,9 +536,7 @@ def _pixel_padding_mask(
     range_limit = dataset.get("PixelPaddingRangeLimit")
     if range_limit is None:
         return np.asarray(raw == padding_value, dtype=np.bool_)
-    lower, upper = sorted(
-        (padding_value, _padding_tag_value(range_limit, signed=signed))
-    )
+    lower, upper = sorted((padding_value, _padding_tag_value(range_limit, signed=signed)))
     return np.asarray((raw >= lower) & (raw <= upper), dtype=np.bool_)
 
 

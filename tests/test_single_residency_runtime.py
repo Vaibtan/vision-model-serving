@@ -17,6 +17,7 @@ import weakref
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 
+from vision_model_serving.failures import CaseInputFailure, FailureKind  # noqa: E402
 from vision_model_serving.residency import (  # noqa: E402
     MemorySnapshot,
     ModelBinding,
@@ -791,8 +792,8 @@ class TorchCudaLifecycleTests(unittest.TestCase):
         )
 
 
-class _CaseRejectionError(RuntimeError):
-    case_input_error = True
+class _CaseRejectionError(CaseInputFailure, RuntimeError):
+    pass
 
 
 class CaseRejectingResident(ResidentStub):
@@ -852,10 +853,11 @@ class CaseInputFailureTests(unittest.TestCase):
         self.assertTrue(output.reused)
         self.assertEqual(loader.loads, 1)
 
-    def test_case_rejection_marker_is_set_on_the_raised_error(self) -> None:
+    def test_case_rejection_has_typed_failure_classification(self) -> None:
         from vision_model_serving.residency.runtime import RuntimeCaseInputError
 
-        self.assertTrue(RuntimeCaseInputError.case_input_error)
+        self.assertTrue(issubclass(RuntimeCaseInputError, CaseInputFailure))
+        self.assertIs(RuntimeCaseInputError.failure_kind, FailureKind.CASE_INPUT)
 
     def test_generic_inference_failure_still_unloads_and_latches(self) -> None:
         loader = LoaderStub(MODEL_A)

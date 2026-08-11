@@ -1,5 +1,12 @@
 # Architecture and implementation review — 2026-08-11
 
+> **Historical snapshot.** This review records the state at its reviewed
+> revision and should not be read as the current implementation status. The
+> listed source issues have since been remediated in the current worktree; see
+> [traceability](traceability.md#current-review-gaps). A bounded
+> [worktree L4 run](validation/worktree-l4-20260811.md) has since passed; clean-
+> revision benchmark and long-soak evidence remains pending.
+
 ## Review context
 
 - **Reviewed revision:** `d5d95920ae1c778c33e775c2ba83477c8e035658`
@@ -445,8 +452,9 @@ historical validation artifacts unchanged:
   unreaped work-horse shards disclosed.
 - “Sanitized” and “non-PHI” export claims were replaced with accurate
   metadata-minimized-but-sensitive wording.
-- 2026-08-10 corrected single-residency evidence is linked consistently and
-  current-HEAD L4 acceptance remains explicitly pending.
+- 2026-08-10 corrected single-residency evidence is linked consistently; the
+  later bounded worktree L4 pass and its clean-revision limitations are recorded
+  separately.
 - Historical pre-implementation and TensorRT research documents are labeled and
   reconciled with the completed STOP experiment.
 
@@ -472,6 +480,12 @@ Current operational gaps are summarized in:
 | All-profile Compose configuration | Passed with an explicit fixture path |
 | Documentation local-link check | Passed |
 | `git diff --check` | Passed |
+
+Post-remediation L4 validation is recorded in
+[`worktree-l4-20260811.md`](validation/worktree-l4-20260811.md). It passed real
+packaged inference, destructive restart, Chromium, observability, privacy, and
+image-footprint gates, while deliberately leaving clean-revision schema-v4
+benchmark and long switch/resource soak open.
 
 The CPU and browser results establish strong control-plane and contract
 confidence. They do not establish current CUDA/native-operator behavior, real

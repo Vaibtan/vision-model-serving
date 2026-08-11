@@ -16,6 +16,7 @@ import pydicom
 REPOSITORY_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPOSITORY_ROOT / "src"))
 os.environ.setdefault("DJANGO_SETTINGS_MODULE", "vision_model_serving.web.settings")
+os.environ.setdefault("VMS_CACHE_BACKEND", "django.core.cache.backends.locmem.LocMemCache")
 
 import django  # noqa: E402
 
@@ -132,6 +133,20 @@ class BrowserOriginProtectionTests(HardeningTestCase):
 
         self.assertNotEqual(response.status_code, 403)
         self.assertEqual(response.status_code, 400)
+
+    def test_matching_host_with_foreign_scheme_is_rejected(self) -> None:
+        response = self.client.post(
+            "/api/v1/predictions",
+            data={},
+            HTTP_HOST="localhost",
+            HTTP_ORIGIN="https://localhost",
+        )
+
+        self.assertEqual(response.status_code, 403)
+        self.assertEqual(
+            response.json()["error"]["code"],
+            "cross_site_request_rejected",
+        )
 
     def test_header_less_non_browser_clients_pass_the_guard(self) -> None:
         response = self.client.post(

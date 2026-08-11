@@ -11,6 +11,7 @@ from numpy.typing import NDArray
 from PIL import Image
 
 from vision_model_serving.dicom import GeometryLedger
+from vision_model_serving.failures import CaseInputFailure
 
 
 _IMAGENET_MEAN = np.array([0.485, 0.456, 0.406], dtype=np.float32)
@@ -31,11 +32,8 @@ class DetectorOutputError(DetectorAdapterError):
     code = "detector_output_invalid"
 
 
-class NoValidProposalsError(DetectorAdapterError):
+class NoValidProposalsError(CaseInputFailure, DetectorAdapterError):
     code = "detector_no_valid_proposals"
-    # Data-dependent: this case has no usable proposals, but the model and
-    # runtime are healthy. Must never latch the residency runtime FAILED.
-    case_input_error = True
 
 
 @dataclass(frozen=True, slots=True)
@@ -162,9 +160,7 @@ class DetectorPostprocessor:
         for name, value in (("num_select", num_select), ("roi_count", roi_count)):
             if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
                 raise ValueError(f"{name} must be a positive integer")
-        if not math.isfinite(float(nms_iou_threshold)) or not (
-            0.0 <= nms_iou_threshold <= 1.0
-        ):
+        if not math.isfinite(float(nms_iou_threshold)) or not (0.0 <= nms_iou_threshold <= 1.0):
             raise ValueError("NMS IoU threshold must lie between zero and one")
         self._num_select = num_select
         self._nms_iou_threshold = float(nms_iou_threshold)
@@ -229,9 +225,7 @@ class DetectorPostprocessor:
                 )
             )
         if not candidates:
-            raise NoValidProposalsError(
-                "no proposal with positive extent remained"
-            )
+            raise NoValidProposalsError("no proposal with positive extent remained")
 
         candidate_boxes = np.asarray(
             [proposal.normalized_xyxy for proposal in candidates],
@@ -288,10 +282,7 @@ def strict_nms(
 
     retained: list[int] = []
     for candidate in range(len(boxes)):
-        if any(
-            _iou_xyxy(boxes[selected], boxes[candidate]) > threshold
-            for selected in retained
-        ):
+        if any(_iou_xyxy(boxes[selected], boxes[candidate]) > threshold for selected in retained):
             continue
         retained.append(candidate)
     return tuple(retained)
@@ -340,13 +331,9 @@ def _validated_outputs(
 def _sigmoid(values: NDArray[np.float32]) -> NDArray[np.float32]:
     result = np.empty(values.shape, dtype=np.float32)
     positive = values >= 0
-    result[positive] = np.float32(1.0) / (
-        np.float32(1.0) + np.exp(-values[positive])
-    )
+    result[positive] = np.float32(1.0) / (np.float32(1.0) + np.exp(-values[positive]))
     negative_exponential = np.exp(values[~positive])
-    result[~positive] = negative_exponential / (
-        np.float32(1.0) + negative_exponential
-    )
+    result[~positive] = negative_exponential / (np.float32(1.0) + negative_exponential)
     return result
 
 

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import secrets
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -13,6 +12,7 @@ from time import monotonic, sleep, time
 from vision_model_serving.pipeline.contracts import PredictionResult
 
 from .contracts import (
+    QUEUE_WAIT_BUCKET_SECONDS,
     GatewayObservations,
     GatewayUnavailable,
     IdempotencyConflict,
@@ -31,6 +31,12 @@ from .contracts import (
     ResultNotReady,
 )
 from .storage import EphemeralJobStore, JobResultNotFound
+from .terminal import (
+    TerminalFailureKind,
+    TerminalFailureMarker,
+    store_terminal_marker,
+    terminal_key,
+)
 
 RQ_TASK_PATH = "vision_model_serving.execution.rq_worker.execute_prediction_job"
 
@@ -87,6 +93,7 @@ class RqGpuExecutionGateway:
         if wait_poll_seconds <= 0:
             raise ValueError("wait polling interval must be positive")
         self._redis = redis_client
+        self._job_root = job_root.resolve()
         self._store = EphemeralJobStore(job_root, clock=clock)
         self._store.cleanup_expired()
         self._config = config
@@ -104,6 +111,7 @@ class RqGpuExecutionGateway:
     def submit(self, request: PredictionRequest) -> PredictionHandle:
         if not isinstance(request, PredictionRequest):
             raise TypeError("request must be a PredictionRequest")
+        self._store.maybe_cleanup()
         prediction_id = PredictionId(secrets.token_urlsafe(24))
         stored = self._store.store_request(
             prediction_id,
@@ -130,13 +138,9 @@ class RqGpuExecutionGateway:
                     replay_status = self.status(replay_id)
                 except PredictionNotFound:
                     replay_status = None
-                if replay_status is None or (
-                    replay_status.state is PredictionJobState.EXPIRED
-                ):
+                if replay_status is None or (replay_status.state is PredictionJobState.EXPIRED):
                     if idempotency_key is None:
-                        raise GatewayUnavailable(
-                            "prediction idempotency state is unavailable"
-                        )
+                        raise GatewayUnavailable("prediction idempotency state is unavailable")
                     self._forget_idempotency(
                         idempotency_key,
                         stored.request_fingerprint,
@@ -166,13 +170,13 @@ class RqGpuExecutionGateway:
 
     def status(self, prediction_id: PredictionId) -> PredictionStatus:
         self._store.maybe_cleanup()
+        marker = self._terminal_marker(prediction_id)
+        if marker is not None:
+            return self._status_from_marker(prediction_id, marker)
         try:
             job = self._job(prediction_id)
         except PredictionNotFound:
-            marker = self._terminal_marker(prediction_id)
-            if marker is None:
-                raise
-            return self._status_from_marker(prediction_id, marker)
+            raise
         try:
             status = _text(job.get_status(refresh=True))
         except Exception:  # noqa: BLE001 - sanitize the RQ status boundary
@@ -205,9 +209,7 @@ class RqGpuExecutionGateway:
         elif status == "finished":
             expires_at = (completed_at or now) + self._config.result_ttl_seconds
             state = (
-                PredictionJobState.EXPIRED
-                if now >= expires_at
-                else PredictionJobState.SUCCEEDED
+                PredictionJobState.EXPIRED if now >= expires_at else PredictionJobState.SUCCEEDED
             )
         elif status in {"failed", "stopped", "canceled"}:
             state = PredictionJobState.FAILED
@@ -237,51 +239,9 @@ class RqGpuExecutionGateway:
         marker = self._terminal_marker(prediction_id)
         if marker is not None:
             return PredictionFailure(
-                marker["code"],
-                marker["detail"],
-                retryable=marker["retryable"],
-            )
-        try:
-            latest_result = job.latest_result()
-        except Exception:  # noqa: BLE001 - sanitize the RQ result boundary
-            raise GatewayUnavailable("prediction status is unavailable") from None
-        failure_text = getattr(latest_result, "exc_string", "") or ""
-        timed_out = any(
-            marker_text in failure_text
-            for marker_text in (
-                "JobTimeoutException",
-                "maximum timeout value",
-            )
-        )
-        runtime_unavailable = (
-            "GpuExecutorUnavailable" in failure_text
-            or "GpuExecutorBusy" in failure_text
-        )
-        worker_lost = any(
-            marker_text in failure_text
-            for marker_text in (
-                "AbandonedJobError",
-                "Work-horse terminated unexpectedly",
-            )
-        )
-        if (
-            "GpuExecutorCaseFailed" in failure_text
-            or "StoredPredictionCaseError" in failure_text
-        ):
-            return PredictionFailure(
-                "prediction_case_failed",
-                "the submitted case could not be processed",
-            )
-        if timed_out:
-            return PredictionFailure(
-                "prediction_timeout",
-                "prediction execution timed out",
-            )
-        if runtime_unavailable or worker_lost:
-            return PredictionFailure(
-                "prediction_runtime_unavailable",
-                "prediction runtime was unavailable",
-                retryable=True,
+                marker.kind.value,
+                marker.detail,
+                retryable=marker.retryable,
             )
         return PredictionFailure(
             "prediction_execution_failed",
@@ -289,9 +249,12 @@ class RqGpuExecutionGateway:
         )
 
     def _terminal_key(self, prediction_id: PredictionId) -> str:
-        return f"{self._config.key_prefix}:terminal:{prediction_id}"
+        return terminal_key(self._config.key_prefix, str(prediction_id))
 
-    def _terminal_marker(self, prediction_id: PredictionId) -> dict[str, object] | None:
+    def _terminal_marker(
+        self,
+        prediction_id: PredictionId,
+    ) -> TerminalFailureMarker | None:
         try:
             raw = self._redis.get(self._terminal_key(prediction_id))
         except Exception:  # noqa: BLE001 - marker lookup is best-effort
@@ -299,34 +262,27 @@ class RqGpuExecutionGateway:
         if raw is None:
             return None
         try:
-            value = json.loads(_text(raw))
-            return {
-                "code": str(value["code"]),
-                "detail": str(value["detail"]),
-                "retryable": bool(value.get("retryable", False)),
-                "submitted_at": float(value["submitted_at"]),
-                "completed_at": float(value["completed_at"]),
-            }
-        except (json.JSONDecodeError, KeyError, TypeError, ValueError):
+            return TerminalFailureMarker.from_json(raw)
+        except (ValueError, TypeError):
             return None
 
     def _status_from_marker(
         self,
         prediction_id: PredictionId,
-        marker: dict[str, object],
+        marker: TerminalFailureMarker,
     ) -> PredictionStatus:
-        completed_at = float(marker["completed_at"])
+        completed_at = marker.completed_at
         return PredictionStatus(
             prediction_id=prediction_id,
             state=PredictionJobState.FAILED,
-            submitted_at=float(marker["submitted_at"]),
+            submitted_at=marker.submitted_at,
             started_at=None,
             completed_at=completed_at,
             expires_at=completed_at + self._config.status_ttl_seconds,
             failure=PredictionFailure(
-                str(marker["code"]),
-                str(marker["detail"]),
-                retryable=bool(marker["retryable"]),
+                marker.kind.value,
+                marker.detail,
+                retryable=marker.retryable,
             ),
             queue_wait_ms=None,
         )
@@ -342,22 +298,18 @@ class RqGpuExecutionGateway:
         """Convert a lapsed reservation into a terminal state and reclaim it."""
 
         try:
-            self._redis.set(
-                self._terminal_key(prediction_id),
-                json.dumps(
-                    {
-                        "code": "prediction_reservation_expired",
-                        "detail": "prediction reservation expired",
-                        "retryable": False,
-                        "submitted_at": submitted_at,
-                        "completed_at": now,
-                    },
-                    allow_nan=False,
-                    separators=(",", ":"),
-                    sort_keys=True,
+            store_terminal_marker(
+                self._redis,
+                key_prefix=self._config.key_prefix,
+                prediction_id=str(prediction_id),
+                marker=TerminalFailureMarker(
+                    TerminalFailureKind.RESERVATION_EXPIRED,
+                    "prediction reservation expired",
+                    False,
+                    submitted_at,
+                    now,
                 ),
-                nx=True,
-                ex=self._config.status_ttl_seconds,
+                ttl_seconds=self._config.status_ttl_seconds,
             )
             self._redis.zrem(
                 f"{self._config.key_prefix}:active",
@@ -427,9 +379,7 @@ class RqGpuExecutionGateway:
             active_key = f"{self._config.key_prefix}:active"
             metrics = {
                 _text(key): float(_text(value))
-                for key, value in self._redis.hgetall(
-                    f"{self._config.key_prefix}:metrics"
-                ).items()
+                for key, value in self._redis.hgetall(f"{self._config.key_prefix}:metrics").items()
             }
             return GatewayObservations(
                 active_jobs=int(self._redis.zcount(active_key, self._clock(), "+inf")),
@@ -440,12 +390,21 @@ class RqGpuExecutionGateway:
                 succeeded_total=int(metrics.get("succeeded_total", 0)),
                 failed_total=int(metrics.get("failed_total", 0)),
                 worker_lost_total=int(metrics.get("worker_lost_total", 0)),
+                queue_wait_count=int(metrics.get("queue_wait_count", 0)),
                 queue_wait_ms_total=metrics.get("queue_wait_ms_total", 0.0),
+                queue_wait_buckets=(
+                    *(
+                        (
+                            upper,
+                            int(metrics.get(f"queue_wait_le_{int(upper * 1_000.0)}", 0)),
+                        )
+                        for upper in QUEUE_WAIT_BUCKET_SECONDS
+                    ),
+                    (float("inf"), int(metrics.get("queue_wait_le_inf", 0))),
+                ),
             )
         except Exception:  # noqa: BLE001 - sanitize the Redis metrics boundary
-            raise GatewayUnavailable(
-                "prediction observations are unavailable"
-            ) from None
+            raise GatewayUnavailable("prediction observations are unavailable") from None
 
     def _job(self, prediction_id: PredictionId):
         from rq.exceptions import NoSuchJobError
@@ -487,9 +446,7 @@ class RqGpuExecutionGateway:
         active_key = f"{self._config.key_prefix}:active"
         metrics_key = f"{self._config.key_prefix}:metrics"
         watched_keys = (
-            (active_key, idempotency_key)
-            if idempotency_key is not None
-            else (active_key,)
+            (active_key, idempotency_key) if idempotency_key is not None else (active_key,)
         )
         while True:
             self._redis.zremrangebyscore(active_key, "-inf", now)
@@ -514,11 +471,7 @@ class RqGpuExecutionGateway:
                     transaction.multi()
                     transaction.zadd(
                         active_key,
-                        {
-                            str(prediction_id): (
-                                now + self._config.reservation_ttl_seconds
-                            )
-                        },
+                        {str(prediction_id): (now + self._config.reservation_ttl_seconds)},
                     )
                     if idempotency_key is not None:
                         transaction.set(
@@ -544,6 +497,7 @@ class RqGpuExecutionGateway:
                             "result_ttl_seconds": self._config.result_ttl_seconds,
                             "status_ttl_seconds": self._config.status_ttl_seconds,
                             "key_prefix": self._config.key_prefix,
+                            "job_root": str(self._job_root),
                         },
                         pipeline=transaction,
                     )

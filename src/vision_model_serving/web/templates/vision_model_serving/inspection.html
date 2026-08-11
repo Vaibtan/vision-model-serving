@@ -284,7 +284,7 @@
         const probabilities = result.classification?.probabilities || [];
         const summary = [
           ["Mode", result.mode],
-          ["Total time", `${result.timings.total_ms.toFixed(1)} ms`],
+          ["Pipeline time", `${result.timings.pipeline_ms.toFixed(1)} ms`],
           ["Regions", `${rois.length} classifier ROIs`],
           ["Raw class index", result.classification ? `${result.classification.predicted_class_index} · semantics unverified` : "not run"],
           ["Class probabilities", probabilities.length ? probabilities.map((value) => `${(value * 100).toFixed(1)}%`).join(" / ") : "not run"],

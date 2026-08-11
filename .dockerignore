@@ -5,6 +5,8 @@
 !config_cfg.py
 !config/
 !config/**
+!docker/
+!docker/gunicorn.conf.py
 !patches/
 !patches/**
 !requirements/

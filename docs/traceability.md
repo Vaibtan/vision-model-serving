@@ -6,21 +6,23 @@ and unvalidated claims. “Passed” never means clinically validated.
 The linked L4 records remain authoritative for their embedded revisions, not
 for the current worktree. Post-evidence runtime, validation-contract, Django,
 CI, Django/Pillow dependency, and documentation changes have passed local CPU
-and browser gates; current-revision L4 acceptance is pending a rerun.
+gates. The [2026-08-11 worktree L4 run](validation/worktree-l4-20260811.md)
+passed packaged inference, restart, Chromium, and observability; because the
+worktree is uncommitted, clean-revision benchmark/soak evidence remains open.
 
 ## Requirement matrix
 
 | Assignment requirement | Implementation | Executable evidence | Status |
 | --- | --- | --- | --- |
 | Understand both models, inputs, outputs, preprocessing, and dependencies | [Artifact manifest](../config/model-artifacts.json) plus [DICOM](../src/vision_model_serving/dicom), [detector](../src/vision_model_serving/detector), [classifier](../src/vision_model_serving/classifier), and [pipeline](../src/vision_model_serving/pipeline) modules | [Archived strict loads and raw FP32 reference](validation/reference-l4-fp32-20260807.json) | Implemented for the repository-defined contract; author proposal/prompt equivalence and medical semantics remain unverified |
-| Django inference service with structured JSON | [HTTP adapter](../src/vision_model_serving/web/api.py), [URL table](../src/vision_model_serving/web/urls.py), [typed serialization](../src/vision_model_serving/pipeline/serialization.py) | [Real Redis/Django acceptance](../tests/real_infra/test_django_api.py) and prior exact-revision [packaged L4 validation](validation/compose-restart-l4-20260810.json) | Implemented; current L4 rerun and named OpenAPI response schemas remain pending |
-| Accept appropriate inputs and run all preprocessing/inference | [Multipart validation](../src/vision_model_serving/web/api.py), required history for full, [canonicalization](../src/vision_model_serving/dicom/canonicalization.py), and [two-stage pipeline](../src/vision_model_serving/pipeline/pipeline.py) | Public fixture SHA/canonical hash and exact detector/classifier hashes in prior exact-revision [restart evidence](validation/compose-restart-l4-20260810.json) | Previously passed for one fixture; current L4 rerun pending |
+| Django inference service with structured JSON | [HTTP adapter](../src/vision_model_serving/web/api.py), [named DRF schemas](../src/vision_model_serving/web/prediction_serializers.py), [URL table](../src/vision_model_serving/web/urls.py), and [public serialization](../src/vision_model_serving/pipeline/serialization.py) | CPU schema/serialization tests, [Real Redis/Django acceptance](../tests/real_infra/test_django_api.py), and [worktree L4 validation](validation/worktree-l4-20260811.md) | Implemented; clean-revision benchmark/soak remains pending |
+| Accept appropriate inputs and run all preprocessing/inference | [Multipart validation](../src/vision_model_serving/web/api.py), required history for full, [canonicalization](../src/vision_model_serving/dicom/canonicalization.py), and [two-stage pipeline](../src/vision_model_serving/pipeline/pipeline.py) | Public fixture SHA/canonical hash and exact detector/classifier hashes in the [worktree L4 record](validation/worktree-l4-20260811.md) | Passed for the pinned public fixture; broader dataset/clinical validity is unproven |
 | Load models once and reuse subsequent compatible requests | [Private GPU executor composition](../src/vision_model_serving/execution/_composition.py) keeps one controller and reuses only the current resident | Warm detection reuse in the prior exact-revision [schema-v3 benchmark](validation/benchmark-l4-20260810.json) and both [restart cycles](validation/compose-restart-l4-20260810.json) | Compatible-resident reuse is implemented; cross-model requests deliberately reload, and current L4 rerun is pending |
 | Use one model at a time and load/unload between the two models | [Only strict-switching runtime](../src/vision_model_serving/residency/runtime.py), fail-closed status contract, and [ADR 0003](adr/0003-enforce-single-model-residency.md) | Prior exact-revision [direct L4 lifecycle](validation/single-residency-l4-20260810.json), packaged max-one snapshots, and destructive restart evidence; old dual-resident records remain explicitly superseded | Previously passed on the pinned L4 fixture; rerun pending |
-| Clean modular organization | Deep module boundaries listed in [architecture.md](architecture.md#module-seams) | CPU contract suite plus real integration gates | Strong overall; storage lifecycle ownership and duplicate web/executor decode remain shallow seams |
-| Robust production-oriented deployment | [Capacity/idempotency and failure semantics](gpu-execution-gateway.md), [readiness](../src/vision_model_serving/web/operational.py), [safe telemetry](observability.md), and [hardened Compose](../compose.yaml) | Prior exact-revision [schema-v3 benchmark](validation/benchmark-l4-20260810.json), [browser gate](validation/browser-workbench-l4-20260810.log), and [destructive restart](validation/compose-restart-l4-20260810.json) | Assessment-grade implementation; physical retention, browser-origin protection, metrics process churn, deadline/shutdown ownership, and current L4 rerun remain open |
+| Clean modular organization | Deep module boundaries listed in [architecture.md](architecture.md#module-seams), typed failure/terminal contracts, and the independent janitor | CPU contract suite plus real integration gates | Strong overall; author parity and multi-instance routing remain outside the repository contract |
+| Robust production-oriented deployment | [Lease-aware lifecycle and failure semantics](gpu-execution-gateway.md), [exact-worker readiness](../src/vision_model_serving/web/operational.py), [safe telemetry](observability.md), and [hardened Compose](../compose.yaml) | CPU race/deadline/metrics/schema tests plus prior exact-revision [schema-v3 benchmark](validation/benchmark-l4-20260810.json), [browser gate](validation/browser-workbench-l4-20260810.log), and [destructive restart](validation/compose-restart-l4-20260810.json) | Assessment-grade implementation; auth/TLS/HA, long soak, and current L4 rerun remain open |
 | TensorRT appreciated | Pinned [TensorRT lane](../requirements/tensorrt-l4.txt), strict [manifest contract](../src/vision_model_serving/acceleration/tensorrt.py), package-owned [experiment contract](../src/vision_model_serving/validation/tensorrt_experiment.py), private GPU measurement adapter, thin [CLI](../scripts/l4_validation/18_build_tensorrt_candidate.py), PyTorch-free runtime verifier, and validation image | Historical [L4 TensorRT report](validation/tensorrt-l4-20260810/tensorrt-spike.json), dry-run/coverage reports, parity, performance, and runtime-verifier records | Historical measured STOP; current optimization acceptance rerun pending, eager FP32 remains selected |
-| Docker packaging and minimal setup | Pinned [web](../docker/web.Dockerfile)/[executor](../docker/executor.Dockerfile) images and [Compose profiles](../compose.yaml) | Prior clean-revision image identity, packaged benchmark, browser inspection, restart, and cleanup in the [resolution record](validation/spec-resolution-l4-20260810.md) | Previously passed on NVIDIA L4; current image rerun pending |
+| Docker packaging and minimal setup | Pinned [web](../docker/web.Dockerfile)/[executor](../docker/executor.Dockerfile) images and [Compose profiles](../compose.yaml) | Current worktree image identities, footprint audit, browser inspection, restart, and cleanup in the [worktree L4 record](validation/worktree-l4-20260811.md) | Passed as worktree evidence on NVIDIA L4; clean-revision benchmark/soak pending |
 | Public mammogram DICOM | Checksum-pinned [TCIA manifest](../config/public-fixtures.json)/[fetcher](../scripts/fetch_public_fixture.py) with license and attribution | [Live fetch gate](../tests/real_infra/test_public_fixture_fetch.py) plus canonical array hash in prior exact-revision [packaged validation](validation/compose-restart-l4-20260810.json) | Previously passed for the selected Secondary Capture object; rerun pending |
 | Clear reproduction and examples | [Fresh-machine guide](reproduction.md), generated OpenAPI, [container runbook](containers.md) | Commands and links checked; prior exact-revision runs indexed in the [resolution record](validation/spec-resolution-l4-20260810.md) | Documentation checked; current L4 rerun pending and weights remain externally supplied |
 
@@ -29,24 +31,31 @@ and browser gates; current-revision L4 acceptance is pending a rerun.
 The full evidence-linked findings are recorded in the
 [2026-08-11 architecture and implementation review](architecture-implementation-review-20260811.md).
 The source review found nine executable gaps. Most are now closed in source
-(validated by the CPU suite; a same-revision L4 rerun is still outstanding):
+(validated by the CPU suite and the bounded worktree L4 run; clean-revision
+benchmark and soak remain outstanding):
 
 - **Closed:** physical TTL enforcement (fail-closed `load_request` with
-  fingerprint verification, deletion on access, rate-limited janitor,
-  `.tmp-*` orphan sweep, terminal markers for worker-loss and reservation
-  expiry);
+  fingerprint verification, deletion on access, independent lease-aware
+  janitor, atomic cleanup tombstones, `.tmp-*` orphan sweep, and strict terminal
+  markers for worker-loss/reservation expiry);
 - **Closed:** cross-site browser POSTs are rejected via
-  `Sec-Fetch-Site`/`Origin` checks and per-scope throttles;
+  `Sec-Fetch-Site`/`Origin` checks and shared Redis-backed per-scope throttles;
 - **Closed:** work-horses no longer emit Prometheus multiprocess files;
-  gunicorn reaps dead web-worker shards; telemetry writes cannot fail a
+  gunicorn removes every exact dead-worker shard, live-most-recent gauges avoid
+  stale values, and Redis owns the queue histogram; telemetry writes cannot fail a
   request; readiness no longer gates on the telemetry collector;
-- **Closed:** the timeout/shutdown hierarchy is strict (170 < 180 < 190 <
-  210 s) with a draining, terminal executor close and a busy fail-fast;
+- **Closed:** the timeout/shutdown hierarchy is strict (160 < 170 < 180 < 190
+  < 210 s) with an executor-owned hard deadline/restart, admission retained
+  after worker loss, draining shutdown, and a busy fail-fast;
 - **Closed:** the web tier validates headers only; pixels decode once in the
   executor;
 - **Closed:** cold-stage warmup no longer re-executes the request input;
-- **Closed:** submission/status responses use named OpenAPI components (the
-  deep result object intentionally remains generic);
+- **Closed:** success/error/result responses use named, deeply nested OpenAPI
+  components; runtime responses are validated through the same serializers,
+  the public result omits full raw detector tensors, and request-threshold
+  provenance is preserved;
+- **Closed:** readiness requires exactly one fresh RQ worker heartbeat, and the
+  Focal source gate enforces the exact approved tracked patch diff;
 - **Open:** artifact-scoped readiness still does not strict-load, warm, and
   execute both real models — that preflight needs the GPU environment;
 - **Open:** the detector-proposal handoff and label-free clinical prompt
@@ -56,8 +65,8 @@ The source review found nine executable gaps. Most are now closed in source
   previous implementation did not.
 
 These limitations keep the deployment production-oriented but not
-production-validated. Current CPU/browser checks do not substitute for a fresh
-same-revision L4/Compose run or a long-duration failure/retention soak.
+production-validated. The bounded worktree L4 checks do not substitute for a
+clean-revision schema-v4 benchmark or long-duration failure/retention soak.
 
 ## Validation layers
 
@@ -93,6 +102,7 @@ integration claims in this repository require real infrastructure.
 | [`pytorch-optimization-l4-20260810.json`](validation/pytorch-optimization-l4-20260810.json) and [summary](validation/pytorch-optimization-l4-20260810.md) | Historical schema-v1 screening; eager FP32 remains selected, while raw/post-NMS/eight-ROI parity plus candidate-release and repeated-switch VRAM evidence await an L4 rerun |
 | [`tensorrt-l4-20260810/tensorrt-spike.json`](validation/tensorrt-l4-20260810/tensorrt-spike.json), [summary](validation/tensorrt-l4-20260810/tensorrt-spike.md), and [failure analysis](validation/tensorrt-l4-20260810/failure-analysis.md) | Strict no-fallback TensorRT result: classifier static feasibility, production-profile STOP, measured detector capture failure, and expected downstream plugin boundary |
 | [`browser-workbench-l4-20260810.log`](validation/browser-workbench-l4-20260810.log) | Exact-revision packaged Chromium upload/poll/inspect/export transcript |
+| [`worktree-l4-20260811.md`](validation/worktree-l4-20260811.md) | Uncommitted-worktree packaged inference, restart, Chromium, observability, test, and image-footprint record; explicitly not clean-revision benchmark/soak evidence |
 
 The evidence archive and sidecar remain outside Git. The checked-in records are
 bounded summaries tied to hashes and commits, not replacements for the source

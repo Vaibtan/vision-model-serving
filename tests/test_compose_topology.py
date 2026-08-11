@@ -40,6 +40,12 @@ def _compose_config(profile: str) -> dict:
 
 
 class ComposeTopologyTests(unittest.TestCase):
+    def test_browser_image_keeps_the_serving_runtime_out(self) -> None:
+        dockerfile = (REPOSITORY_ROOT / "docker" / "browser.Dockerfile").read_text(encoding="utf-8")
+        self.assertIn("uv sync --frozen --only-group browser", dockerfile)
+        self.assertIn("validation/acceptance_constants.py", dockerfile)
+        self.assertNotIn("COPY --chown=1000:1000 src ./src", dockerfile)
+
     @unittest.skipUnless(shutil.which("docker"), "Docker CLI is unavailable")
     def test_loopback_web_edge_does_not_expose_backend_services(self) -> None:
         configuration = _compose_config("gpu")

@@ -8,10 +8,8 @@ from io import BytesIO
 from django.conf import settings
 from django.http import HttpResponse
 from django.urls import reverse
-from drf_spectacular.types import OpenApiTypes
 from drf_spectacular.utils import extend_schema
 from PIL import Image
-import pydicom
 from rest_framework import serializers, status
 from rest_framework.parsers import FormParser, MultiPartParser
 from rest_framework.renderers import JSONRenderer
@@ -42,7 +40,7 @@ from vision_model_serving.execution import (
 )
 from vision_model_serving.observability import record_dicom
 from vision_model_serving.pipeline import CaseInput, PredictionMode
-from vision_model_serving.pipeline.serialization import prediction_to_dict
+from vision_model_serving.pipeline.serialization import prediction_to_public_dict
 
 from .errors import (
     ClinicalHistoryRequired,
@@ -51,6 +49,11 @@ from .errors import (
     public_error,
 )
 from .protection import browser_origin_rejection
+from .prediction_serializers import (
+    PredictionHandleResponseSerializer,
+    PredictionResultResponseSerializer,
+    PredictionSyncResponseSerializer,
+)
 from .renderers import PngRenderer
 from .runtime import prediction_gateway
 
@@ -102,30 +105,20 @@ class DicomPreviewSerializer(serializers.Serializer):
 
 
 class PredictionFailureSerializer(serializers.Serializer):
-    code = serializers.CharField(read_only=True)
-    message = serializers.CharField(read_only=True)
-    retryable = serializers.BooleanField(read_only=True)
-
-
-class PredictionHandleSerializer(serializers.Serializer):
-    prediction_id = serializers.CharField(read_only=True)
-    state = serializers.CharField(read_only=True)
-    submitted_at = serializers.DateTimeField(read_only=True)
-    expires_at = serializers.DateTimeField(read_only=True)
-    status_url = serializers.CharField(read_only=True)
-    result_url = serializers.CharField(read_only=True)
-    idempotent_replay = serializers.BooleanField(read_only=True)
+    code = serializers.CharField()
+    message = serializers.CharField()
+    retryable = serializers.BooleanField()
 
 
 class PredictionStatusSerializer(serializers.Serializer):
-    prediction_id = serializers.CharField(read_only=True)
-    state = serializers.CharField(read_only=True)
-    submitted_at = serializers.DateTimeField(read_only=True)
-    started_at = serializers.DateTimeField(read_only=True, allow_null=True)
-    completed_at = serializers.DateTimeField(read_only=True, allow_null=True)
-    expires_at = serializers.DateTimeField(read_only=True)
-    queue_wait_ms = serializers.FloatField(read_only=True, allow_null=True)
-    failure = PredictionFailureSerializer(read_only=True, allow_null=True)
+    prediction_id = serializers.CharField()
+    state = serializers.CharField()
+    submitted_at = serializers.DateTimeField()
+    started_at = serializers.DateTimeField(allow_null=True)
+    completed_at = serializers.DateTimeField(allow_null=True)
+    expires_at = serializers.DateTimeField()
+    queue_wait_ms = serializers.FloatField(allow_null=True)
+    failure = PredictionFailureSerializer(allow_null=True)
 
 
 class NoStoreResponseMixin:
@@ -138,7 +131,7 @@ class NoStoreResponseMixin:
 
 
 class DicomPreviewView(NoStoreResponseMixin, APIView):
-    """Return an ephemeral metadata-free rendering of canonical pixels."""
+    """Return an ephemeral metadata-minimized rendering of sensitive pixels."""
 
     parser_classes = (MultiPartParser, FormParser)
     renderer_classes = (JSONRenderer, PngRenderer)
@@ -189,18 +182,18 @@ class PredictionCollectionView(NoStoreResponseMixin, APIView):
     @extend_schema(
         request=PredictionSubmissionSerializer,
         responses={
-            200: OpenApiTypes.OBJECT,
-            202: PredictionHandleSerializer,
-            400: OpenApiTypes.OBJECT,
-            409: OpenApiTypes.OBJECT,
-            410: OpenApiTypes.OBJECT,
-            413: OpenApiTypes.OBJECT,
-            415: OpenApiTypes.OBJECT,
-            422: OpenApiTypes.OBJECT,
-            429: OpenApiTypes.OBJECT,
-            500: OpenApiTypes.OBJECT,
-            503: OpenApiTypes.OBJECT,
-            504: OpenApiTypes.OBJECT,
+            200: PredictionSyncResponseSerializer,
+            202: PredictionHandleResponseSerializer,
+            400: ErrorEnvelopeSerializer,
+            409: ErrorEnvelopeSerializer,
+            410: ErrorEnvelopeSerializer,
+            413: ErrorEnvelopeSerializer,
+            415: ErrorEnvelopeSerializer,
+            422: ErrorEnvelopeSerializer,
+            429: ErrorEnvelopeSerializer,
+            500: ErrorEnvelopeSerializer,
+            503: ErrorEnvelopeSerializer,
+            504: ErrorEnvelopeSerializer,
         },
     )
     def post(self, request: Request) -> Response:
@@ -230,11 +223,11 @@ class PredictionCollectionView(NoStoreResponseMixin, APIView):
         try:
             # Structural gate only: pixel decode happens once, in the GPU
             # executor; pixel-level failures surface as async case failures.
-            DicomCanonicalizer().validate_header(BytesIO(payload))
+            header = DicomCanonicalizer().validate_header(BytesIO(payload))
         except DicomCanonicalizationError as error:
             record_dicom("rejected")
             return _dicom_error(request, error)
-        modality_rejection = _modality_rejection(request, payload)
+        modality_rejection = _modality_rejection(request, header.modality)
         if modality_rejection is not None:
             record_dicom("rejected")
             return modality_rejection
@@ -276,8 +269,9 @@ class PredictionCollectionView(NoStoreResponseMixin, APIView):
             "detector_score_threshold": values.get("detector_score_threshold"),
         }
         if request.headers.get("Prefer", "").strip().lower() == "respond-async":
+            payload = {**_handle_payload(handle), "request": request_echo}
             return Response(
-                {**_handle_payload(handle), "request": request_echo},
+                _validated_payload(PredictionHandleResponseSerializer, payload),
                 status=status.HTTP_202_ACCEPTED,
             )
         try:
@@ -294,16 +288,18 @@ class PredictionCollectionView(NoStoreResponseMixin, APIView):
         ) as error:
             return _completion_error(request, error)
         if isinstance(completed, PredictionHandle):
+            payload = {**_handle_payload(completed), "request": request_echo}
             return Response(
-                {**_handle_payload(completed), "request": request_echo},
+                _validated_payload(PredictionHandleResponseSerializer, payload),
                 status=status.HTTP_202_ACCEPTED,
             )
+        payload = {
+            "prediction_id": str(handle.prediction_id),
+            "result": prediction_to_public_dict(completed),
+            "request": request_echo,
+        }
         return Response(
-            {
-                "prediction_id": str(handle.prediction_id),
-                "result": prediction_to_dict(completed),
-                "request": request_echo,
-            },
+            _validated_payload(PredictionSyncResponseSerializer, payload),
             status=status.HTTP_200_OK,
         )
 
@@ -314,8 +310,8 @@ class PredictionStatusView(NoStoreResponseMixin, APIView):
     @extend_schema(
         responses={
             200: PredictionStatusSerializer,
-            404: OpenApiTypes.OBJECT,
-            503: OpenApiTypes.OBJECT,
+            404: ErrorEnvelopeSerializer,
+            503: ErrorEnvelopeSerializer,
         }
     )
     def get(self, request: Request, prediction_id: str) -> Response:
@@ -335,26 +331,25 @@ class PredictionStatusView(NoStoreResponseMixin, APIView):
                 "Prediction status is temporarily unavailable.",
                 503,
             )
-        return Response(
-            {
-                "prediction_id": str(prediction.prediction_id),
-                "state": prediction.state.value,
-                "submitted_at": _timestamp(prediction.submitted_at),
-                "started_at": _optional_timestamp(prediction.started_at),
-                "completed_at": _optional_timestamp(prediction.completed_at),
-                "expires_at": _timestamp(prediction.expires_at),
-                "queue_wait_ms": prediction.queue_wait_ms,
-                "failure": (
-                    None
-                    if prediction.failure is None
-                    else {
-                        "code": prediction.failure.code,
-                        "message": prediction.failure.detail,
-                        "retryable": prediction.failure.retryable,
-                    }
-                ),
-            }
-        )
+        payload = {
+            "prediction_id": str(prediction.prediction_id),
+            "state": prediction.state.value,
+            "submitted_at": _timestamp(prediction.submitted_at),
+            "started_at": _optional_timestamp(prediction.started_at),
+            "completed_at": _optional_timestamp(prediction.completed_at),
+            "expires_at": _timestamp(prediction.expires_at),
+            "queue_wait_ms": prediction.queue_wait_ms,
+            "failure": (
+                None
+                if prediction.failure is None
+                else {
+                    "code": prediction.failure.code,
+                    "message": prediction.failure.detail,
+                    "retryable": prediction.failure.retryable,
+                }
+            ),
+        }
+        return Response(_validated_payload(PredictionStatusSerializer, payload))
 
 
 class PredictionResultView(NoStoreResponseMixin, APIView):
@@ -362,13 +357,13 @@ class PredictionResultView(NoStoreResponseMixin, APIView):
 
     @extend_schema(
         responses={
-            200: OpenApiTypes.OBJECT,
-            404: OpenApiTypes.OBJECT,
-            409: OpenApiTypes.OBJECT,
-            410: OpenApiTypes.OBJECT,
-            500: OpenApiTypes.OBJECT,
-            503: OpenApiTypes.OBJECT,
-            504: OpenApiTypes.OBJECT,
+            200: PredictionResultResponseSerializer,
+            404: ErrorEnvelopeSerializer,
+            409: ErrorEnvelopeSerializer,
+            410: ErrorEnvelopeSerializer,
+            500: ErrorEnvelopeSerializer,
+            503: ErrorEnvelopeSerializer,
+            504: ErrorEnvelopeSerializer,
         }
     )
     def get(self, request: Request, prediction_id: str) -> Response:
@@ -408,12 +403,14 @@ class PredictionResultView(NoStoreResponseMixin, APIView):
                 "Prediction result is temporarily unavailable.",
                 503,
             )
-        return Response(
-            {
-                "prediction_id": prediction_id,
-                "result": prediction_to_dict(result),
-            }
-        )
+        payload = {
+            "prediction_id": prediction_id,
+            "result": prediction_to_public_dict(result),
+            "request": {
+                "detector_score_threshold": result.detector_score_threshold,
+            },
+        }
+        return Response(_validated_payload(PredictionResultResponseSerializer, payload))
 
 
 def _handle_payload(handle: PredictionHandle) -> dict[str, object]:
@@ -429,6 +426,15 @@ def _handle_payload(handle: PredictionHandle) -> dict[str, object]:
     }
 
 
+def _validated_payload(
+    serializer_type: type[serializers.Serializer],
+    payload: dict[str, object],
+) -> dict[str, object]:
+    serializer = serializer_type(data=payload)
+    serializer.is_valid(raise_exception=True)
+    return dict(serializer.data)
+
+
 def _timestamp(value: float) -> str:
     return datetime.fromtimestamp(value, tz=UTC).isoformat()
 
@@ -437,18 +443,11 @@ def _optional_timestamp(value: float | None) -> str | None:
     return None if value is None else _timestamp(value)
 
 
-def _modality_rejection(request: Request, payload: bytes) -> Response | None:
+def _modality_rejection(request: Request, modality: str | None) -> Response | None:
     allowed = tuple(getattr(settings, "VMS_ALLOWED_MODALITIES", ()) or ())
     if not allowed:
         return None
-    try:
-        dataset = pydicom.dcmread(BytesIO(payload), stop_before_pixels=True)
-        modality = str(dataset.get("Modality", ""))
-    except Exception:
-        # validate_header already parsed this payload; a parse failure here
-        # must reject rather than crash the request.
-        modality = ""
-    if modality.strip().upper() in allowed:
+    if (modality or "").strip().upper() in allowed:
         return None
     return public_error(
         request,

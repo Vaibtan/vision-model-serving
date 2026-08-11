@@ -204,6 +204,30 @@ class PackagedAcceptanceContractTests(unittest.TestCase):
             with self.subTest(name=name), self.assertRaises(AssertionError):
                 PACKAGED_ACCEPTANCE.validate_prediction(result, mode=PredictionMode.FULL)
 
+    def test_prediction_accepts_reference_unclipped_detector_boxes(self) -> None:
+        result = _full_result()
+        overhang = {
+            "score": 0.5,
+            "normalized_xyxy": [-0.2, 0.4, 0.2, 0.6],
+            "canonical_xyxy": [-20.0, 40.0, 20.0, 60.0],
+            "original_xyxy": [0.0, 40.0, 20.0, 60.0],
+        }
+        result["detector"]["top_candidates"] = [overhang]
+
+        PACKAGED_ACCEPTANCE.validate_prediction(result, mode=PredictionMode.FULL)
+
+    def test_prediction_rejects_inconsistent_detector_coordinate_systems(self) -> None:
+        result = _full_result()
+        result["detector"]["top_candidates"][0]["canonical_xyxy"] = [
+            11.0,
+            10.0,
+            20.0,
+            20.0,
+        ]
+
+        with self.assertRaisesRegex(AssertionError, "disagrees"):
+            PACKAGED_ACCEPTANCE.validate_prediction(result, mode=PredictionMode.FULL)
+
     def test_readiness_requires_the_complete_named_check_contract(self) -> None:
         payload = _readiness()
 

@@ -25,6 +25,7 @@ from vision_model_serving.compatibility import (  # noqa: E402
     prepare_focalnet_patches,
 )
 from vision_model_serving.compatibility.focalnet import (  # noqa: E402
+    PatchCheckError,
     build_focalnet_extension,
 )
 
@@ -50,6 +51,12 @@ def _snapshot(spec, *, cuda_available: bool) -> EnvironmentSnapshot:
 
 
 class L4EnvironmentTests(unittest.TestCase):
+    def test_executor_discards_native_build_intermediates(self) -> None:
+        dockerfile = (REPOSITORY_ROOT / "docker" / "executor.Dockerfile").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("rm -rf /opt/focalnet/models/dino/ops/build", dockerfile)
+
     def test_spec_matches_artifact_manifest_and_requirements(self) -> None:
         spec = load_environment_spec(SPEC_PATH)
         manifest = json.loads(
@@ -146,8 +153,11 @@ class L4EnvironmentTests(unittest.TestCase):
 
             self._git(repository, "init")
             source = repository / "source.txt"
-            source.write_text("before\n", encoding="utf-8")
-            self._git(repository, "add", "source.txt")
+            baseline_lines = [f"line {index}\n" for index in range(1, 21)]
+            source.write_text("".join(baseline_lines), encoding="utf-8")
+            unrelated = repository / "unrelated.txt"
+            unrelated.write_text("baseline\n", encoding="utf-8")
+            self._git(repository, "add", "source.txt", "unrelated.txt")
             self._git(
                 repository,
                 "-c",
@@ -160,8 +170,20 @@ class L4EnvironmentTests(unittest.TestCase):
             )
             commit = self._git(repository, "rev-parse", "HEAD").stdout.strip()
 
-            source.write_text("after\n", encoding="utf-8")
+            expected_lines = list(baseline_lines)
+            expected_lines[9] = "approved change\n"
+            source.write_text("".join(expected_lines), encoding="utf-8")
             patch_content = self._git(repository, "diff", "--", "source.txt").stdout
+            # Real upstream patches can apply with a line-number offset. Git's
+            # resulting combined diff then has different hunk coordinates even
+            # though the patched tracked tree is exactly the approved state.
+            patch_content = re.sub(
+                r"@@ -(\d+),(\d+) \+(\d+),(\d+) @@",
+                lambda match: (
+                    f"@@ -{int(match[1]) + 1},{match[2]} +{int(match[3]) + 1},{match[4]} @@"
+                ),
+                patch_content,
+            )
             patch_path = patch_dir / "change.patch"
             patch_path.write_text(patch_content, encoding="utf-8")
             self._git(repository, "checkout", "--", "source.txt")
@@ -180,9 +202,27 @@ class L4EnvironmentTests(unittest.TestCase):
             self.assertEqual(checked[0].state, "applicable")
             applied = prepare_focalnet_patches(repository, project, spec, apply=True)
             self.assertEqual(applied[0].state, "applied")
-            self.assertEqual(source.read_text(encoding="utf-8"), "after\n")
+            self.assertEqual(source.read_text(encoding="utf-8"), "".join(expected_lines))
             checked_again = prepare_focalnet_patches(repository, project, spec)
             self.assertEqual(checked_again[0].state, "already_applied")
+
+            if os.name != "nt":
+                object_directories = [
+                    path for path in (repository / ".git" / "objects").rglob("*") if path.is_dir()
+                ]
+                object_directories.append(repository / ".git" / "objects")
+                for path in object_directories:
+                    path.chmod(0o555)
+                try:
+                    read_only_checked = prepare_focalnet_patches(repository, project, spec)
+                finally:
+                    for path in reversed(object_directories):
+                        path.chmod(0o755)
+                self.assertEqual(read_only_checked[0].state, "already_applied")
+
+            unrelated.write_text("unexpected tracked drift\n", encoding="utf-8")
+            with self.assertRaisesRegex(PatchCheckError, "exact approved patch set"):
+                prepare_focalnet_patches(repository, project, spec)
 
     def test_environment_and_strict_load_scripts_expose_help_without_ml_packages(self) -> None:
         scripts = (
@@ -246,7 +286,8 @@ class L4EnvironmentTests(unittest.TestCase):
             self.assertEqual(captured["LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib"))
             self.assertEqual(captured["LD_LIBRARY_PATH"].split(os.pathsep)[0], str(target / "lib"))
             self.assertEqual(
-                captured["PATH"].split(os.pathsep)[0], str(Path(sys.executable).parent)
+                captured["PATH"].split(os.pathsep)[0],
+                str(Path(sys.executable).resolve().parent),
             )
 
     @staticmethod

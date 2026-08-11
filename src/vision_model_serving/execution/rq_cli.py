@@ -17,6 +17,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     parser.add_argument("--queue-name", default="gpu-inference")
     parser.add_argument("--executor-socket", type=Path, required=True)
     parser.add_argument("--executor-timeout-seconds", type=float, required=True)
+    parser.add_argument("--executor-task-timeout-seconds", type=float)
     parser.add_argument("--burst", action="store_true")
     parser.add_argument("--max-jobs", type=int)
     parser.add_argument("--logging-level", default="INFO")
@@ -34,6 +35,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         queue_name=args.queue_name,
         executor_socket_path=args.executor_socket,
         executor_timeout_seconds=args.executor_timeout_seconds,
+        executor_task_timeout_seconds=args.executor_task_timeout_seconds,
     )
     worker.work(
         burst=args.burst,

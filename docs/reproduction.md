@@ -1,8 +1,10 @@
 # Fresh-machine reproduction and API operation
 
 This guide reproduces the current FP32 service configuration from source. The
-linked L4 evidence validates its embedded earlier revisions; the current
-Pillow and implementation changes require a new L4 run. The guide requires two
+linked historical L4 evidence validates its embedded revisions. A 2026-08-11
+[worktree run](validation/worktree-l4-20260811.md) passed packaged inference,
+restart, Chromium, and observability, but clean-revision benchmark and soak
+evidence remains outstanding. The guide requires two
 evaluator-supplied checkpoints. Their redistribution is not authorized, so they
 are never downloaded by this repository or copied into an image.
 
@@ -69,7 +71,7 @@ uv run --no-sync python .github/scripts/verify_dependency_audit.py \
 VMS_ALLOWED_HOSTS=localhost,127.0.0.1 \
 VMS_CSRF_COOKIE_SECURE=true \
 VMS_DEBUG=false \
-VMS_SECRET_KEY=local-validation-only-change-before-deployment \
+VMS_SECRET_KEY=0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef \
 VMS_SECURE_HSTS_INCLUDE_SUBDOMAINS=true \
 VMS_SECURE_HSTS_PRELOAD=true \
 VMS_SECURE_HSTS_SECONDS=31536000 \
@@ -145,6 +147,10 @@ external/
 The weight filenames, sizes, and hashes are authoritative in
 [`config/model-artifacts.json`](../config/model-artifacts.json). Do not rename,
 modify, or deserialize a checkpoint until its registry verification passes.
+Compose defaults `VMS_ARTIFACT_ROOT` to the sibling
+`../vision-model-serving-artifacts` directory. In this Windows checkout that is
+`D:\SWE_DEV_NEW\vision-model-serving-artifacts`; inside the executor it is
+mounted read-only at `/models`.
 
 Prepare the two source mounts and tokenizer while outbound access is allowed:
 
@@ -197,7 +203,7 @@ predictions remain sensitive and are not certified de-identified.
 Start only the long-running services:
 
 ```bash
-docker compose --profile gpu up --build -d redis executor rq-worker web
+docker compose --profile gpu up --build -d redis executor rq-worker job-janitor web
 for attempt in $(seq 1 120); do
   curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null && break
   if [ "$attempt" -eq 120 ]; then echo "readiness timed out" >&2; exit 1; fi
@@ -266,9 +272,9 @@ A submission returns this stable shape; token and timestamps vary:
 }
 ```
 
-The raw result intentionally includes bounded detector tensors, boxes, timing,
-and provenance. This `jq` view is a compact rendering of a real full result,
-not a substitute response schema:
+The public result intentionally excludes the full raw detector tensor dumps but
+includes bounded candidates, boxes/ROIs, timing, and provenance. This `jq` view
+is a compact rendering of a real full result, not a substitute response schema:
 
 ```bash
 jq '.result | {
@@ -308,10 +314,10 @@ revision, fresh unloaded executor, concurrency 1/2/4, Docker identity, and
 operations, requires zero offered-load failures, and writes both JSON and
 Markdown or fails.
 
-Always remove the stack volumes after assessment work. They are tmpfs-backed,
-but the current TTL is logical and expired/abandoned directories are physically
-scavenged only at gateway/processor construction; a long-running stack can
-retain sensitive data beyond that TTL:
+Always remove the stack volumes after assessment work. They are tmpfs-backed;
+the independent lease-aware janitor enforces TTLs during a long-running stack,
+while teardown is the final disposal boundary for all job/socket/metrics
+volumes:
 
 ```bash
 docker compose --profile gpu down --volumes --remove-orphans
@@ -332,9 +338,11 @@ docker compose --profile gpu down --volumes --remove-orphans
 TensorRT, FP16/BF16, TF32, and `torch.compile` are not selected in production.
 The isolated fail-closed L4 lanes were run for the revisions embedded in the
 [historical resolution evidence](validation/spec-resolution-l4-20260810.md);
-current-revision L4 acceptance is pending a rerun. The prior PyTorch screening
-rejected every alternative on parity or strict capture, and its schema-v3
-acceptance contract also awaits that rerun. TensorRT proved only a static-width
+the 2026-08-11 worktree L4 record passed packaged inference, restart, browser,
+and observability. It is not clean-revision release evidence; schema-v4
+benchmark and long switch/resource soak remain pending. The prior PyTorch
+screening rejected every alternative on parity or strict capture. TensorRT
+proved only a static-width
 classifier diagnostic; required dynamic shape coverage and detector coverage
 failed, so no engine was retained or promoted. There is no eager fallback
 inside the TensorRT engine verifier.
