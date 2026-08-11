@@ -27,6 +27,110 @@ robustness, and checkpoint redistribution rights are not established.
   schema-v4 benchmark, optimization/TensorRT, and browser acceptance tooling; and
 - an attributed, checksum-pinned public CBIS-DDSM fixture fetcher.
 
+## Evaluator quick start: run the inference application
+
+The inference application is a multi-container Compose deployment: Django,
+Redis, the RQ worker, the job janitor, and the persistent GPU executor must run
+together. Run these commands from the repository root rather than starting one
+image with `docker run`.
+
+1. **Check the host prerequisites.** Use Docker Engine with Docker Compose v2,
+   an NVIDIA L4-compatible driver, and the NVIDIA Container Toolkit. Confirm
+   that `docker compose version` and `nvidia-smi` succeed. The first executor
+   build is multi-gigabyte and needs outbound access for pinned build inputs.
+
+2. **Prepare the external runtime assets.** The repository intentionally does
+   not contain or bake model weights into an image. Prepare the two supplied
+   checkpoints, pinned tokenizer, MMBCD source, and DINO source as described in
+   [fresh-machine reproduction step 3](docs/reproduction.md#3-prepare-external-runtime-assets).
+   The checkpoint files must retain the manifest-owned names and hashes:
+
+   ```text
+   external/artifacts/focalnet-dino-finetuned.pth
+   external/artifacts/mmbcd_best.pt
+   external/assets/roberta-base-tokenizer-e2da8e2f811d1448a5b465c236feacd80ffbac7b/
+   external/sources/MMBCD/
+   external/sources/dino/
+   ```
+
+3. **Provide a mammogram DICOM.** Use an evaluator-supplied compatible DICOM,
+   or fetch and checksum-verify the public CBIS-DDSM fixture with Python 3:
+
+   ```bash
+   python3 scripts/fetch_public_fixture.py \
+     --manifest config/public-fixtures.json \
+     --fixture cbis-ddsm-l4-reference \
+     --output-root fixtures
+   ```
+
+4. **Export absolute host paths and a fresh Django secret.** Adjust the first
+   four paths if the assets are stored elsewhere:
+
+   ```bash
+   export VMS_ARTIFACT_ROOT="$PWD/external/artifacts"
+   export VMS_TOKENIZER_ROOT="$PWD/external/assets/roberta-base-tokenizer-e2da8e2f811d1448a5b465c236feacd80ffbac7b"
+   export VMS_MMBCD_ROOT="$PWD/external/sources/MMBCD"
+   export VMS_DINO_ROOT="$PWD/external/sources/dino"
+   export VMS_DICOM_PATH="$PWD/fixtures/cbis-ddsm/1.3.6.1.4.1.9590.100.1.2.100131208110604806117271735422083351547/1-1.dcm"
+   export VMS_SECRET_KEY="$(python3 -c 'import secrets; print(secrets.token_hex(32))')"
+   ```
+
+   `VMS_DICOM_PATH` is required when Compose resolves the GPU profile. The
+   workbench can subsequently upload another DICOM within the documented input
+   contract. In PowerShell, set the same variables with `$env:NAME = "value"`.
+
+5. **Validate, build, and start only the long-running application services.**
+
+   ```bash
+   docker compose --profile "*" config --quiet
+   docker compose --profile gpu up --build -d \
+     redis executor rq-worker job-janitor web
+   docker compose --profile gpu ps
+   ```
+
+6. **Wait for artifact and infrastructure readiness.** Initial executor
+   verification can take several minutes on a cold start.
+
+   ```bash
+   for attempt in $(seq 1 300); do
+     curl --fail --silent http://127.0.0.1:8000/readyz >/dev/null && break
+     if [ "$attempt" -eq 300 ]; then
+       docker compose --profile gpu logs --tail=200 executor rq-worker web
+       exit 1
+     fi
+     sleep 1
+   done
+
+   curl --fail http://127.0.0.1:8000/livez
+   curl --fail http://127.0.0.1:8000/readyz
+   curl --fail http://127.0.0.1:8000/api/v1/models
+   ```
+
+7. **Run inference through the frontend.** Open
+   [http://127.0.0.1:8000/](http://127.0.0.1:8000/), select a DICOM, and choose:
+
+   - **Detection** for FocalNet-DINO proposals and the eight selected ROIs; or
+   - **Full** for detector → MMBCD inference, adding non-blank clinical history.
+
+   Submit the request and let the workbench poll the asynchronous job. It shows
+   the canonical image, ROI overlay/gallery, probabilities, timings, residency,
+   warnings, and metadata-minimized JSON/PNG exports. The outputs remain
+   sensitive derived data and are not certified de-identified. API users can
+   follow the complete [multipart and polling examples](docs/reproduction.md#5-operate-the-api).
+
+8. **Inspect and stop the deployment.** Open
+   [http://127.0.0.1:8000/monitoring](http://127.0.0.1:8000/monitoring) for the
+   privacy-safe operations view, or inspect bounded service logs:
+
+   ```bash
+   docker compose --profile gpu logs --tail=200 executor rq-worker web
+   docker compose --profile gpu down --volumes --remove-orphans
+   ```
+
+   Teardown with `--volumes` is the final disposal boundary for tmpfs-backed
+   DICOM, result, socket, and metrics data. The service publishes only on
+   `127.0.0.1` and has no authentication or TLS; do not expose it remotely.
+
 ## Quick verification
 
 ```powershell

@@ -1,4 +1,4 @@
-# Vision Model Serving — Implementation Report
+# MMBCD Inference Serving Implementation Report
 
 ## Summary
 
@@ -68,6 +68,10 @@ tokenizer, and source mounts. The CPU web/RQ image contains no PyTorch. Images
 run non-root with read-only filesystems, dropped capabilities, bounded tmpfs
 volumes, internal Redis/socket networks, and a loopback-only HTTP publication.
 Model weights are not committed or baked into an image.
+
+Evaluator-facing build, startup, readiness, frontend inference, monitoring,
+and teardown steps are provided in the
+[README quick start](README.md#evaluator-quick-start-run-the-inference-application).
 
 The service exposes liveness, artifact-scoped readiness, model inventory,
 OpenAPI, structured operations, a monitoring page, and optional trusted-network
